@@ -140,11 +140,26 @@ export function registerPlaytestTools(context: ToolContext): void {
 
           const survivor = bridge.list().find((session) => session.studioId !== playtest);
           if (survivor) {
-            const after = await bridge.call<PlaytestResponse>(
-              "playtest.control",
-              { op: "state" },
-              { studioId: survivor.studioId, timeoutMs: 10_000 },
-            );
+            //[[
+            // Waited for, not sampled. The teardown is deliberately deferred so
+            // the reply can leave first, and tearing a DataModel down is not
+            // instant either — so a single read taken straight afterwards
+            // reports a test still running that is already on its way out. That
+            // is the same false report as before, just pointing the other way.
+            //]]
+            const deadline = Date.now() + 10_000;
+            let after: PlaytestResponse;
+            for (;;) {
+              after = await bridge.call<PlaytestResponse>(
+                "playtest.control",
+                { op: "state" },
+                { studioId: survivor.studioId, timeoutMs: 10_000 },
+              );
+              const settled = after.state.editModeActive !== false && !after.state.testPending;
+              if (settled || Date.now() >= deadline) break;
+              await new Promise((resolve) => setTimeout(resolve, 400));
+            }
+
             const stopped = after.state.editModeActive !== false && !after.state.testPending;
             return json(
               after.state,
