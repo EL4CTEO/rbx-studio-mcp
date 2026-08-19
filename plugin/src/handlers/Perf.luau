@@ -14,6 +14,7 @@
 
 local LogService = game:GetService("LogService")
 local ScriptContext = game:GetService("ScriptContext")
+local RunService = game:GetService("RunService")
 local ScriptProfilerService = game:GetService("ScriptProfilerService")
 local Stats = game:GetService("Stats")
 
@@ -156,52 +157,54 @@ end
 ]]
 function Perf.snapshot(): { [string]: any }
 	--[[
-		The breakdown comes back as a table whose shape the API dump only describes
-		as "Array". It is read structurally rather than assumed: a map of
-		category -> megabytes, or a list of records carrying a name and a number.
-		Guessing one shape silently produced an empty breakdown next to a
-		perfectly good total, which reads as "this place uses no memory".
+		Read one tag at a time, not with `GetMemoryUsageMbAllCategories`.
+
+		The aggregate call is the obvious one and is closed to us: it now requires
+		the InternalTest capability, so from a plugin it only ever raises "the
+		current thread cannot call 'GetMemoryUsageMbAllCategories'". Measured, not
+		assumed -- and the same refusal comes back in an editor session and in a
+		playtest, so there is no context in which waiting for it pays off.
+
+		`GetMemoryUsageMbForTag` carries no such restriction, and walking
+		`Enum.DeveloperMemoryTag` reaches every category the Developer Console's
+		Memory tab shows. Zero-valued tags are dropped so the list stays readable.
 	]]
 	local memory: { { [string]: any } } = {}
-	local okMemory, categories = pcall(function()
-		return Stats:GetMemoryUsageMbAllCategories()
-	end)
-
-	-- Why the breakdown is missing matters: a refused call, an unexpected shape
-	-- and a genuinely empty result all look identical from the outside, and each
-	-- needs a different response from whoever is reading this.
 	local memoryProblem: string? = nil
-	if not okMemory then
-		memoryProblem = string.format("Stats refused the call: %s", tostring(categories))
-	elseif typeof(categories) ~= "table" then
-		memoryProblem = string.format("Stats returned a %s, not a table", typeof(categories))
+
+	for _, tag in Enum.DeveloperMemoryTag:GetEnumItems() do
+		local ok, value = pcall(function()
+			return Stats:GetMemoryUsageMbForTag(tag)
+		end)
+		if not ok then
+			-- One refusal means the whole route is shut, not that this tag is
+			-- special; stop rather than repeat the same failure for every item.
+			memoryProblem = string.format("Stats refused the call: %s", tostring(value))
+			break
+		end
+		if typeof(value) == "number" and value > 0 then
+			table.insert(memory, { category = tag.Name, megabytes = round(value, 2) })
+		end
 	end
 
-	if okMemory and typeof(categories) == "table" then
-		for key, value in categories :: { [any]: any } do
-			if typeof(value) == "number" then
-				if value > 0 then
-					table.insert(memory, { category = tostring(key), megabytes = round(value, 2) })
-				end
-			elseif typeof(value) == "table" then
-				local record = value :: { [string]: any }
-				local name = record.name or record.Name or record.tag or record.Tag or tostring(key)
-				local amount = record.value or record.Value or record.megabytes or record.mb
-				if typeof(amount) == "number" and amount > 0 then
-					table.insert(memory, { category = tostring(name), megabytes = round(amount, 2) })
-				end
-			end
-		end
-		table.sort(memory, function(a, b)
-			return a.megabytes > b.megabytes
-		end)
-	end
+	table.sort(memory, function(a, b)
+		return a.megabytes > b.megabytes
+	end)
 
 	local okTotal, total = pcall(function()
 		return Stats:GetTotalMemoryUsageMb()
 	end)
 
+	--[[
+		A playtest server has no renderer, so every drawing counter reads zero --
+		zero draw calls, zero triangles, no frame time. Left unexplained that is
+		the most flattering possible misreading of a place's performance, so the
+		snapshot says outright that those numbers are absent rather than good.
+	]]
+	local headless = RunService:IsRunning() and RunService:IsServer() and not RunService:IsClient()
+
 	return {
+		renderless = headless or nil,
 		frame = {
 			frameTimeMs = millis("FrameTime"),
 			heartbeatTimeMs = millis("HeartbeatTime"),

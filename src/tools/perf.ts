@@ -9,6 +9,8 @@ interface ConsoleResponse {
 }
 
 interface SnapshotResponse {
+  /** True when this session has no renderer, so drawing counters are all zero. */
+  renderless?: boolean;
   frame: Record<string, number | undefined>;
   scene: Record<string, number | undefined>;
   network: Record<string, number | undefined>;
@@ -280,6 +282,18 @@ export function registerPerfTools(context: ToolContext): void {
             : `\n[No memory breakdown: ${
                 snapshot.memory.problem ?? "Studio returned an empty one."
               }]`,
+        );
+      }
+
+      // Zeroes that mean "not measured here" look exactly like zeroes that mean
+      // "nothing to draw", and the flattering reading is the wrong one.
+      if (snapshot.renderless) {
+        parts.push(
+          "\n[This is a playtest server, which does not render: frame time, draw " +
+            "calls and triangle counts read zero because nothing measures them, " +
+            "not because the place is cheap. Physics, instance counts, network " +
+            "and memory above are real. For rendering figures, snapshot the " +
+            "editor session instead.]",
         );
       }
       return text(parts.join("\n"));

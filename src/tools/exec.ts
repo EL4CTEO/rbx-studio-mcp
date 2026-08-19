@@ -8,6 +8,8 @@ interface ExecResponse {
   returned?: unknown[];
   output: Array<{ level: string; message: string }>;
   milliseconds: number;
+  /** Present only when how the code ran limited what it could do. */
+  note?: string;
 }
 
 interface RaycastResponse {
@@ -47,15 +49,21 @@ export function registerExecTools(context: ToolContext): void {
         "Good uses: reading something no tool exposes, a one-off calculation " +
         "over many instances, or calling an engine API the tools do not cover.\n\n" +
         "Output printed while it runs is captured and returned, so `print` is a " +
-        "reasonable way to get values out. `return` works too. There is no " +
-        "timeout: an infinite loop will hang Studio until it is force-quit.",
+        "reasonable way to get values out. `return` works too, including " +
+        "returning a table — it comes back as a structure, not a summary. There " +
+        "is no timeout: an infinite loop will hang Studio until it is " +
+        "force-quit.\n\n" +
+        "Against a running playtest server, Studio disables `loadstring`, so the " +
+        "code is compiled through a ModuleScript instead and runs at script " +
+        "identity — plugin-only APIs are unavailable there. When that happens it " +
+        "is stated in the result rather than left to be inferred from a failure.",
       inputSchema: {
         source: z
           .string()
           .min(1)
           .describe(
-            "Luau to run. Runs with plugin permissions, so `game`, `workspace` " +
-              "and plugin-only APIs are all reachable.",
+            "Luau to run. In an editor session this has plugin permissions, so " +
+              "`game`, `workspace` and plugin-only APIs are all reachable.",
           ),
         studioId: z.string().optional().describe("Target Studio; omit for the active one."),
       },
@@ -77,18 +85,22 @@ export function registerExecTools(context: ToolContext): void {
       }
       if (response.ok) {
         if (response.returned && response.returned.length > 0) {
-          parts.push(`Returned: ${JSON.stringify(response.returned)}`);
+          // Indented, because returned values are now whole structures rather
+          // than one-line summaries and a single-line dump of a nested table is
+          // no more readable than the "<table with 5 entries>" it replaced.
+          const single = response.returned.length === 1 ? response.returned[0] : response.returned;
+          parts.push(`Returned:\n${JSON.stringify(single, null, 2)}`);
         }
         if (parts.length === 0) {
           parts.push("Ran successfully. Nothing was printed or returned.");
         }
-        parts.push(`(${response.milliseconds}ms)`);
-        return text(parts.join("\n\n"));
+      } else {
+        // A thrown error is reported as content rather than a tool failure: the
+        // output captured before the throw is usually what explains it.
+        parts.push(`Error: ${response.error ?? "unknown"}`);
       }
 
-      // A thrown error is reported as content rather than a tool failure: the
-      // output captured before the throw is usually what explains it.
-      parts.push(`Error: ${response.error ?? "unknown"}`);
+      if (response.note) parts.push(`Note: ${response.note}`);
       parts.push(`(${response.milliseconds}ms)`);
       return text(parts.join("\n\n"));
     },
