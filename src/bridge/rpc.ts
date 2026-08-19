@@ -54,6 +54,16 @@ interface Session {
 export class Bridge {
   private readonly sessions = new Map<string, Session>();
   private activeStudioId: string | null = null;
+  /**
+   * Whether `activeStudioId` was picked by the user via set_active_studio, as
+   * opposed to being the only session that happened to connect first.
+   *
+   * The distinction decides what happens when a second Studio appears. A
+   * defaulted target silently becomes ambiguous — editing whichever place
+   * connected first is not a reasonable guess — while a chosen one stays put,
+   * because the user said which place they meant.
+   */
+  private activeWasChosen = false;
 
   // --- session lifecycle -------------------------------------------------
 
@@ -95,7 +105,10 @@ export class Bridge {
     session.stream?.end();
     this.sessions.delete(studioId);
     if (this.activeStudioId === studioId) {
+      // The place the user chose is gone, so the replacement is a fallback, not
+      // a choice: mark it as such so a remaining pair goes ambiguous again.
       this.activeStudioId = this.sessions.keys().next().value ?? null;
+      this.activeWasChosen = false;
     }
   }
 
@@ -128,6 +141,11 @@ export class Bridge {
     return this.activeStudioId;
   }
 
+  /** True only once the user has actually picked a target. */
+  get activeIsChosen(): boolean {
+    return this.activeWasChosen;
+  }
+
   setActive(studioId: string): void {
     if (!this.sessions.has(studioId)) {
       throw new ToolError(
@@ -137,6 +155,7 @@ export class Bridge {
       );
     }
     this.activeStudioId = studioId;
+    this.activeWasChosen = true;
   }
 
   // --- request/response --------------------------------------------------
@@ -229,13 +248,18 @@ export class Bridge {
       return session;
     }
     if (this.sessions.size === 0) throw NO_STUDIO();
-    if (this.activeStudioId) {
+
+    // One Studio is never ambiguous, whether or not anyone chose it.
+    const only = this.sessions.values().next().value;
+    if (this.sessions.size === 1 && only) return only;
+
+    if (this.activeWasChosen && this.activeStudioId) {
       const session = this.sessions.get(this.activeStudioId);
       if (session) return session;
     }
-    const only = this.sessions.values().next().value;
-    if (this.sessions.size === 1 && only) return only;
-    throw AMBIGUOUS_STUDIO(this.list().map((s) => s.placeName));
+    throw AMBIGUOUS_STUDIO(
+      this.list().map((session) => `${session.studioId} (${session.placeName})`),
+    );
   }
 
   private deliver(session: Session, command: Command): void {

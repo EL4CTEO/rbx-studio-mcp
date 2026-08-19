@@ -2,7 +2,7 @@
 --[[
 	Studio MCP -- plugin entry point.
 
-	Owns the toolbar UI, the persistent Studio identity, and the command loop.
+	Owns the toolbar UI, this window's Studio identity, and the command loop.
 	Handlers do the actual work; this file only wires them to the transport and
 	reports what is happening to the console widget.
 ]]
@@ -17,22 +17,27 @@ local Discover = require(script.handlers.Discover)
 local Scripts = require(script.handlers.Scripts)
 local Session = require(script.handlers.Session)
 
-local SETTING_STUDIO_ID = "studioId"
 local SETTING_PORT = "port"
 local SETTING_AUTOCONNECT = "autoConnect"
 
 --[[
-	A stable id per Studio installation, so reconnects and restarts map back to
-	the same session rather than piling up ghost entries in list_studios.
+	A fresh id per plugin load, which in practice means one per Studio window.
+
+	This was originally persisted with `plugin:SetSetting`, on the reasoning that a
+	stable id keeps reconnects mapping to the same session. That is wrong as soon
+	as the user opens a second window: plugin settings live in one file shared by
+	every Studio process, so both windows announce the same id, and the server
+	treats the second connection as the first one reconnecting -- closing the
+	original stream and making it impossible to address the two places separately.
+
+	Held in memory instead. A reconnect within one load (the SSE stream hits its
+	30-minute cap) reuses this id, and `plugin.Unloading` detaches cleanly on
+	reload, so ghost entries do not accumulate.
 ]]
+local SESSION_ID = HttpService:GenerateGUID(false)
+
 local function studioId(): string
-	local existing = plugin:GetSetting(SETTING_STUDIO_ID)
-	if typeof(existing) == "string" and existing ~= "" then
-		return existing
-	end
-	local generated = HttpService:GenerateGUID(false)
-	plugin:SetSetting(SETTING_STUDIO_ID, generated)
-	return generated
+	return SESSION_ID
 end
 
 local storedPort = plugin:GetSetting(SETTING_PORT)

@@ -32,6 +32,11 @@ async function main(): Promise<void> {
         "addressed by dot-notation path from the DataModel root, e.g. " +
         '"Workspace.Map.Spawn" or "ServerScriptService.Systems.Combat". Paths are ' +
         "case-sensitive.\n\n" +
+        "The user may have several Studio windows open on different places. When " +
+        "more than one is connected, no place is targeted by default and tools " +
+        "refuse with AMBIGUOUS_STUDIO: call `list_studios`, ask the user which " +
+        "place they mean, then `set_active_studio`. Do the same whenever they " +
+        "mention their other place — never assume a switch.\n\n" +
         "Prefer the batch tools: `create`, `modify`, `delete`, `move` and " +
         "`script_edit` all take arrays and apply as a single undo step, so one " +
         "call beats a loop of calls both in latency and in how cleanly the user " +

@@ -33,8 +33,11 @@ export const NO_STUDIO = (): ToolError =>
 export const AMBIGUOUS_STUDIO = (names: string[]): ToolError =>
   new ToolError(
     "AMBIGUOUS_STUDIO",
-    `${names.length} Studio instances are connected and none is marked active.`,
-    `Call set_active_studio with one of: ${names.join(", ")}.`,
+    `${names.length} Studio instances are connected and the user has not said ` +
+      "which one to work in.",
+    "Ask the user which place they mean, then call set_active_studio with its " +
+      `studioId. Connected now: ${names.join("; ")}. To act on one place without ` +
+      "changing the default, pass `studioId` to the tool directly.",
   );
 
 export const TIMEOUT = (op: string, ms: number): ToolError =>

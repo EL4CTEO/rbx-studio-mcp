@@ -65,11 +65,19 @@ export function registerSessionTools(context: ToolContext): void {
       name: "list_studios",
       title: "List connected Studios",
       description:
-        "Lists every Roblox Studio instance currently connected to this server, " +
-        "with its id, place name, transport (sse or poll) and which one is active.\n\n" +
-        "Only needed when the user has more than one place open, or when a tool " +
-        "reports AMBIGUOUS_STUDIO. With a single Studio open, every other tool " +
-        "targets it automatically and you can skip this.",
+        "Lists every Roblox Studio window currently connected to this server, " +
+        "with its studioId, place name, transport (sse or poll), when it " +
+        "connected, and which one is active.\n\n" +
+        "Call this whenever a tool reports AMBIGUOUS_STUDIO, and whenever the " +
+        "user refers to 'the other place' or 'my other window'. With a single " +
+        "Studio open every other tool targets it automatically, so you can skip " +
+        "it then.\n\n" +
+        "Two windows can be open on the same place, in which case the place name " +
+        "and id match and only `studioId` and `connectedAt` tell them apart — ask " +
+        "the user rather than guessing. Nothing is targeted by default when " +
+        "several are connected: pick one with `set_active_studio`, or pass " +
+        "`studioId` to a single tool call to act on one place without changing " +
+        "the default.",
       inputSchema: {},
       readOnly: true,
     },
@@ -82,18 +90,29 @@ export function registerSessionTools(context: ToolContext): void {
             "Studio MCP -> Connect), then call this again.",
         );
       }
-      const active = bridge.activeId;
+      // A defaulted target is not reported as active: tools refuse to use it
+      // while several are connected, so showing it as active would explain
+      // neither the AMBIGUOUS_STUDIO that follows nor how to clear it.
+      const active = bridge.activeIsChosen || sessions.length === 1 ? bridge.activeId : null;
       return json(
-        sessions.map((session) => ({
-          studioId: session.studioId,
-          placeName: session.placeName,
-          placeId: session.placeId,
-          transport: session.transport,
-          pluginVersion: session.pluginVersion,
-          buildId: session.buildId,
-          stale: pluginStalenessWarning(session.buildId) ?? false,
-          active: session.studioId === active,
-        })),
+        {
+          studios: sessions.map((session) => ({
+            studioId: session.studioId,
+            placeName: session.placeName,
+            placeId: session.placeId,
+            connectedAt: new Date(session.connectedAt).toISOString(),
+            transport: session.transport,
+            pluginVersion: session.pluginVersion,
+            buildId: session.buildId,
+            stale: pluginStalenessWarning(session.buildId) ?? false,
+            active: session.studioId === active,
+          })),
+          activeStudioId: active,
+        },
+        active === null && sessions.length > 1
+          ? "No place is selected. Ask the user which one they mean, then call " +
+              "set_active_studio."
+          : undefined,
       );
     },
   );
@@ -104,9 +123,12 @@ export function registerSessionTools(context: ToolContext): void {
       name: "set_active_studio",
       title: "Set active Studio",
       description:
-        "Chooses which connected Studio instance every other tool targets by " +
-        "default. Use it after list_studios when several places are open. The " +
-        "choice persists for the rest of the session.",
+        "Chooses which connected Studio window every other tool targets by " +
+        "default. Use it after list_studios when several places are open, and " +
+        "again whenever the user says to switch to another place.\n\n" +
+        "The choice persists until it is changed or that Studio disconnects. " +
+        "While several Studios are connected and none has been chosen, tools " +
+        "refuse with AMBIGUOUS_STUDIO rather than guessing.",
       inputSchema: {
         studioId: z
           .string()
