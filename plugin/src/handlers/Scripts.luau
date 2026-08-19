@@ -107,11 +107,20 @@ function Scripts.read(params: { [string]: any }): { [string]: any }
 end
 
 --[[
-	Applies every edit as one undoable transaction.
+	Applies every edit in a batch, or none of them.
 
-	Edits are grouped per script so each one is written once, and the whole batch
-	sits inside a single recording: if the fourth script's `find` text is missing,
-	the first three revert and the place is exactly as the user left it.
+	Atomicity here cannot come from ChangeHistoryService. A recording captures
+	instance changes, but `UpdateSourceAsync` goes through the script editor's own
+	per-document history, so cancelling a recording leaves an already-written
+	script edited -- measured, not assumed. Wrapping this in `Undo.record` would
+	therefore promise a rollback that never happens.
+
+	So the batch is a two-phase commit instead. Phase one reads and transforms
+	every script without writing anything, which is where essentially all failures
+	live: a missing `find`, an ambiguous one, a bad line range, conflicting edits.
+	Phase two writes the finished text. If a write fails there -- realistically
+	only a locked or package-owned script -- the scripts already written are
+	restored from the source captured in phase one.
 ]]
 function Scripts.edit(params: { [string]: any }): { [string]: any }
 	local edits = params.edits
@@ -124,7 +133,6 @@ function Scripts.edit(params: { [string]: any }): { [string]: any }
 		)
 	end
 
-	-- Resolve and validate everything up front, before opening a recording.
 	local order: { LuaSourceContainer } = {}
 	local grouped: { [Instance]: { TextEdit.Edit } } = {}
 	for position, edit in edits do
@@ -139,33 +147,55 @@ function Scripts.edit(params: { [string]: any }): { [string]: any }
 		table.insert(bucket :: { TextEdit.Edit }, edit)
 	end
 
+	-- Phase one: transform everything in memory. Any failure raises here, with
+	-- nothing written and the place untouched.
+	type Pending = { target: LuaSourceContainer, before: string, after: string }
+	local pending: { Pending } = {}
+	for _, target in order do
+		local before = ScriptEdit.read(target)
+		local after = TextEdit.apply(target:GetFullName(), before, grouped[target] :: { TextEdit.Edit })
+		table.insert(pending, { target = target, before = before, after = after })
+	end
+
+	-- Phase two: write. `written` is the compensation log for a mid-batch failure.
+	local written: { Pending } = {}
 	local memo: Paths.NameIndex = {}
-	return Undo.record("StudioMCP.ScriptEdit", "MCP script edit", function()
-		local results: { { [string]: any } } = {}
+	local results: { { [string]: any } } = {}
 
-		for _, target in order do
-			local bucket = grouped[target] :: { TextEdit.Edit }
-			local before = 0
-			local after = 0
-
-			ScriptEdit.write(target, function(source)
-				before = #TextEdit.toLines(source)
-				local updated = TextEdit.apply(target:GetFullName(), source, bucket)
-				after = #TextEdit.toLines(updated)
-				return updated
+	for _, entry in pending do
+		-- Wrapped in a closure rather than passed to pcall directly: `write`
+		-- returns nothing, and pcall's typed signature expects a value back.
+		local ok, err = pcall(function()
+			ScriptEdit.write(entry.target, function()
+				return entry.after
 			end)
+		end)
 
-			table.insert(results, {
-				path = Paths.of(target, memo),
-				className = target.ClassName,
-				edits = #bucket,
-				lineCount = after,
-				lineDelta = after - before,
-			})
+		if not ok then
+			for index = #written, 1, -1 do
+				local done = written[index]
+				-- Best effort: a restore that fails leaves that script edited, and
+				-- the original error still describes what actually went wrong.
+				pcall(function()
+					ScriptEdit.write(done.target, function()
+						return done.before
+					end)
+				end)
+			end
+			error(err, 0)
 		end
 
-		return { items = results, undoStep = "MCP script edit" }
-	end)
+		table.insert(written, entry)
+		table.insert(results, {
+			path = Paths.of(entry.target, memo),
+			className = entry.target.ClassName,
+			edits = #(grouped[entry.target] :: { TextEdit.Edit }),
+			lineCount = #TextEdit.toLines(entry.after),
+			lineDelta = #TextEdit.toLines(entry.after) - #TextEdit.toLines(entry.before),
+		})
+	end
+
+	return { items = results }
 end
 
 --[[

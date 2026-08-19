@@ -111,6 +111,28 @@ fails("CONFLICTING_EDITS", function()
 	})
 end)
 
+-- Overlap is still caught when the higher edit shrinks the file below the lower
+-- edit's endLine. Validating inside the apply loop reported BAD_RANGE here, and
+-- quoted the shrunken line count, which sends the agent off correcting a range
+-- that was never the problem.
+fails("CONFLICTING_EDITS", function()
+	apply({
+		{ path = "x", startLine = 3, endLine = 6, replacement = "a" },
+		{ path = "x", startLine = 5, endLine = 7, replacement = "b" },
+	})
+end)
+
+-- A genuine BAD_RANGE in a batch reports the real line count, not one an
+-- earlier edit in the same batch produced.
+do
+	local ok, err = pcall(apply, {
+		{ path = "x", startLine = 1, endLine = 5, replacement = "a" },
+		{ path = "x", startLine = 7, endLine = 99, replacement = "b" },
+	})
+	assert(not ok and err.code == "BAD_RANGE", "expected BAD_RANGE")
+	assert(string.find(err.message, "7 lines", 1, true) ~= nil, "wrong line count: " .. err.message)
+end
+
 -- Out-of-range lines.
 fails("BAD_RANGE", function()
 	apply({ { path = "x", startLine = 99, replacement = "" } })

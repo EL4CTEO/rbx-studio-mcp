@@ -203,28 +203,34 @@ function TextEdit.apply(path: string, source: string, edits: { Edit }): string
 			return a.startLine > b.startLine
 		end)
 
+		-- Every range is checked against the file as the agent read it, before any
+		-- of them is applied. Validating inside the apply loop instead would test
+		-- later edits against a file the earlier ones had already resized, which
+		-- reports an invented line count and hides genuine overlaps behind a
+		-- spurious BAD_RANGE.
+		local lineCount = #lines
 		for index, edit in lineEdits do
-			if edit.startLine < 1 or edit.startLine > #lines + 1 then
+			if edit.startLine < 1 or edit.startLine > lineCount + 1 then
 				Dispatch.fail(
 					"BAD_RANGE",
-					string.format("startLine %d is outside %s, which has %d lines.", edit.startLine, path, #lines),
+					string.format("startLine %d is outside %s, which has %d lines.", edit.startLine, path, lineCount),
 					"Call script_read on this script first. Line numbers shift after every edit."
 				)
 			end
-			if edit.endLine < edit.startLine - 1 or edit.endLine > #lines then
+			if edit.endLine < edit.startLine - 1 or edit.endLine > lineCount then
 				Dispatch.fail(
 					"BAD_RANGE",
 					string.format(
 						"endLine %d is invalid for %s (%d lines): it must be at least startLine - 1 and at most the line count.",
 						edit.endLine,
 						path,
-						#lines
+						lineCount
 					),
 					"Set endLine one below startLine to insert without replacing anything."
 				)
 			end
 
-			-- Sorted descending, so the previous entry is the next range down the
+			-- Sorted descending, so the previous entry is the next range up the
 			-- file. Overlapping ranges would make the result depend on apply order.
 			local previous = lineEdits[index - 1]
 			if previous and edit.endLine >= previous.startLine then
@@ -241,7 +247,9 @@ function TextEdit.apply(path: string, source: string, edits: { Edit }): string
 					"Merge them into one edit spanning the whole range."
 				)
 			end
+		end
 
+		for _, edit in lineEdits do
 			local result: { string } = {}
 			table.move(lines, 1, edit.startLine - 1, 1, result)
 			for _, line in TextEdit.toLines(edit.replacement) do

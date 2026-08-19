@@ -30,7 +30,6 @@ interface EditResponse {
     lineCount: number;
     lineDelta: number;
   }>;
-  undoStep: string;
 }
 
 interface GrepResponse {
@@ -145,10 +144,10 @@ export function registerScriptTools(context: ToolContext): void {
       description:
         "Edits Luau source through the Studio script editor. This is the tool to " +
         "use for any change to existing code.\n\n" +
-        "Every edit in one call is applied as a single transaction: they land as " +
-        "one Ctrl+Z for the user, and if any edit fails the whole batch is rolled " +
-        "back rather than left half applied. So batch related changes together, " +
-        "even across different scripts.\n\n" +
+        "Every edit in one call is all-or-nothing: the whole batch is resolved " +
+        "against current source before anything is written, so if one edit cannot " +
+        "be applied nothing is. Batch related changes together, even across " +
+        "different scripts.\n\n" +
         "Each edit picks exactly one mode:\n" +
         "  find/replace — literal text, not a pattern. Preferred: it survives line " +
         "numbers shifting. Fails if the text is not unique, unless you set " +
@@ -159,7 +158,9 @@ export function registerScriptTools(context: ToolContext): void {
         "  source — replaces the whole script. Only for small files or a rewrite; " +
         "it discards anything the user changed since you read it.\n\n" +
         "Writes go through `ScriptEditorService:UpdateSourceAsync`, so an open " +
-        "editor tab updates in place and unsaved work is preserved.",
+        "editor tab updates in place and unsaved work is preserved. Undo for " +
+        "source changes is the script editor's own, per script — Ctrl+Z in a " +
+        "script tab reverts that script, not the whole batch.",
       inputSchema: {
         edits: z
           .array(
@@ -227,7 +228,6 @@ export function registerScriptTools(context: ToolContext): void {
       return table(
         ["path", "className", "edits", "lineCount", "lineDelta"],
         response.items as unknown as Array<Record<string, unknown>>,
-        { more: `applied as one undo step, "${response.undoStep}"` },
       );
     },
   );
@@ -302,10 +302,21 @@ export function registerScriptTools(context: ToolContext): void {
       );
 
       if (response.total === 0) {
+        if (response.searched === 0) {
+          return text(
+            args.path
+              ? `No scripts under "${args.path}" to search.`
+              : "This place contains no scripts.",
+          );
+        }
+        // Suggesting `literal` to someone who already set it reads as though the
+        // tool did not register the argument.
         return text(
           `No matches in ${response.searched} script(s).\n` +
-            "Check case, and remember patterns are Lua patterns — set `literal` to " +
-            "search for the text exactly as written.",
+            (args.literal
+              ? "The match is literal and case-sensitive unless you set `ignoreCase`."
+              : "Check case, and remember patterns are Lua patterns — set `literal` " +
+                "to search for the text exactly as written."),
         );
       }
 

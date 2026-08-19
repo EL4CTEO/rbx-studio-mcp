@@ -18,10 +18,15 @@ Other servers assign `script.Source` directly. When that script is open in the S
 
 This server routes every write through `ScriptEditorService:UpdateSourceAsync`, which is the API Roblox added to close exactly that gap, and reads through `GetEditorSource` so the agent sees what you see rather than stale saved text.
 
-Every mutation is also wrapped in a `ChangeHistoryService` recording:
+A batch of edits is also all-or-nothing. Every script is read and transformed in
+memory before anything is written, so a `find` that matches nothing — or matches
+twice — fails with the place untouched rather than half-edited.
 
-- one agent action is **one Ctrl+Z**, named after the tool that did it
-- a batch that fails half way through is **cancelled**, not left half-applied
+Instance changes are wrapped in a `ChangeHistoryService` recording, so one agent
+action is **one Ctrl+Z**, named after the tool that did it. Source changes are
+not: `UpdateSourceAsync` goes through the script editor's own per-document
+history, so Ctrl+Z in a script tab reverts that script. Anything claiming a
+recording rolls back a script edit has not tested it — we did, and it does not.
 
 ## 3. It stays cheap in context
 
