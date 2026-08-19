@@ -12,7 +12,11 @@ interface SnapshotResponse {
   frame: Record<string, number | undefined>;
   scene: Record<string, number | undefined>;
   network: Record<string, number | undefined>;
-  memory: { totalMb?: number; categories: Array<{ category: string; megabytes: number }> };
+  memory: {
+    totalMb?: number;
+    trackingEnabled?: boolean;
+    categories: Array<{ category: string; megabytes: number }>;
+  };
 }
 
 interface ProfileResponse {
@@ -155,6 +159,15 @@ export function registerPerfTools(context: ToolContext): void {
         parts.push(
           "\nMemory by category (MB):\n" +
             table(["category", "megabytes"], categories).content[0]!.text,
+        );
+      } else {
+        // An absent breakdown beside a healthy total reads as "this place uses
+        // no memory", so say which of the two reasons it is.
+        parts.push(
+          snapshot.memory.trackingEnabled === false
+            ? "\n[No memory breakdown: Stats.MemoryTrackingEnabled is off in this session.]"
+            : "\n[No memory breakdown available. Studio populates it during a " +
+              "playtest — press Play and snapshot again.]",
         );
       }
       return text(parts.join("\n"));

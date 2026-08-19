@@ -62,6 +62,16 @@ local function millis(name: string): number?
 	return if seconds then round(seconds * 1000, 3) else nil
 end
 
+local function flag(name: string): boolean?
+	local ok, value = pcall(function()
+		return (Stats :: any)[name]
+	end)
+	if ok and typeof(value) == "boolean" then
+		return value
+	end
+	return nil
+end
+
 local function rounded(name: string, places: number): number?
 	local value = stat(name)
 	return if value then round(value, places) else nil
@@ -143,14 +153,31 @@ end
 	its Performance and Memory tabs.
 ]]
 function Perf.snapshot(): { [string]: any }
+	--[[
+		The breakdown comes back as a table whose shape the API dump only describes
+		as "Array". It is read structurally rather than assumed: a map of
+		category -> megabytes, or a list of records carrying a name and a number.
+		Guessing one shape silently produced an empty breakdown next to a
+		perfectly good total, which reads as "this place uses no memory".
+	]]
 	local memory: { { [string]: any } } = {}
 	local okMemory, categories = pcall(function()
 		return Stats:GetMemoryUsageMbAllCategories()
 	end)
+
 	if okMemory and typeof(categories) == "table" then
-		for name, value in categories :: { [string]: any } do
-			if typeof(value) == "number" and value > 0 then
-				table.insert(memory, { category = name, megabytes = round(value, 2) })
+		for key, value in categories :: { [any]: any } do
+			if typeof(value) == "number" then
+				if value > 0 then
+					table.insert(memory, { category = tostring(key), megabytes = round(value, 2) })
+				end
+			elseif typeof(value) == "table" then
+				local record = value :: { [string]: any }
+				local name = record.name or record.Name or record.tag or record.Tag or tostring(key)
+				local amount = record.value or record.Value or record.megabytes or record.mb
+				if typeof(amount) == "number" and amount > 0 then
+					table.insert(memory, { category = tostring(name), megabytes = round(amount, 2) })
+				end
 			end
 		end
 		table.sort(memory, function(a, b)
@@ -184,6 +211,9 @@ function Perf.snapshot(): { [string]: any }
 		},
 		memory = {
 			totalMb = if okTotal and typeof(total) == "number" then round(total, 1) else nil,
+			-- Studio only accumulates the per-category breakdown while this is on,
+			-- so an empty list means "not measured" rather than "nothing used".
+			trackingEnabled = flag("MemoryTrackingEnabled"),
 			categories = memory,
 		},
 	}
