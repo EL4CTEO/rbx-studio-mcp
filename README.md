@@ -96,17 +96,15 @@ Roblox's built-in server is the one to beat: it is first-party, free, and has AI
 
 **Not yet built here:** terrain, Creator Store insertion, and screenshots. If you need those today, keep the built-in server alongside this one. The goal is to replace it; that is not true yet.
 
-### What no plugin-based server can do
+### What a plugin genuinely cannot reach
 
-Some of the built-in server's tools are not missing here through inattention. They are closed to plugins by Studio's capability system, and were measured rather than assumed:
+One limit here is settled, and it is Studio's own rule rather than an inference:
 
 | | why |
 |---|---|
-| Starting or stopping a playtest | `RunService:Run()` returns successfully from a plugin and does nothing at all. No error, no warning, no state change. |
-| Breakpoints, stepping, locals | `DebuggerManager` requires the `LocalUser` capability and refuses plugin threads outright. `ScriptContext.ErrorDetailed` needs `RobloxScript`. |
-| Reading a playtest client's output | Studio forbids client sessions from making HTTP requests, so the client half of a playtest can never reach this bridge. |
+| Reading a playtest client's output | Studio forbids client sessions from making HTTP requests, so the client half of a playtest can never reach this bridge. Its server half is fully reachable. |
 
-Roblox's own server runs inside Studio rather than as a plugin, which is why it can do these. Where a capability is closed, this server says so instead of appearing to work: errors still carry stack traces via `ScriptContext.Error`, and the playtest *server* is fully reachable even though its client is not.
+Two others were claimed here earlier and withdrawn. `RunService:Run` and the whole of `ScriptDebuggerService` are marked `PluginSecurity`, so both simulation control and breakpoints are permitted to plugins; the evidence that said otherwise came from testing through `execute_luau`, whose `loadstring` sandbox does not hold every capability the plugin around it does. Retested from the plugin proper before either is described again.
 
 ## Security
 

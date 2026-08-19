@@ -7,6 +7,7 @@ import { registerDiscoverTools } from "./tools/discover.js";
 import { registerInstanceTools } from "./tools/instances.js";
 import { registerExecTools } from "./tools/exec.js";
 import { registerPerfTools } from "./tools/perf.js";
+import { registerPlaytestTools } from "./tools/playtest.js";
 import { registerScriptTools } from "./tools/scripts.js";
 import { registerSessionTools } from "./tools/session.js";
 
@@ -54,6 +55,7 @@ async function main(): Promise<void> {
   registerScriptTools(context);
   registerInstanceTools(context);
   registerPerfTools(context);
+  registerPlaytestTools(context);
   registerExecTools(context);
 
   const shutdown = async (): Promise<void> => {
