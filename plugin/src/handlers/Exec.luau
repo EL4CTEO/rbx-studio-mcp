@@ -95,8 +95,28 @@ function Exec.run(params: { [string]: any }): { [string]: any }
 	local results = table.pack(pcall(chunk :: () -> ...any))
 	local elapsed = os.clock() - started
 
-	-- Disconnected before anything else can log, so the capture holds only what
-	-- this chunk produced.
+	--[[
+		MessageOut is deferred: `print` returns before the event fires, so
+		disconnecting straight after the chunk finished captured nothing at all.
+		A short settle picks the lines up.
+
+		It is bounded and stops as soon as the flow stops, rather than waiting a
+		fixed period, so a chunk that logged nothing costs almost no time and one
+		that logged plenty is not truncated.
+	]]
+	local settleDeadline = os.clock() + 0.5
+	local seen = #output
+	local quietFrames = 0
+	while os.clock() < settleDeadline and quietFrames < 3 do
+		task.wait()
+		if #output == seen then
+			quietFrames += 1
+		else
+			seen = #output
+			quietFrames = 0
+		end
+	end
+
 	connection:Disconnect()
 
 	if not results[1] then

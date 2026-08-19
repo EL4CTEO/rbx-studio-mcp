@@ -14,7 +14,6 @@
 ]]
 
 local Selection = game:GetService("Selection")
-local StudioService = game:GetService("StudioService")
 local Workspace = game:GetService("Workspace")
 
 local Dispatch = require(script.Parent.Parent.Dispatch)
@@ -40,9 +39,10 @@ end
 --[[
 	Casts a ray through the world and reports the first thing it hits.
 
-	`StudioService:GizmoRaycast` is used rather than `Workspace:Raycast` because
-	it respects what Studio itself considers selectable -- locked parts and
-	editor-only gizmos behave the way they do when the user clicks.
+	`Workspace:Raycast`, not `StudioService:GizmoRaycast`. The latter reads like
+	the Studio-aware choice and is not: measured against a place with parts under
+	the ray, it returns nil every time. It picks Studio's own gizmos and
+	adornments, not world geometry.
 ]]
 function Viewport.raycast(params: { [string]: any }): { [string]: any }
 	local origin = toVector(params.origin, "origin")
@@ -59,15 +59,8 @@ function Viewport.raycast(params: { [string]: any }): { [string]: any }
 	config.FilterDescendantsInstances = filter
 
 	local ok, result = pcall(function()
-		return StudioService:GizmoRaycast(origin, direction.Unit * length, config)
+		return Workspace:Raycast(origin, direction.Unit * length, config)
 	end)
-	if not ok then
-		-- Falls back rather than failing: GizmoRaycast is Studio-only and the
-		-- world query is the same answer for anything that is actually solid.
-		ok, result = pcall(function()
-			return Workspace:Raycast(origin, direction.Unit * length, config)
-		end)
-	end
 
 	if not ok or result == nil then
 		return { hit = false, origin = Serialize.value(origin), direction = Serialize.value(direction.Unit) }
