@@ -68,6 +68,35 @@ local startedAt = 0
 local orphanedStacks: { [string]: { stack: string, source: string? } } = {}
 local orphanCount = 0
 
+--[[
+	The engine also writes each trace to the log as plain lines -- "Stack Begin",
+	one "Script 'X', Line N" per frame, then "Stack End" -- which is how the
+	Output window renders it. Having attached the trace to its error already,
+	echoing those lines as ordinary entries is duplication that reads like
+	unrelated output sitting under the failure.
+
+	They are collected instead of stored, and serve as the fallback source of a
+	trace when ScriptContext.Error is unavailable.
+]]
+local STACK_OPEN = "Stack Begin"
+local STACK_CLOSE = "Stack End"
+
+-- If a close never arrives -- a place that prints "Stack Begin" itself -- the
+-- collected lines are released rather than swallowed indefinitely.
+local MAX_STACK_LINES = 60
+
+local collecting: { string }? = nil
+
+local function pushEntry(entry: Entry)
+	table.insert(entries, entry)
+
+	if #entries > CAPACITY + SLACK then
+		local excess = #entries - CAPACITY
+		entries = table.move(entries, excess + 1, #entries, 1, {})
+		dropped += excess
+	end
+end
+
 local function push(message: string, messageType: Enum.MessageType, timestamp: number?)
 	local level = LEVELS[messageType.Value] or "print"
 	local entry: Entry = {
@@ -87,13 +116,7 @@ local function push(message: string, messageType: Enum.MessageType, timestamp: n
 		end
 	end
 
-	table.insert(entries, entry)
-
-	if #entries > CAPACITY + SLACK then
-		local excess = #entries - CAPACITY
-		entries = table.move(entries, excess + 1, #entries, 1, {})
-		dropped += excess
-	end
+	pushEntry(entry)
 end
 
 --[[
@@ -153,6 +176,40 @@ function LogBuffer.start()
 	end
 
 	LogService.MessageOut:Connect(function(message: string, messageType: Enum.MessageType)
+		local buffered = collecting
+
+		if buffered then
+			if message == STACK_CLOSE then
+				collecting = nil
+				-- Only used when nothing better arrived. ScriptContext.Error
+				-- gives the originating instance as well, so it wins when both
+				-- are available.
+				if #buffered > 0 then
+					local recent = entries[#entries]
+					if recent and recent.level == "error" and recent.stack == nil then
+						recent.stack = table.concat(buffered, "\n")
+					end
+				end
+				return
+			end
+
+			if #buffered < MAX_STACK_LINES then
+				table.insert(buffered, message)
+				return
+			end
+
+			-- Not a stack after all. Release what was held, in order, and carry
+			-- on treating this as ordinary output.
+			collecting = nil
+			pushEntry({ level = "print", message = STACK_OPEN, timestamp = os.time() })
+			for _, held in buffered do
+				pushEntry({ level = "print", message = held, timestamp = os.time() })
+			end
+		elseif message == STACK_OPEN then
+			collecting = {}
+			return
+		end
+
 		push(message, messageType)
 	end)
 
