@@ -85,7 +85,7 @@ Server and plugin default to **44755**. Change it with `--port` (or `ROBLOX_STUD
 
 | | tools | transport | editor-safe writes | undo recording | live API dump | licence |
 |---|---|---|---|---|---|---|
-| **this** | 14 | **SSE push** | **yes** | **yes, cancel on failure** | **yes** | MIT |
+| **this** | 18 | **SSE push** | **yes** | **yes, cancel on failure** | **yes** | MIT |
 | [Roblox built-in](https://create.roblox.com/docs/studio/mcp) | ~27 | stdio from Studio | partial | — | n/a | closed source |
 | [Chrrxs](https://github.com/Chrrxs/robloxstudio-mcp) | ~40 | HTTP poll | no | partial | no | MIT |
 | [drgost1](https://github.com/drgost1/robloxstudio-mcp) | 51 | HTTP poll 500 ms | no | yes | no | MIT |
@@ -94,7 +94,19 @@ Server and plugin default to **44755**. Change it with `--port` (or `ROBLOX_STUD
 
 Roblox's built-in server is the one to beat: it is first-party, free, and has AI mesh and material generation. It is also closed source, caps results at 10–50, and has no bulk instance or property operations and no undo integration.
 
-**Not yet built here:** `execute_luau`, playtest control, console output, screenshots, terrain, Creator Store insertion, and the AI generation tools. If you need those today, keep the built-in server alongside this one. The goal is to replace it; that is not true yet.
+**Not yet built here:** terrain, Creator Store insertion, and screenshots. If you need those today, keep the built-in server alongside this one. The goal is to replace it; that is not true yet.
+
+### What no plugin-based server can do
+
+Some of the built-in server's tools are not missing here through inattention. They are closed to plugins by Studio's capability system, and were measured rather than assumed:
+
+| | why |
+|---|---|
+| Starting or stopping a playtest | `RunService:Run()` returns successfully from a plugin and does nothing at all. No error, no warning, no state change. |
+| Breakpoints, stepping, locals | `DebuggerManager` requires the `LocalUser` capability and refuses plugin threads outright. `ScriptContext.ErrorDetailed` needs `RobloxScript`. |
+| Reading a playtest client's output | Studio forbids client sessions from making HTTP requests, so the client half of a playtest can never reach this bridge. |
+
+Roblox's own server runs inside Studio rather than as a plugin, which is why it can do these. Where a capability is closed, this server says so instead of appearing to work: errors still carry stack traces via `ScriptContext.Error`, and the playtest *server* is fully reachable even though its client is not.
 
 ## Security
 
