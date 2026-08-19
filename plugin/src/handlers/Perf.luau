@@ -165,6 +165,16 @@ function Perf.snapshot(): { [string]: any }
 		return Stats:GetMemoryUsageMbAllCategories()
 	end)
 
+	-- Why the breakdown is missing matters: a refused call, an unexpected shape
+	-- and a genuinely empty result all look identical from the outside, and each
+	-- needs a different response from whoever is reading this.
+	local memoryProblem: string? = nil
+	if not okMemory then
+		memoryProblem = string.format("Stats refused the call: %s", tostring(categories))
+	elseif typeof(categories) ~= "table" then
+		memoryProblem = string.format("Stats returned a %s, not a table", typeof(categories))
+	end
+
 	if okMemory and typeof(categories) == "table" then
 		for key, value in categories :: { [any]: any } do
 			if typeof(value) == "number" then
@@ -215,6 +225,7 @@ function Perf.snapshot(): { [string]: any }
 			-- so an empty list means "not measured" rather than "nothing used".
 			trackingEnabled = flag("MemoryTrackingEnabled"),
 			categories = memory,
+			problem = if #memory == 0 then memoryProblem else nil,
 		},
 	}
 end

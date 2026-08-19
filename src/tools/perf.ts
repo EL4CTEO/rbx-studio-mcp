@@ -15,14 +15,29 @@ interface SnapshotResponse {
   memory: {
     totalMb?: number;
     trackingEnabled?: boolean;
+    problem?: string;
     categories: Array<{ category: string; megabytes: number }>;
   };
 }
 
+/**
+ * Roblox's profiler payload. Undocumented, so this is the shape observed from a
+ * real capture: `Nodes` is a call tree and `Functions` the flat per-function
+ * totals, which is the view the Script Performance window actually shows.
+ */
 interface ProfileResponse {
   seconds: number;
   frequency: number;
-  data?: unknown;
+  data?: {
+    Version?: number;
+    Functions?: Array<{
+      TotalDuration?: number;
+      Name?: string;
+      Source?: string;
+      Line?: number;
+      IsPlugin?: boolean;
+    }>;
+  };
   raw?: string;
 }
 
@@ -120,6 +135,14 @@ export function registerPerfTools(context: ToolContext): void {
           .max(10000)
           .default(1000)
           .describe("profile only: samples per second. Higher is more precise and costlier."),
+        includePlugins: z
+          .boolean()
+          .default(false)
+          .describe(
+            "profile only: include Studio plugins in the results. Off by default " +
+              "— an idle Studio is mostly plugin activity, which buries the " +
+              "place's own scripts.",
+          ),
         studioId: z.string().optional().describe("Target Studio; omit for the active one."),
       },
       readOnly: true,
@@ -132,10 +155,42 @@ export function registerPerfTools(context: ToolContext): void {
           // The plugin blocks for the sample, so the deadline must outlast it.
           { studioId: args.studioId, timeoutMs: (args.seconds + 20) * 1_000 },
         );
-        return json(
-          response,
-          `Sampled for ${response.seconds}s at ${response.frequency}Hz.`,
-        );
+        const functions = response.data?.Functions ?? [];
+        if (functions.length === 0) {
+          return text(
+            `Nothing ran during the ${response.seconds}s sample.\n` +
+              "The profiler only sees code that executes. Start a playtest, or " +
+              "profile while the behaviour you are investigating is happening.",
+          );
+        }
+
+        const ranked = [...functions]
+          .sort((a, b) => (b.TotalDuration ?? 0) - (a.TotalDuration ?? 0))
+          .filter((entry) => (args.includePlugins ? true : entry.IsPlugin !== true))
+          .slice(0, 25)
+          .map((entry) => ({
+            // A frame with no Source is a C function or a plugin's root entry.
+            source: entry.Source ?? "(engine)",
+            name: entry.Name ?? "",
+            line: entry.Line || "",
+            ms: Math.round((entry.TotalDuration ?? 0) * 1000 * 1000) / 1000,
+            plugin: entry.IsPlugin === true ? "yes" : "",
+          }));
+
+        if (ranked.length === 0) {
+          return text(
+            `Every sample in ${response.seconds}s came from Studio plugins, not ` +
+              "from this place's scripts.\n" +
+              "No game code consumed measurable CPU. Pass `includePlugins` to see " +
+              "the plugin activity anyway.",
+          );
+        }
+
+        return table(["source", "name", "line", "ms", "plugin"], ranked, {
+          more:
+            `sampled ${response.seconds}s at ${response.frequency}Hz, ` +
+            `slowest first, ms is total time in that function`,
+        });
       }
 
       const snapshot = await bridge.call<SnapshotResponse>(
@@ -166,8 +221,9 @@ export function registerPerfTools(context: ToolContext): void {
         parts.push(
           snapshot.memory.trackingEnabled === false
             ? "\n[No memory breakdown: Stats.MemoryTrackingEnabled is off in this session.]"
-            : "\n[No memory breakdown available. Studio populates it during a " +
-              "playtest — press Play and snapshot again.]",
+            : `\n[No memory breakdown: ${
+                snapshot.memory.problem ?? "Studio returned an empty one."
+              }]`,
         );
       }
       return text(parts.join("\n"));
