@@ -5,7 +5,7 @@ import {
   detailSchema,
   json,
   limitSchema,
-  page,
+  table,
   text,
   type Detail,
   type ToolResult,
@@ -43,20 +43,14 @@ function decodeCursor(cursor: string | undefined): number {
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : 0;
 }
 
-/** Trims a page down to the fields the requested detail level pays for. */
-function project(
-  items: ListResponse["items"],
-  detail: Detail,
-): Array<Record<string, unknown>> {
-  if (detail === "concise") {
-    return items.map((item) => ({ path: item.path, className: item.className }));
-  }
-  return items;
-}
-
-function pageOf(response: ListResponse, limit: number, detail: Detail, more?: string): ToolResult {
+/**
+ * Renders a hierarchy page as a table. `concise` drops the child count, which
+ * is the only column a pure scan does not need.
+ */
+function pageOf(response: ListResponse, detail: Detail, more?: string): ToolResult {
+  const columns = detail === "concise" ? ["path", "className"] : ["path", "className", "childCount"];
   const nextOffset = response.offset + response.items.length;
-  return page(project(response.items, detail), {
+  return table(columns, response.items as unknown as Array<Record<string, unknown>>, {
     total: response.total,
     ...(nextOffset < response.total ? { nextCursor: encodeCursor(nextOffset) } : {}),
     ...(more ? { more } : {}),
@@ -78,8 +72,11 @@ export function registerDiscoverTools(context: ToolContext): void {
         "Use this to orient yourself in an unfamiliar place. Use `find` instead " +
         "when you already know what you are looking for; a deep `tree` over a " +
         "whole place wastes context on instances you will never touch.\n\n" +
-        "Starts at the DataModel root when `path` is omitted, listing services. " +
-        "CoreGui, CorePackages, Chat and JointsService are skipped as engine noise.",
+        "With `path` omitted it lists the containers you author in — Workspace, " +
+        "ReplicatedStorage, ServerScriptService and friends — plus any other " +
+        "service that actually holds content. The ~100 empty engine singletons " +
+        "Roblox exposes at the root are hidden. Pass an explicit `path` to look " +
+        "inside one of them anyway.",
       inputSchema: {
         path: z
           .string()
@@ -122,7 +119,7 @@ export function registerDiscoverTools(context: ToolContext): void {
         },
         { studioId: args.studioId },
       );
-      return pageOf(response, args.limit, args.detail);
+      return pageOf(response, args.detail);
     },
   );
 
@@ -278,12 +275,7 @@ export function registerDiscoverTools(context: ToolContext): void {
             "Try a shorter `nameContains`, or drop a filter to widen the search.",
         );
       }
-      return pageOf(
-        response,
-        args.limit,
-        args.detail,
-        `searched ${response.searched ?? 0} instances`,
-      );
+      return pageOf(response, args.detail, `searched ${response.searched ?? 0} instances`);
     },
   );
 }

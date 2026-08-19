@@ -98,6 +98,65 @@ export function page(items: unknown[], meta: PageMeta = {}): ToolResult {
   return text(parts.join(""));
 }
 
+/**
+ * Renders a list of uniform records as a pipe-delimited table.
+ *
+ * A hierarchy listing pretty-printed as JSON spends five lines and a dozen
+ * punctuation tokens per instance to repeat the same three keys. One header
+ * plus one line per row carries the same information for roughly a quarter of
+ * the tokens, and reads better in a transcript. `json` is still the right
+ * choice for nested or heterogeneous data.
+ */
+export function table(
+  columns: string[],
+  rows: Array<Record<string, unknown>>,
+  meta: PageMeta = {},
+): ToolResult {
+  if (rows.length === 0) {
+    return text(meta.more ?? "No matches.");
+  }
+
+  const render = (row: Record<string, unknown>): string =>
+    columns.map((column) => formatCell(row[column])).join(" | ");
+
+  const lines: string[] = [columns.join(" | ")];
+  let used = lines[0]!.length;
+  let dropped = 0;
+
+  for (const row of rows) {
+    const line = render(row);
+    if (used + line.length + 1 > CHARACTER_LIMIT - 500) {
+      dropped = rows.length - (lines.length - 1);
+      break;
+    }
+    lines.push(line);
+    used += line.length + 1;
+  }
+
+  const trailer: string[] = [];
+  if (dropped > 0) {
+    trailer.push(
+      `[${dropped} rows dropped to stay under the ${CHARACTER_LIMIT}-character ` +
+        `response limit — re-run with a smaller \`limit\`]`,
+    );
+  }
+  if (meta.total !== undefined && meta.total > rows.length) {
+    trailer.push(`[showing ${rows.length} of ${meta.total} matches]`);
+  }
+  if (meta.nextCursor) {
+    trailer.push(`[more results — call again with cursor: "${meta.nextCursor}"]`);
+  }
+  if (meta.more) trailer.push(`[${meta.more}]`);
+
+  return text([...lines, ...(trailer.length > 0 ? ["", ...trailer] : [])].join("\n"));
+}
+
+function formatCell(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
 /** Greedily keeps the longest prefix of `items` that serialises under `budget`. */
 function fitToLimit(items: unknown[], budget: number): unknown[] {
   const kept: unknown[] = [];

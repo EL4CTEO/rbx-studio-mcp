@@ -23,20 +23,91 @@ local Serialize = require(script.Parent.Parent.Serialize)
 -- Protects against a `find` over a whole place blocking Studio's main thread.
 local MAX_VISITS = 200_000
 
--- Services that are large, generated, or irrelevant to authoring. Skipped when
--- walking from the DataModel root unless the caller asks for them by path.
-local NOISY_SERVICES = {
+--[[
+	`game:GetChildren()` returns ~122 instances, nearly all of them engine
+	singletons like TraceRouteService and HSRDataContentProvider that no one
+	authors content into. Listing them costs thousands of tokens and buries the
+	handful of containers that matter.
+
+	So the root level is filtered by rule rather than by blocklist: always show
+	the containers developers actually work in, always hide the engine-internal
+	ones, and for everything else show it only if it actually holds content.
+	That last clause is what keeps this correct as Roblox adds services -- an
+	unusual service with real content in it still appears.
+]]
+local ROOT_ALWAYS = {
+	Workspace = true,
+	Players = true,
+	Lighting = true,
+	ReplicatedFirst = true,
+	ReplicatedStorage = true,
+	ServerScriptService = true,
+	ServerStorage = true,
+	StarterGui = true,
+	StarterPack = true,
+	StarterPlayer = true,
+	SoundService = true,
+	Teams = true,
+	MaterialService = true,
+	TextChatService = true,
+}
+
+local ROOT_NEVER = {
 	CoreGui = true,
 	CorePackages = true,
-	Chat = true,
-	JointsService = true,
-	TextChatService = false,
+	PluginGuiService = true,
+	PluginDebugService = true,
+	RemoteDebuggerServer = true,
+	SelectionHighlightManager = true,
+	Packages = true,
+	Visit = true,
 }
 
 local Discover = {}
 
+--[[
+	The top-level service an instance sits under, or the instance itself when it
+	is one. Used to hide whole branches (everything inside CoreGui) rather than
+	just the service node.
+]]
+local function topService(instance: Instance): Instance?
+	if instance == game then
+		return nil
+	end
+
+	local current = instance
+	local parent = current.Parent
+	while parent ~= nil and parent ~= game do
+		current = parent
+		parent = current.Parent
+	end
+
+	-- Landing on `game` means `current` is the service. Landing on nil means the
+	-- instance is detached from the DataModel, which is not noise to filter.
+	if parent == game then
+		return current
+	end
+	return nil
+end
+
+local function isVisibleService(service: Instance): boolean
+	if ROOT_NEVER[service.Name] then
+		return false
+	end
+	if ROOT_ALWAYS[service.Name] then
+		return true
+	end
+	return #service:GetChildren() > 0
+end
+
+--[[
+	True for instances the caller almost certainly did not mean to see. Only
+	applied when walking from the DataModel root; an explicit `path` into a
+	hidden service is always honoured.
+]]
 local function isNoisy(instance: Instance): boolean
-	return instance.Parent == game and NOISY_SERVICES[instance.Name] == true
+	local service = topService(instance)
+	return service ~= nil and not isVisibleService(service)
 end
 
 local function summarise(instance: Instance): { [string]: any }

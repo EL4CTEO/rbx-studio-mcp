@@ -8,13 +8,53 @@
  *
  * Usage: node scripts/build-plugin.mjs [outputPath]
  */
+import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const sourceDir = join(root, "plugin", "src");
 const outputPath = resolve(process.argv[2] ?? join(root, "build", "StudioMCP.rbxmx"));
+
+const NEWLINE = "\n";
+
+/**
+ * Fingerprints plugin/src so the running plugin can be compared against the
+ * sources this package ships. Must stay byte-identical to
+ * `expectedPluginBuildId` in src/lib/pluginbuild.ts — line endings are
+ * normalised because git checkouts differ across platforms.
+ */
+function buildId(dir) {
+  const files = [];
+
+  const walk = (current) => {
+    for (const entry of readdirSync(current, { withFileTypes: true })) {
+      const path = join(current, entry.name);
+      if (entry.isDirectory()) {
+        walk(path);
+      } else if (entry.name.endsWith(".luau")) {
+        files.push([
+          relative(dir, path).split("\\").join("/"),
+          readFileSync(path, "utf8"),
+        ]);
+      }
+    }
+  };
+  walk(dir);
+  files.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+
+  const hash = createHash("sha256");
+  for (const [path, contents] of files) {
+    hash.update(path);
+    hash.update(NEWLINE);
+    hash.update(contents.replace(/\r\n/g, NEWLINE));
+    hash.update(NEWLINE);
+  }
+  return hash.digest("hex").slice(0, 12);
+}
+
+const stamp = buildId(sourceDir);
 
 let nextReferent = 0;
 
@@ -47,7 +87,7 @@ function renderItem(node, depth) {
     properties.push(`${pad}    <token name="RunContext">0</token>`);
   }
 
-  const children = node.children.map((child) => renderItem(child, depth + 1)).join("\n");
+  const children = node.children.map((child) => renderItem(child, depth + 1)).join(NEWLINE);
 
   return [
     `${pad}<Item class="${node.className}" referent="${referent}">`,
@@ -56,7 +96,7 @@ function renderItem(node, depth) {
     `${pad}  </Properties>`,
     ...(children ? [children] : []),
     `${pad}</Item>`,
-  ].join("\n");
+  ].join(NEWLINE);
 }
 
 /**
@@ -76,7 +116,13 @@ function buildTree(dir, name) {
     }
     if (!entry.name.endsWith(".luau")) continue;
 
-    const source = readFileSync(path, "utf8");
+    let source = readFileSync(path, "utf8");
+    if (entry.name === "Config.luau") {
+      // Stamped with the fingerprint of the pre-injection sources, which is
+      // exactly what the server recomputes at runtime.
+      source = source.replace('Config.BUILD_ID = "dev"', `Config.BUILD_ID = "${stamp}"`);
+    }
+
     if (entry.name === "init.server.luau") {
       node.className = "Script";
       node.source = source;
@@ -104,7 +150,8 @@ const document = [
   renderItem(tree, 1),
   "</roblox>",
   "",
-].join("\n");
+].join(NEWLINE);
 
 mkdirSync(dirname(outputPath), { recursive: true });
 writeFileSync(outputPath, document, "utf8");
+writeFileSync(join(dirname(outputPath), "plugin-build-id.txt"), stamp + NEWLINE, "utf8");

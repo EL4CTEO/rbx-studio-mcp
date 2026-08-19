@@ -10,6 +10,12 @@
 local Config = {}
 
 Config.PLUGIN_VERSION = "0.1.0"
+
+-- Fingerprint of plugin/src, stamped in by scripts/build-plugin.mjs. The server
+-- computes the same hash from its own copy of the sources and compares, so a
+-- plugin left running from an older build is reported rather than silently
+-- answering with stale handlers. Stays "dev" when the tree is loaded unbuilt.
+Config.BUILD_ID = "dev"
 Config.PROTOCOL_VERSION = 1
 Config.DEFAULT_PORT = 44755
 

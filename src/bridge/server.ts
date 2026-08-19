@@ -221,6 +221,7 @@ function parseIdentity(
     placeName: raw.placeName ?? "Unnamed place",
     placeId: raw.placeId ?? 0,
     pluginVersion: raw.pluginVersion ?? "unknown",
+    buildId: raw.buildId ?? "unknown",
     transport: raw.transport ?? transport,
   };
 }

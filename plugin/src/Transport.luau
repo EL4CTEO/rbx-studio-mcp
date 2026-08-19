@@ -54,6 +54,7 @@ local function identity(transport: string): { [string]: any }
 		placeName = if game.Name ~= "" then game.Name else "Untitled place",
 		placeId = game.PlaceId,
 		pluginVersion = Config.PLUGIN_VERSION,
+		buildId = Config.BUILD_ID,
 		transport = transport,
 	}
 end

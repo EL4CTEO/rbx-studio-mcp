@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { json, text, type ToolResult } from "../lib/format.js";
+import { pluginStalenessWarning } from "../lib/pluginbuild.js";
 import { defineTool, type ToolContext } from "../lib/tool.js";
 
 /** Snapshot the plugin returns for `studio.status`. */
@@ -47,7 +48,14 @@ export function registerSessionTools(context: ToolContext): void {
     },
     async ({ studioId }): Promise<ToolResult> => {
       const status = await bridge.call<StudioStatus>("studio.status", {}, { studioId });
-      return json(status);
+
+      // A stale plugin answers with older handlers and no other symptom, so the
+      // warning rides along with the one call agents are told to make first.
+      const session = bridge
+        .list()
+        .find((entry) => entry.studioId === (studioId ?? bridge.activeId));
+      const warning = pluginStalenessWarning(session?.buildId);
+      return json(status, warning ? `WARNING: ${warning}` : undefined);
     },
   );
 
@@ -82,6 +90,8 @@ export function registerSessionTools(context: ToolContext): void {
           placeId: session.placeId,
           transport: session.transport,
           pluginVersion: session.pluginVersion,
+          buildId: session.buildId,
+          stale: pluginStalenessWarning(session.buildId) ?? false,
           active: session.studioId === active,
         })),
       );

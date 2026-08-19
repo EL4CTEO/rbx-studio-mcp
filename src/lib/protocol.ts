@@ -37,6 +37,8 @@ export interface StudioIdentity {
   placeId: number;
   /** Plugin version, used to warn on protocol drift. */
   pluginVersion: string;
+  /** Fingerprint of the Luau sources the plugin was built from. */
+  buildId: string;
   /** "sse" when the plugin holds a live stream, "poll" for the fallback. */
   transport: "sse" | "poll";
 }
