@@ -13,6 +13,7 @@ local RunService = game:GetService("RunService")
 local Config = require(script.Config)
 local Console = require(script.Console)
 local Dispatch = require(script.Dispatch)
+local LogBuffer = require(script.LogBuffer)
 local Transport = require(script.Transport)
 local Discover = require(script.handlers.Discover)
 local Exec = require(script.handlers.Exec)
@@ -64,6 +65,12 @@ local function canConnect(): (boolean, string?)
 	end
 	return false, "client sessions cannot make HTTP requests -- the server session handles this place"
 end
+
+-- First thing, before any handler or the transport can log: the buffer only
+-- holds what was printed after it subscribed, so every line ahead of this call
+-- is unrecoverable. This runs even in a client session that will never connect,
+-- since the console tool reads it and connectivity is a separate question.
+LogBuffer.start()
 
 local storedPort = plugin:GetSetting(SETTING_PORT)
 if typeof(storedPort) == "number" then

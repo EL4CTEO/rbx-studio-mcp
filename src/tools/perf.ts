@@ -6,6 +6,8 @@ interface ConsoleResponse {
   items: Array<{ level: string; message: string; timestamp?: number }>;
   total: number;
   dropped: number;
+  /** Lines lost to the buffer's capacity, not to this call's limit. */
+  evicted?: number;
 }
 
 interface SnapshotResponse {
@@ -69,8 +71,15 @@ export function registerPerfTools(context: ToolContext): void {
         "`execute_luau` call. An error here usually names the script and line, " +
         "which `script_read` can then open directly.\n\n" +
         "Filter with `level` to see only errors, or `pattern` to follow one " +
-        "subsystem's logging. The log holds the whole session, so prefer a filter " +
-        "over a large `limit`.",
+        "subsystem's logging. Up to 2000 lines are held, so prefer a filter over " +
+        "a large `limit`.\n\n" +
+        "Each connected session keeps its own log, recorded from the moment its " +
+        "plugin loaded — the editor session and a running playtest server do not " +
+        "share one. To read what a playtest printed, target the playtest's " +
+        "studioId (see `list_studios`); the editor's log will not have it. " +
+        "Nothing printed before the plugin loaded is recoverable, and output from " +
+        "the playtest *client* is not reachable at all, because Studio forbids " +
+        "client sessions from making HTTP requests.",
       inputSchema: {
         level: z
           .enum(["print", "info", "warning", "error"])
@@ -104,10 +113,20 @@ export function registerPerfTools(context: ToolContext): void {
       }
 
       const lines = response.items.map((entry) => `[${entry.level}] ${entry.message}`);
-      const trailer =
-        response.dropped > 0
-          ? `\n\n[showing the newest ${response.items.length} of ${response.total} matching lines]`
-          : "";
+      const notes: string[] = [];
+      if (response.dropped > 0) {
+        notes.push(
+          `showing the newest ${response.items.length} of ${response.total} matching lines`,
+        );
+      }
+      // A different loss from the one above, and the only one worth acting on:
+      // these lines are gone from the session entirely, not merely unshown.
+      if (response.evicted) {
+        notes.push(
+          `${response.evicted} older lines have fallen out of the buffer and cannot be recovered`,
+        );
+      }
+      const trailer = notes.length > 0 ? `\n\n[${notes.join("; ")}]` : "";
       return text(lines.join("\n") + trailer);
     },
   );

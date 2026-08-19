@@ -12,13 +12,13 @@
 	because every frame budget a developer reasons about is quoted in ms.
 ]]
 
-local LogService = game:GetService("LogService")
 local ScriptContext = game:GetService("ScriptContext")
 local RunService = game:GetService("RunService")
 local ScriptProfilerService = game:GetService("ScriptProfilerService")
 local Stats = game:GetService("Stats")
 
 local Dispatch = require(script.Parent.Parent.Dispatch)
+local LogBuffer = require(script.Parent.Parent.LogBuffer)
 local Paths = require(script.Parent.Parent.Paths)
 
 -- The log holds thousands of lines in a busy session; an unbounded tail would
@@ -31,13 +31,6 @@ local DEFAULT_LOG_ENTRIES = 100
 local MAX_PROFILE_SECONDS = 30
 local DEFAULT_PROFILE_SECONDS = 5
 local PROFILE_DATA_TIMEOUT = 5
-
-local LEVELS: { [number]: string } = {
-	[Enum.MessageType.MessageOutput.Value] = "print",
-	[Enum.MessageType.MessageInfo.Value] = "info",
-	[Enum.MessageType.MessageWarning.Value] = "warning",
-	[Enum.MessageType.MessageError.Value] = "error",
-}
 
 local Perf = {}
 
@@ -92,27 +85,21 @@ function Perf.console(params: { [string]: any }): { [string]: any }
 	local level = params.level
 	local pattern = params.pattern
 
-	local ok, history = pcall(function()
-		return LogService:GetLogHistory()
-	end)
-	if not ok or typeof(history) ~= "table" then
-		Dispatch.fail(
-			"NO_LOG",
-			"Studio would not return the output log.",
-			"This usually means the Output window has never been opened in this session."
-		)
-	end
+	-- Read from our own buffer, not LogService:GetLogHistory(). See LogBuffer for
+	-- why: the engine's history stops growing after startup in an editor session
+	-- and is empty outright in a playtest, without reporting either as a failure.
+	local history, evicted = LogBuffer.all()
 
 	local entries: { { [string]: any } } = {}
 	local matched = 0
 
-	for _, item in history :: { { [string]: any } } do
-		local kind = LEVELS[item.messageType and item.messageType.Value or -1] or "print"
+	for _, item in history do
+		local kind = item.level
 		if level and kind ~= level then
 			continue
 		end
 
-		local message = tostring(item.message)
+		local message = item.message
 		if pattern then
 			-- An invalid pattern raises rather than failing to match, so it is
 			-- reported as a pattern problem instead of an empty result.
@@ -148,6 +135,9 @@ function Perf.console(params: { [string]: any }): { [string]: any }
 		items = entries,
 		total = matched,
 		dropped = dropped,
+		-- Lines lost to the buffer's own capacity, as opposed to ones trimmed to
+		-- satisfy this call's limit. Only the first is a reason to worry.
+		evicted = if evicted > 0 then evicted else nil,
 	}
 end
 
