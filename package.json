@@ -1,0 +1,45 @@
+{
+  "name": "roblox-studio-mcp",
+  "version": "0.1.0",
+  "description": "Free, open-source MCP server for Roblox Studio. Push-based SSE transport, editor-safe script edits, token-lean tools.",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "roblox-studio-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "plugin",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "typecheck": "tsc --noEmit",
+    "start": "node dist/index.js",
+    "build:plugin": "node scripts/build-plugin.mjs",
+    "build:all": "npm run build && npm run build:plugin",
+    "install:plugin": "node scripts/install-plugin.mjs"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "roblox",
+    "roblox-studio",
+    "luau",
+    "claude",
+    "ai"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.22.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2"
+  }
+}
