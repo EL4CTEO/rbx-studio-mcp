@@ -155,6 +155,10 @@ function Discover.inspect(params: { [string]: any }): { [string]: any }
 
 		local entry: { [string]: any } = {
 			path = Paths.of(target, memo),
+			-- Echoed back so a caller can correlate the answer with what it asked
+			-- for. `path` is the canonical form and often differs: ask about
+			-- "Workspace.Wall" and the answer comes back as "Workspace.Wall[1]".
+			requested = path,
 			className = target.ClassName,
 			properties = properties,
 			childCount = #target:GetChildren(),

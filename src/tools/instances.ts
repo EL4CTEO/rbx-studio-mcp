@@ -243,22 +243,39 @@ export function registerInstanceTools(context: ToolContext): void {
       let targets: unknown[] = args.targets;
       if (needsTypes) {
         const probe = await bridge.call<{
-          items: Array<{ path: string; className: string }>;
+          items: Array<{ path: string; requested?: string; className: string }>;
         }>(
           "discover.inspect",
           { paths: args.targets.flatMap((target) => target.paths), includeChildren: false },
           { studioId: args.studioId },
         );
-        const classOf = new Map(probe.items.map((item) => [item.path, item.className]));
+        // Correlated on the path we asked about, not the one that came back. The
+        // canonical path carries an index where a name is shared, so matching on
+        // it silently found nothing for exactly the ambiguous paths that most
+        // need checking — and the properties were then dropped without a word.
+        const classOf = new Map(
+          probe.items.map((item) => [item.requested ?? item.path, item.className]),
+        );
 
         targets = await Promise.all(
           args.targets.map(async (target, index) => {
             if (!target.properties) return target;
-            // Paths in one entry can span classes; the properties must be valid
-            // for every one of them, so each is checked rather than the first.
+
             const classes = [
               ...new Set(target.paths.map((path) => classOf.get(path)).filter(Boolean)),
             ] as string[];
+            if (classes.length === 0) {
+              throw new ToolError(
+                "UNRESOLVED_TARGET",
+                `Could not read the class of any path in targets[${index}].`,
+                "Check the paths with `find` or `tree`. Properties are typed from " +
+                  "the class, so nothing was changed rather than guessing.",
+              );
+            }
+
+            // Paths in one entry can span classes and the property must exist on
+            // every one, so each is checked. The types agree across classes that
+            // share a property, so the last resolution stands for all of them.
             let properties: Record<string, PropertySpec> | undefined;
             for (const className of classes) {
               properties = await resolveProperties(

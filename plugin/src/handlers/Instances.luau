@@ -84,7 +84,7 @@ end
 	model appears in the Explorer complete rather than assembling itself piece by
 	piece in front of the user.
 ]]
-local function build(spec: { [string]: any }, parent: Instance, created: { { [string]: any } })
+local function build(spec: { [string]: any }, parent: Instance, created: { Instance })
 	local ok, instance = pcall(Instance.new, spec.className)
 	if not ok or typeof(instance) ~= "Instance" then
 		Dispatch.fail(
@@ -123,12 +123,13 @@ local function build(spec: { [string]: any }, parent: Instance, created: { { [st
 		)
 	end
 
+	-- Recorded parent-first, so the response reads top-down like the Explorer.
+	table.insert(created, target)
 	for _, child in (spec.children or {}) :: { { [string]: any } } do
 		build(child, target, created)
 	end
 
 	target.Parent = parent
-	table.insert(created, { path = Paths.of(target), className = target.ClassName })
 end
 
 function Instances.create(params: { [string]: any }): { [string]: any }
@@ -149,15 +150,26 @@ function Instances.create(params: { [string]: any }): { [string]: any }
 	end
 
 	local created, recorded = Undo.record("StudioMCP.Create", "MCP create", function()
-		local built: { { [string]: any } } = {}
+		local built: { Instance } = {}
 		for _, spec in specs do
 			build(spec, Paths.resolve(spec.parent), built)
 		end
 		return built
 	end)
 
+	-- Paths are read only once the whole batch is attached. Formatting them as
+	-- each instance is made produces addresses that do not resolve: a child is
+	-- still detached from the data model while its parent is being assembled, and
+	-- a name shared with a sibling created later reads as unique because that
+	-- sibling does not exist yet.
+	local items: { { [string]: any } } = {}
+	local memo: Paths.NameIndex = {}
+	for _, instance in created do
+		table.insert(items, { path = Paths.of(instance, memo), className = instance.ClassName })
+	end
+
 	return {
-		items = created,
+		items = items,
 		undoStep = if recorded then "MCP create" else nil,
 	}
 end
@@ -319,7 +331,7 @@ function Instances.move(params: { [string]: any }): { [string]: any }
 	end
 
 	local moved, recorded = Undo.record("StudioMCP.Move", "MCP move", function()
-		local results: { { [string]: any } } = {}
+		local results: { { instance: Instance, cloned: boolean } } = {}
 		for _, entry in planned do
 			local target = entry.source
 			if entry.spec.mode == "clone" then
@@ -342,17 +354,25 @@ function Instances.move(params: { [string]: any }): { [string]: any }
 			end
 			target.Parent = entry.destination
 
-			table.insert(results, {
-				path = Paths.of(target),
-				className = target.ClassName,
-				cloned = entry.spec.mode == "clone",
-			})
+			table.insert(results, { instance = target, cloned = entry.spec.mode == "clone" })
 		end
 		return results
 	end)
 
+	-- As with create: a path formatted mid-batch can miss same-named siblings the
+	-- rest of the batch is about to add, so it is read once everything has landed.
+	local placed: { { [string]: any } } = {}
+	local memo: Paths.NameIndex = {}
+	for _, entry in moved do
+		table.insert(placed, {
+			path = Paths.of(entry.instance, memo),
+			className = entry.instance.ClassName,
+			cloned = entry.cloned,
+		})
+	end
+
 	return {
-		items = moved,
+		items = placed,
 		undoStep = if recorded then "MCP move" else nil,
 	}
 end

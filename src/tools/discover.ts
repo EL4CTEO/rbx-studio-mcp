@@ -67,8 +67,13 @@ function withSortedProperties(
       ? Object.fromEntries(Object.entries(record).sort(([a], [b]) => a.localeCompare(b)))
       : undefined;
 
+  // `requested` exists so callers can correlate an answer with the path they
+  // asked about; it is redundant next to the canonical path and only costs
+  // tokens here.
+  const { requested: _requested, ...rest } = item as typeof item & { requested?: string };
+
   return {
-    ...item,
+    ...rest,
     properties: sortKeys(item.properties) ?? {},
     ...(item.attributes ? { attributes: sortKeys(item.attributes) as Record<string, unknown> } : {}),
   };
