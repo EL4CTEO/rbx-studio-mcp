@@ -72,7 +72,7 @@ export function registerSessionTools(context: ToolContext): void {
       const status = await bridge.call<StudioStatus>("studio.status", {}, { studioId });
 
       const targetId = studioId ?? bridge.activeId;
-      if (targetId) bridge.notePlaceName(targetId, status.placeName);
+      if (targetId) bridge.notePlaceName(targetId, status.placeName, status.context);
 
       // A stale plugin answers with older handlers and no other symptom, so the
       // warning rides along with the one call agents are told to make first.
@@ -137,7 +137,7 @@ export function registerSessionTools(context: ToolContext): void {
               {},
               { studioId: session.studioId, timeoutMs: 3_000 },
             );
-            bridge.notePlaceName(session.studioId, status.placeName);
+            bridge.notePlaceName(session.studioId, status.placeName, status.context);
             return {
               placeName: status.placeName,
               context: status.context,

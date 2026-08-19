@@ -133,9 +133,11 @@ export class Bridge {
    * for that lookup, every later mention of the session should use the name the
    * user recognises rather than reverting to the one they do not.
    */
-  notePlaceName(studioId: string, placeName: string): void {
+  notePlaceName(studioId: string, placeName: string, context?: string): void {
     const session = this.sessions.get(studioId);
-    if (session && placeName) session.identity.placeName = placeName;
+    if (!session) return;
+    if (placeName) session.identity.placeName = placeName;
+    if (context) session.identity.context = context;
   }
 
   has(studioId: string): boolean {
@@ -271,7 +273,13 @@ export class Bridge {
       if (session) return session;
     }
     throw AMBIGUOUS_STUDIO(
-      this.list().map((session) => `${session.studioId} (${session.placeName})`),
+      // The context is the part that decides it. Two rows reading "Untitled
+      // Experience" are indistinguishable, and picking the playtest means work
+      // that disappears when it stops.
+      this.list().map(
+        (session) =>
+          `${session.studioId} (${session.placeName}${session.context ? `, ${session.context}` : ""})`,
+      ),
     );
   }
 

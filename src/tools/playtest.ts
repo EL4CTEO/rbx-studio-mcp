@@ -18,6 +18,38 @@ interface PlaytestResponse {
   };
 }
 
+/**
+ * The studioId of the running playtest's server session, or null.
+ *
+ * Prefers the cached context so the common case costs nothing, and asks the
+ * sessions directly when nothing is cached -- which is the situation right
+ * after this tool started a test, since the new session has never been queried
+ * and its context is exactly what the caller needs.
+ */
+async function findPlaytestSession(bridge: ToolContext["bridge"]): Promise<string | null> {
+  const sessions = bridge.list();
+  const cached = sessions.find((session) => session.context?.includes("playtest"));
+  if (cached) return cached.studioId;
+
+  const unknown = sessions.filter((session) => session.context === undefined);
+  const probed = await Promise.all(
+    unknown.map(async (session) => {
+      try {
+        const status = await bridge.call<{ placeName: string; context?: string }>(
+          "studio.status",
+          {},
+          { studioId: session.studioId, timeoutMs: 3_000 },
+        );
+        bridge.notePlaceName(session.studioId, status.placeName, status.context);
+        return status.context?.includes("playtest") ? session.studioId : null;
+      } catch {
+        return null;
+      }
+    }),
+  );
+  return probed.find((id): id is string => id !== null) ?? null;
+}
+
 export function registerPlaytestTools(context: ToolContext): void {
   const { bridge } = context;
 
@@ -78,10 +110,31 @@ export function registerPlaytestTools(context: ToolContext): void {
       destructive: true,
     },
     async (args): Promise<ToolResult> => {
+      //[[
+      // Stopping is routed rather than sent where it was asked.
+      //
+      // Starting a playtest creates a second session, which immediately makes
+      // every later call ambiguous -- including the stop for the test just
+      // started, so the tool could begin something it could not end. And the
+      // stop cannot be served by the editor session anyway: `LeaveTest` is
+      // client-DataModel only and a playtest client can never reach this
+      // bridge, so only `EndTest`, from the playtest's server session, ends a
+      // test. Both problems have the same answer: find that session.
+      //]]
+      let target = args.studioId;
+      let operation = args.op;
+      if (args.op === "stop") {
+        const playtest = await findPlaytestSession(bridge);
+        if (playtest) {
+          target = playtest;
+          operation = "endTest" as typeof args.op;
+        }
+      }
+
       const response = await bridge.call<PlaytestResponse>(
         "playtest.control",
-        { op: args.op, players: args.players, args: args.args },
-        { studioId: args.studioId, timeoutMs: 30_000 },
+        { op: operation, players: args.players, args: args.args },
+        { studioId: target, timeoutMs: 30_000 },
       );
 
       const notes: string[] = [];

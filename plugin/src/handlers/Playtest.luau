@@ -95,22 +95,44 @@ function Playtest.control(params: { [string]: any }): { [string]: any }
 		return { changed = false, state = before }
 	end
 
+	--[[
+		Ending a test has to happen inside it.
+
+		`LeaveTest` reads like the plugin-side exit and is not: it refuses with
+		"can only be called from the client DataModel of a running Studio test
+		session", and a playtest client can never reach this bridge because Studio
+		bars client sessions from making HTTP requests. So that route is closed for
+		good, not merely awkward.
+
+		`EndTest` works from the playtest's *server* session, which does connect --
+		and its value travels back to whichever plugin called ExecutePlayModeAsync.
+		The server tool routes a stop to that session; this op is what it calls.
+	]]
+	if op == "endTest" then
+		local ok, err = pcall(function()
+			service():EndTest(params.value or "stopped by studio-mcp")
+		end)
+		if not ok then
+			Dispatch.fail(
+				"REFUSED",
+				string.format("EndTest refused: %s", tostring(err)),
+				"EndTest only works from inside a running test session."
+			)
+		end
+		task.wait(SETTLE_SECONDS)
+		return { changed = true, state = state() }
+	end
+
 	if op == "stop" then
 		if before.isEdit and not before.isRunning and not pending then
 			return { changed = false, reason = "no test is running", state = before }
 		end
 
-		-- LeaveTest is the service's own exit. RunService:Stop is kept behind it
-		-- because a session started by the user pressing Play was never a
-		-- StudioTestService test and may not answer to it.
-		local left = pcall(function()
-			service():LeaveTest()
+		-- Only reachable when the caller could not find a playtest session to end
+		-- from. Stops a Run-mode session, which has no separate DataModel.
+		pcall(function()
+			RunService:Stop()
 		end)
-		if not left then
-			pcall(function()
-				RunService:Stop()
-			end)
-		end
 
 		task.wait(SETTLE_SECONDS)
 		local after = state()
@@ -128,7 +150,10 @@ function Playtest.control(params: { [string]: any }): { [string]: any }
 		)
 	end
 
-	local args = params.args
+	-- ExecutePlayModeAsync rejects a nil argument outright -- "Argument 1 missing
+	-- or nil" -- even though the parameter is a Variant, so an omitted `args`
+	-- becomes an empty string rather than a failed launch.
+	local args = if params.args == nil then "" else params.args
 	if op == "play" then
 		launch("ExecutePlayModeAsync", function()
 			return service():ExecutePlayModeAsync(args)

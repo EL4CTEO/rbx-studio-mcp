@@ -41,6 +41,16 @@ export interface StudioIdentity {
   buildId: string;
   /** "sse" when the plugin holds a live stream, "poll" for the fallback. */
   transport: "sse" | "poll";
+  /**
+   * Which of Studio's sessions this is — "edit", "playtest server" and so on.
+   *
+   * Not announced at connect, because a plugin cannot know it before the
+   * DataModel settles. Filled in by the first call that reads status and cached
+   * afterwards, so choosing between two identically-named sessions does not
+   * need a round trip — notably inside the AMBIGUOUS_STUDIO error, where making
+   * one is not an option.
+   */
+  context?: string;
 }
 
 export interface StudioSession extends StudioIdentity {
