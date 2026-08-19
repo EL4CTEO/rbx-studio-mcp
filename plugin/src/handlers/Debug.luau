@@ -311,6 +311,21 @@ function Debug.exceptions(params: { [string]: any }): { [string]: any }
 end
 
 function Debug.register()
+	--[[
+		Installed at load, not on the first debug request.
+
+		A breakpoint is registered in one session and hit in another: the editor
+		holds it, the playtest's DataModel runs the code and raises the stop. That
+		second session is created by pressing play, long after any tool call
+		reached the first, so waiting for a request to install the callback leaves
+		exactly the session that does the stopping without one -- and a breakpoint
+		that verifies, fires, and records nothing.
+
+		Attaching it here costs a callback assignment per session and means every
+		session is ready before anything needs it.
+	]]
+	install()
+
 	Dispatch.registerAll("debug", {
 		set = Debug.set,
 		clear = Debug.clear,
