@@ -69,11 +69,12 @@ export function registerSessionTools(context: ToolContext): void {
     async ({ studioId }): Promise<ToolResult> => {
       const status = await bridge.call<StudioStatus>("studio.status", {}, { studioId });
 
+      const targetId = studioId ?? bridge.activeId;
+      if (targetId) bridge.notePlaceName(targetId, status.placeName);
+
       // A stale plugin answers with older handlers and no other symptom, so the
       // warning rides along with the one call agents are told to make first.
-      const session = bridge
-        .list()
-        .find((entry) => entry.studioId === (studioId ?? bridge.activeId));
+      const session = bridge.list().find((entry) => entry.studioId === targetId);
       const warning = pluginStalenessWarning(session?.buildId);
       return json(status, warning ? `WARNING: ${warning}` : undefined);
     },
@@ -130,6 +131,7 @@ export function registerSessionTools(context: ToolContext): void {
               {},
               { studioId: session.studioId, timeoutMs: 3_000 },
             );
+            bridge.notePlaceName(session.studioId, status.placeName);
             return {
               placeName: status.placeName,
               openScripts: (status.openScripts ?? []).map((script) => script.path),

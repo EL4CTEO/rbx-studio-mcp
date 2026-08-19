@@ -125,6 +125,19 @@ export class Bridge {
     if (session) session.lastSeenAt = Date.now();
   }
 
+  /**
+   * Records the place name a status call resolved.
+   *
+   * The identity announced at connect can only carry the data model's name
+   * ("Place1"), because the real one takes a web lookup. Once any call has paid
+   * for that lookup, every later mention of the session should use the name the
+   * user recognises rather than reverting to the one they do not.
+   */
+  notePlaceName(studioId: string, placeName: string): void {
+    const session = this.sessions.get(studioId);
+    if (session && placeName) session.identity.placeName = placeName;
+  }
+
   has(studioId: string): boolean {
     return this.sessions.has(studioId);
   }
