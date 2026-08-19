@@ -5,6 +5,7 @@
 	expensive -- notably it counts descendants lazily and caps the selection.
 ]]
 
+local MarketplaceService = game:GetService("MarketplaceService")
 local RunService = game:GetService("RunService")
 local Selection = game:GetService("Selection")
 
@@ -50,6 +51,49 @@ local function counts(): { descendants: number, scripts: number }
 	return fresh
 end
 
+--[[
+	The name the user would recognise.
+
+	`game.Name` is the data model's name -- "Place1", "Place5" -- and has nothing
+	to do with what the place is called on the Studio tab or the Creator
+	Dashboard. Nothing local holds the real name: it lives on Roblox's servers, so
+	it takes a lookup. Without it, a user saying "the other place, the published
+	one" cannot be matched to any window, which is the whole point of being able
+	to drive several Studios at once.
+
+	Cached, including the failure, because an unpublished place would otherwise
+	make a doomed web request on every status call.
+]]
+local NAME_RETRY_SECONDS = 60
+
+local resolvedName: string? = nil
+local resolvedFor = -1
+local resolvedAt = 0
+
+local function publishedPlaceName(): string?
+	local placeId = game.PlaceId
+	-- A place that has never been saved to Roblox has no id and no remote name.
+	if placeId == 0 then
+		return nil
+	end
+
+	local fresh = resolvedFor == placeId
+		and (resolvedName ~= nil or os.clock() - resolvedAt < NAME_RETRY_SECONDS)
+	if fresh then
+		return resolvedName
+	end
+
+	resolvedFor = placeId
+	resolvedAt = os.clock()
+
+	local ok, info = pcall(function()
+		return MarketplaceService:GetProductInfo(placeId, Enum.InfoType.Asset)
+	end)
+	local name = if ok and typeof(info) == "table" then (info :: any).Name else nil
+	resolvedName = if typeof(name) == "string" and name ~= "" then name else nil
+	return resolvedName
+end
+
 local Session = {}
 
 function Session.status(): { [string]: any }
@@ -67,9 +111,14 @@ function Session.status(): { [string]: any }
 	-- looking at" is orientation, not a separate question.
 	local openScripts = Editor.documents()
 
+	local published = publishedPlaceName()
+
 	return {
 		openScripts = if #openScripts > 0 then openScripts else nil,
-		placeName = if game.Name ~= "" then game.Name else "Untitled place",
+		placeName = published or (if game.Name ~= "" then game.Name else "Untitled place"),
+		-- Kept separate when the two differ, so a path rooted at the data model
+		-- name stays explicable next to a place called something else entirely.
+		dataModelName = if published and published ~= game.Name then game.Name else nil,
 		placeId = game.PlaceId,
 		-- RunService:IsRunning() is true for both Play and Run; IsEdit()
 		-- distinguishes the authoring session from a live one.

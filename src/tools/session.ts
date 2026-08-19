@@ -15,6 +15,8 @@ interface StudioStatus {
   descendantCount: number;
   scriptCount: number;
   studioVersion: string;
+  /** Data model name, present only when it differs from the published name. */
+  dataModelName?: string;
   /** Scripts open in the editor, absent when none are. */
   openScripts?: Array<{
     path: string;
@@ -93,11 +95,11 @@ export function registerSessionTools(context: ToolContext): void {
         "Nothing is targeted by default when several are connected: pick one with " +
         "`set_active_studio`, or pass `studioId` to a single tool call to act on " +
         "one place without changing the default.\n\n" +
-        "`placeName` is the data model's name — usually 'Place1', 'Place5' — not " +
-        "the name on the Studio tab or the Creator Dashboard, so it often will not " +
-        "match what the user calls the place. `placeId` is reliable and unique " +
-        "per window. When the user names a place and the mapping is not obvious, " +
-        "show them the list and ask rather than guessing which is which.",
+        "Each Studio is queried live, so `placeName` is the published name the " +
+        "user would recognise. A place never saved to Roblox has no published " +
+        "name and falls back to its data model name ('Place1'), so if two entries " +
+        "look alike, `openScripts` — what each window has open — is usually how " +
+        "the user tells them apart. Ask rather than guessing.",
       inputSchema: {},
       readOnly: true,
     },
@@ -114,11 +116,35 @@ export function registerSessionTools(context: ToolContext): void {
       // while several are connected, so showing it as active would explain
       // neither the AMBIGUOUS_STUDIO that follows nor how to clear it.
       const active = bridge.activeIsChosen || sessions.length === 1 ? bridge.activeId : null;
+
+      // The identity captured at connect only knows the data model's name. Each
+      // Studio is asked live for the name the user would actually recognise,
+      // plus what it has open — which is usually how someone identifies a window
+      // ("the one with the intro script"). A Studio that does not answer still
+      // gets listed, from the identity it announced.
+      const detail = await Promise.all(
+        sessions.map(async (session) => {
+          try {
+            const status = await bridge.call<StudioStatus>(
+              "studio.status",
+              {},
+              { studioId: session.studioId, timeoutMs: 3_000 },
+            );
+            return {
+              placeName: status.placeName,
+              openScripts: (status.openScripts ?? []).map((script) => script.path),
+            };
+          } catch {
+            return { placeName: session.placeName, unreachable: true };
+          }
+        }),
+      );
+
       return json(
         {
-          studios: sessions.map((session) => ({
+          studios: sessions.map((session, index) => ({
             studioId: session.studioId,
-            placeName: session.placeName,
+            ...detail[index],
             placeId: session.placeId,
             connectedAt: new Date(session.connectedAt).toISOString(),
             transport: session.transport,
