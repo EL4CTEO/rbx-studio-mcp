@@ -32,7 +32,7 @@ recording rolls back a script edit has not tested it — we did, and it does not
 
 Competing servers ship 43–51 thin wrappers around individual API calls. That is 15–20k tokens of tool schemas loaded before the agent does anything, and more tools to pick wrong from.
 
-This one ships ~25 workflow-shaped tools. `find` alone replaces six competitor tools. Every list is cursor-paged, every response is capped at 25k characters with an explicit marker when something was left out, and every tool takes `detail: concise | standard | full` so the agent chooses what it pays for.
+This one ships 14 workflow-shaped tools today. `find` alone replaces six competitor tools. Every list is cursor-paged, every response is capped at 25k characters with an explicit marker when something was left out, and every tool takes `detail: concise | standard | full` so the agent chooses what it pays for.
 
 Property handling comes from the **live Roblox API dump**, refreshed daily, not a hardcoded table — so new engine properties work the day they ship, and a typo gets a suggestion (`Anchorred` → `Anchored`) instead of a dead end.
 
@@ -85,14 +85,16 @@ Server and plugin default to **44755**. Change it with `--port` (or `ROBLOX_STUD
 
 | | tools | transport | editor-safe writes | undo recording | live API dump | licence |
 |---|---|---|---|---|---|---|
-| **this** | ~25 | **SSE push** | **yes** | **yes, cancel on failure** | **yes** | MIT |
+| **this** | 14 | **SSE push** | **yes** | **yes, cancel on failure** | **yes** | MIT |
 | [Roblox built-in](https://create.roblox.com/docs/studio/mcp) | ~27 | stdio from Studio | partial | — | n/a | closed source |
 | [Chrrxs](https://github.com/Chrrxs/robloxstudio-mcp) | ~40 | HTTP poll | no | partial | no | MIT |
 | [drgost1](https://github.com/drgost1/robloxstudio-mcp) | 51 | HTTP poll 500 ms | no | yes | no | MIT |
 | [boshyxd](https://github.com/boshyxd/robloxstudio-mcp) | 43 | HTTP long-poll | no | no | no | MIT (archived) |
 | [Roblox/studio-rust-mcp-server](https://github.com/Roblox/studio-rust-mcp-server) | 2 | HTTP | no | no | no | MIT (superseded) |
 
-Roblox's built-in server is the one to beat: it is first-party, free, and has AI mesh and material generation. It is also closed source, caps results at 10–50, and has no bulk instance or property operations, no terrain, no tag or attribute tools, and no undo integration. This server is a superset — install one thing, not two.
+Roblox's built-in server is the one to beat: it is first-party, free, and has AI mesh and material generation. It is also closed source, caps results at 10–50, and has no bulk instance or property operations and no undo integration.
+
+**Not yet built here:** `execute_luau`, playtest control, console output, screenshots, terrain, Creator Store insertion, and the AI generation tools. If you need those today, keep the built-in server alongside this one. The goal is to replace it; that is not true yet.
 
 ## Security
 
