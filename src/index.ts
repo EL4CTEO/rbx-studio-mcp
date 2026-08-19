@@ -5,6 +5,7 @@ import { DEFAULT_PORT, startBridgeServer } from "./bridge/server.js";
 import type { ToolContext } from "./lib/tool.js";
 import { registerDiscoverTools } from "./tools/discover.js";
 import { registerInstanceTools } from "./tools/instances.js";
+import { registerPerfTools } from "./tools/perf.js";
 import { registerScriptTools } from "./tools/scripts.js";
 import { registerSessionTools } from "./tools/session.js";
 
@@ -51,6 +52,7 @@ async function main(): Promise<void> {
   registerDiscoverTools(context);
   registerScriptTools(context);
   registerInstanceTools(context);
+  registerPerfTools(context);
 
   const shutdown = async (): Promise<void> => {
     await bridgeServer.close();
