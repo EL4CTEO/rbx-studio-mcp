@@ -18,6 +18,7 @@
 local HttpService = game:GetService("HttpService")
 
 local Config = require(script.Parent.Config)
+local Context = require(script.Parent.Context)
 local Net = require(script.Parent.Net)
 
 local Transport = {}
@@ -56,6 +57,11 @@ local function identity(transport: string): { [string]: any }
 		pluginVersion = Config.PLUGIN_VERSION,
 		buildId = Config.BUILD_ID,
 		transport = transport,
+		-- Announced at the handshake rather than left for a later status call.
+		-- The ambiguity error that forces someone to choose between two rows
+		-- with the same place name is raised before any such call could have
+		-- run, so without this it lists them with nothing to choose between.
+		context = Context.of(),
 	}
 end
 

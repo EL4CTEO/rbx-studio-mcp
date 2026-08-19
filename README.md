@@ -85,7 +85,7 @@ Server and plugin default to **44755**. Change it with `--port` (or `ROBLOX_STUD
 
 | | tools | transport | editor-safe writes | undo recording | live API dump | licence |
 |---|---|---|---|---|---|---|
-| **this** | 18 | **SSE push** | **yes** | **yes, cancel on failure** | **yes** | MIT |
+| **this** | 20 | **SSE push** | **yes** | **yes, cancel on failure** | **yes** | MIT |
 | [Roblox built-in](https://create.roblox.com/docs/studio/mcp) | ~27 | stdio from Studio | partial | — | n/a | closed source |
 | [Chrrxs](https://github.com/Chrrxs/robloxstudio-mcp) | ~40 | HTTP poll | no | partial | no | MIT |
 | [drgost1](https://github.com/drgost1/robloxstudio-mcp) | 51 | HTTP poll 500 ms | no | yes | no | MIT |
@@ -94,17 +94,44 @@ Server and plugin default to **44755**. Change it with `--port` (or `ROBLOX_STUD
 
 Roblox's built-in server is the one to beat: it is first-party, free, and has AI mesh and material generation. It is also closed source, caps results at 10–50, and has no bulk instance or property operations and no undo integration.
 
-**Not yet built here:** terrain, Creator Store insertion, and screenshots. If you need those today, keep the built-in server alongside this one. The goal is to replace it; that is not true yet.
+**Not yet built here:** terrain, Creator Store insertion, screenshots, and the AI mesh and material generation. If you need those today, keep the built-in server alongside this one. The goal is to replace it; that is not true yet.
+
+### Debugging and playtests
+
+Both work, and both took finding the right API rather than the obvious one.
+
+`playtest` starts and stops real playtests through `StudioTestService` — Play
+mode with a character, Run mode, or a multiplayer session. `RunService:Run()` is
+the API this looks like it should use; it is marked `PluginSecurity`, accepts the
+call, and does nothing at all. Arguments passed to a test are readable inside it
+with `GetTestArgs()`, and whatever the test returns through `EndTest(value)`
+comes back to the caller, so a scripted check runs end to end without anyone
+touching Studio.
+
+`debug` sets conditional breakpoints and logpoints through
+`ScriptDebuggerService` and reports the stack and the variables in scope when one
+is hit. Not `DebuggerManager`, which is the legacy service and refuses plugins
+outright.
+
+**The debugger needs a Studio beta feature enabled.** In `File → Beta Features`,
+turn on **API debugger Luau**. Without it `AddBreakpoint` fails with a flat
+"Failed to execute AddBreakpoint request" that names no cause; with it the same
+call returns `{Line = 5, Verified = true}`.
+
+Two behaviours worth knowing, both measured:
+
+- Breakpoints record and continue by default rather than halting. Studio gives
+  plugins `Pause()` and no way to resume, so a halting breakpoint can only be
+  released by the user. `pause: true` opts in and says so.
+- Put a breakpoint on a line that *does* something. A `return` or an `end` can
+  report `Verified` and then never fire, which reads like a broken condition.
 
 ### What a plugin genuinely cannot reach
-
-One limit here is settled, and it is Studio's own rule rather than an inference:
 
 | | why |
 |---|---|
 | Reading a playtest client's output | Studio forbids client sessions from making HTTP requests, so the client half of a playtest can never reach this bridge. Its server half is fully reachable. |
-
-Two others were claimed here earlier and withdrawn. `RunService:Run` and the whole of `ScriptDebuggerService` are marked `PluginSecurity`, so both simulation control and breakpoints are permitted to plugins; the evidence that said otherwise came from testing through `execute_luau`, whose `loadstring` sandbox does not hold every capability the plugin around it does. Retested from the plugin proper before either is described again.
+| Stepping through code line by line | The debugger's `OnStopped` callback must return its resume decision synchronously; it cannot wait for a tool call to come back. Breakpoints therefore record and continue instead of stepping. |
 
 ## Security
 

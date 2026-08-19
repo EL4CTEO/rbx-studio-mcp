@@ -223,6 +223,9 @@ function parseIdentity(
     pluginVersion: raw.pluginVersion ?? "unknown",
     buildId: raw.buildId ?? "unknown",
     transport: raw.transport ?? transport,
+    // Optional, because a plugin older than this field still connects fine —
+    // it simply lists without a context, as every session did before.
+    context: raw.context,
   };
 }
 
