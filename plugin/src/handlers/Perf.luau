@@ -125,6 +125,8 @@ function Perf.console(params: { [string]: any }): { [string]: any }
 			level = kind,
 			message = message,
 			timestamp = item.timestamp,
+			stack = item.stack,
+			source = item.source,
 		})
 	end
 

@@ -3,7 +3,15 @@ import { json, limitSchema, table, text, type ToolResult } from "../lib/format.j
 import { defineTool, type ToolContext } from "../lib/tool.js";
 
 interface ConsoleResponse {
-  items: Array<{ level: string; message: string; timestamp?: number }>;
+  items: Array<{
+    level: string;
+    message: string;
+    timestamp?: number;
+    /** Stack trace, on errors the engine reported one for. */
+    stack?: string;
+    /** Script the error came from, as a full path. */
+    source?: string;
+  }>;
   total: number;
   dropped: number;
   /** Lines lost to the buffer's capacity, not to this call's limit. */
@@ -126,7 +134,21 @@ export function registerPerfTools(context: ToolContext): void {
         );
       }
 
-      const lines = response.items.map((entry) => `[${entry.level}] ${entry.message}`);
+      // An error's stack trace is indented under it rather than given its own
+      // line, so the association survives being skimmed and the trace does not
+      // read as further unrelated output.
+      const lines = response.items.map((entry) => {
+        const head = `[${entry.level}] ${entry.message}`;
+        if (!entry.stack) return head;
+        const trace = entry.stack
+          .split("\n")
+          .map((line) => line.trim())
+          .filter((line) => line.length > 0)
+          .map((line) => `    at ${line}`)
+          .join("\n");
+        const origin = entry.source ? `\n    in ${entry.source}` : "";
+        return trace ? `${head}${origin}\n${trace}` : `${head}${origin}`;
+      });
       const notes: string[] = [];
       if (response.dropped > 0) {
         notes.push(
