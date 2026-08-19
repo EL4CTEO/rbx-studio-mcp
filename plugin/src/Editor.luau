@@ -39,30 +39,28 @@ local function safe(accessor: () -> any): any
 end
 
 local function describe(document: ScriptDocument): Document?
-	-- The command bar is a ScriptDocument too, but it has no backing script and
-	-- is not something an agent should offer to edit.
-	local okCommandBar, isCommandBar = pcall(function()
+	-- The command bar is a ScriptDocument too, and it is always open. Reporting
+	-- it would put a line of noise in every studio_status -- the call agents make
+	-- most -- for something that has no backing script and cannot be edited.
+	local isCommandBar = safe(function()
 		return document:IsCommandBar()
 	end)
-	if not okCommandBar then
+	if isCommandBar ~= false then
 		return nil
 	end
 
-	local entry: Document = { commandBar = isCommandBar == true }
-
-	if isCommandBar then
-		entry.path = "(command bar)"
-	else
-		local found = safe(function()
-			return document:GetScript()
-		end)
-		if typeof(found) ~= "Instance" then
-			return nil
-		end
-		local target = found :: Instance
-		entry.path = Paths.of(target)
-		entry.className = target.ClassName
+	local found = safe(function()
+		return document:GetScript()
+	end)
+	if typeof(found) ~= "Instance" then
+		return nil
 	end
+
+	local target = found :: Instance
+	local entry: Document = {
+		path = Paths.of(target),
+		className = target.ClassName,
+	}
 
 	entry.lineCount = safe(function()
 		return document:GetLineCount()

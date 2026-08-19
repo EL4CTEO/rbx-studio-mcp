@@ -19,7 +19,6 @@ interface StudioStatus {
   openScripts?: Array<{
     path: string;
     className?: string;
-    commandBar: boolean;
     lineCount?: number;
     cursorLine?: number;
     cursorColumn?: number;
@@ -91,12 +90,14 @@ export function registerSessionTools(context: ToolContext): void {
         "user refers to 'the other place' or 'my other window'. With a single " +
         "Studio open every other tool targets it automatically, so you can skip " +
         "it then.\n\n" +
-        "Two windows can be open on the same place, in which case the place name " +
-        "and id match and only `studioId` and `connectedAt` tell them apart — ask " +
-        "the user rather than guessing. Nothing is targeted by default when " +
-        "several are connected: pick one with `set_active_studio`, or pass " +
-        "`studioId` to a single tool call to act on one place without changing " +
-        "the default.",
+        "Nothing is targeted by default when several are connected: pick one with " +
+        "`set_active_studio`, or pass `studioId` to a single tool call to act on " +
+        "one place without changing the default.\n\n" +
+        "`placeName` is the data model's name — usually 'Place1', 'Place5' — not " +
+        "the name on the Studio tab or the Creator Dashboard, so it often will not " +
+        "match what the user calls the place. `placeId` is reliable and unique " +
+        "per window. When the user names a place and the mapping is not obvious, " +
+        "show them the list and ask rather than guessing which is which.",
       inputSchema: {},
       readOnly: true,
     },
