@@ -4,6 +4,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { DEFAULT_PORT, startBridgeServer } from "./bridge/server.js";
 import type { ToolContext } from "./lib/tool.js";
 import { registerDiscoverTools } from "./tools/discover.js";
+import { registerInstanceTools } from "./tools/instances.js";
 import { registerScriptTools } from "./tools/scripts.js";
 import { registerSessionTools } from "./tools/session.js";
 
@@ -49,6 +50,7 @@ async function main(): Promise<void> {
   registerSessionTools(context);
   registerDiscoverTools(context);
   registerScriptTools(context);
+  registerInstanceTools(context);
 
   const shutdown = async (): Promise<void> => {
     await bridgeServer.close();

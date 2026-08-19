@@ -14,6 +14,7 @@ local Console = require(script.Console)
 local Dispatch = require(script.Dispatch)
 local Transport = require(script.Transport)
 local Discover = require(script.handlers.Discover)
+local Instances = require(script.handlers.Instances)
 local Scripts = require(script.handlers.Scripts)
 local Session = require(script.handlers.Session)
 
@@ -47,6 +48,7 @@ end
 
 Session.register()
 Discover.register()
+Instances.register()
 Scripts.register()
 
 local toolbar = plugin:CreateToolbar("Studio MCP")
