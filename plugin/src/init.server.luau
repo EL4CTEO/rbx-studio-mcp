@@ -11,6 +11,7 @@ local HttpService = game:GetService("HttpService")
 local Config = require(script.Config)
 local Dispatch = require(script.Dispatch)
 local Transport = require(script.Transport)
+local Discover = require(script.handlers.Discover)
 local Session = require(script.handlers.Session)
 
 local SETTING_STUDIO_ID = "studioId"
@@ -37,6 +38,7 @@ if typeof(storedPort) == "number" then
 end
 
 Session.register()
+Discover.register()
 
 local toolbar = plugin:CreateToolbar("Studio MCP")
 local button = toolbar:CreateButton(

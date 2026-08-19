@@ -17,6 +17,7 @@ local HttpService = game:GetService("HttpService")
 local Config = require(script.Config)
 local Dispatch = require(script.Dispatch)
 local Transport = require(script.Transport)
+local Discover = require(script.handlers.Discover)
 local Session = require(script.handlers.Session)
 
 local SETTING_STUDIO_ID = "studioId"
@@ -43,6 +44,7 @@ if typeof(storedPort) == "number" then
 end
 
 Session.register()
+Discover.register()
 
 local toolbar = plugin:CreateToolbar("Studio MCP")
 local button = toolbar:CreateButton(
@@ -319,6 +321,284 @@ return Dispatch
       </Properties>
       <Item class="ModuleScript" referent="RBX4">
         <Properties>
+          <string name="Name">Discover</string>
+          <ProtectedString name="Source"><![CDATA[--!strict
+--[[
+	Hierarchy exploration: tree, inspect and find.
+
+	These three replace roughly a dozen tools in competing servers
+	(get_file_tree, get_project_structure, get_instance_children, search_objects,
+	search_by_property, get_attributes, get_tags, get_tagged, get_class_info...).
+	Fewer, wider tools mean less schema in the agent's context and fewer chances
+	to pick the wrong one.
+
+	Traversal is bounded everywhere. A production place can hold hundreds of
+	thousands of instances, and an unbounded walk would either time out or return
+	something no context window can hold.
+]]
+
+local CollectionService = game:GetService("CollectionService")
+
+local Dispatch = require(script.Parent.Parent.Dispatch)
+local Paths = require(script.Parent.Parent.Paths)
+local Serialize = require(script.Parent.Parent.Serialize)
+
+-- Ceiling on nodes visited in one call, independent of how many are returned.
+-- Protects against a `find` over a whole place blocking Studio's main thread.
+local MAX_VISITS = 200_000
+
+-- Services that are large, generated, or irrelevant to authoring. Skipped when
+-- walking from the DataModel root unless the caller asks for them by path.
+local NOISY_SERVICES = {
+	CoreGui = true,
+	CorePackages = true,
+	Chat = true,
+	JointsService = true,
+	TextChatService = false,
+}
+
+local Discover = {}
+
+local function isNoisy(instance: Instance): boolean
+	return instance.Parent == game and NOISY_SERVICES[instance.Name] == true
+end
+
+local function summarise(instance: Instance): { [string]: any }
+	return {
+		path = Paths.of(instance),
+		className = instance.ClassName,
+		childCount = #instance:GetChildren(),
+	}
+end
+
+--[[
+	Breadth-first walk to `depth`, newest level last, so a truncated result is
+	still a coherent picture of the top of the tree rather than one deep spur.
+]]
+function Discover.tree(params: { [string]: any }): { [string]: any }
+	local root = if params.path then Paths.resolve(params.path) else game
+	local depth = tonumber(params.depth) or 2
+	local limit = tonumber(params.limit) or 100
+	local offset = tonumber(params.offset) or 0
+	local classFilter = params.className
+	local nameFilter = if params.nameContains then string.lower(params.nameContains) else nil
+
+	local matched: { Instance } = {}
+	local visits = 0
+	local frontier: { Instance } = { root }
+
+	for level = 1, depth do
+		local nextFrontier: { Instance } = {}
+		for _, parent in frontier do
+			for _, child in parent:GetChildren() do
+				visits += 1
+				if visits > MAX_VISITS then
+					break
+				end
+				if isNoisy(child) then
+					continue
+				end
+
+				local keep = true
+				if classFilter and not child:IsA(classFilter) then
+					keep = false
+				end
+				if keep and nameFilter and not string.find(string.lower(child.Name), nameFilter, 1, true) then
+					keep = false
+				end
+				if keep then
+					table.insert(matched, child)
+				end
+				if level < depth then
+					table.insert(nextFrontier, child)
+				end
+			end
+		end
+		frontier = nextFrontier
+		if #frontier == 0 or visits > MAX_VISITS then
+			break
+		end
+	end
+
+	local items: { { [string]: any } } = {}
+	for index = offset + 1, math.min(offset + limit, #matched) do
+		table.insert(items, summarise(matched[index] :: Instance))
+	end
+
+	return {
+		root = Paths.of(root),
+		items = items,
+		total = #matched,
+		offset = offset,
+	}
+end
+
+--[[
+	Detailed read of specific instances. `properties` is chosen server-side from
+	the live API dump, so this handler never needs its own class table.
+]]
+function Discover.inspect(params: { [string]: any }): { [string]: any }
+	local paths = params.paths
+	if typeof(paths) ~= "table" or #paths == 0 then
+		Dispatch.fail(
+			"BAD_PARAMS",
+			"inspect requires a non-empty `paths` array.",
+			'Pass paths like ["Workspace.Model.Part"]. Use `find` or `tree` to discover them.'
+		)
+	end
+
+	local requested: { string }? = params.properties
+	local includeChildren = params.includeChildren ~= false
+	local childLimit = tonumber(params.childLimit) or 25
+
+	local results: { { [string]: any } } = {}
+	local failures: { string } = {}
+
+	for _, path in paths do
+		local ok, instance = pcall(Paths.resolve, path)
+		if not ok then
+			local err = instance :: any
+			table.insert(
+				failures,
+				string.format("%s: %s", path, if typeof(err) == "table" then err.message else tostring(err))
+			)
+			continue
+		end
+
+		local target = instance :: Instance
+		local properties: { [string]: any } = {}
+		if requested then
+			for _, name in requested do
+				local readOk, value = Serialize.readProperty(target, name)
+				if readOk then
+					properties[name] = value
+				end
+			end
+		end
+
+		local attributes: { [string]: any } = {}
+		for name, value in target:GetAttributes() do
+			attributes[name] = Serialize.value(value)
+		end
+
+		local entry: { [string]: any } = {
+			path = Paths.of(target),
+			className = target.ClassName,
+			properties = properties,
+			attributes = attributes,
+			tags = CollectionService:GetTags(target),
+			childCount = #target:GetChildren(),
+		}
+
+		if includeChildren then
+			local children: { { [string]: any } } = {}
+			for index, child in target:GetChildren() do
+				if index > childLimit then
+					break
+				end
+				table.insert(children, { name = child.Name, className = child.ClassName })
+			end
+			entry.children = children
+		end
+
+		table.insert(results, entry)
+	end
+
+	return { items = results, failures = failures }
+end
+
+--[[
+	One search over name, class, property value and tag.
+
+	Every filter supplied must match (AND), which is what lets a single tool
+	answer "every anchored Part under Workspace whose name contains 'door'"
+	without the agent chaining three calls and intersecting the results itself.
+]]
+function Discover.find(params: { [string]: any }): { [string]: any }
+	local root = if params.path then Paths.resolve(params.path) else game
+	local limit = tonumber(params.limit) or 100
+	local offset = tonumber(params.offset) or 0
+
+	local nameFilter = if params.nameContains then string.lower(params.nameContains) else nil
+	local classFilter = params.className
+	local propertyName = params.propertyName
+	local propertyValue = params.propertyValue
+	local tagFilter = params.tag
+
+	-- A tag query is answered from CollectionService's index rather than by
+	-- walking the tree, which is orders of magnitude cheaper on a big place.
+	local candidates: { Instance }
+	if tagFilter then
+		candidates = CollectionService:GetTagged(tagFilter)
+	else
+		candidates = root:GetDescendants()
+	end
+
+	if #candidates > MAX_VISITS then
+		Dispatch.fail(
+			"TOO_BROAD",
+			string.format(
+				"That search would visit %d instances, over the %d limit.",
+				#candidates,
+				MAX_VISITS
+			),
+			"Narrow it with `path` to search one service or model instead of the whole place."
+		)
+	end
+
+	local matched: { Instance } = {}
+	for _, instance in candidates do
+		if tagFilter and root ~= game and not instance:IsDescendantOf(root) then
+			continue
+		end
+		if isNoisy(instance) then
+			continue
+		end
+		if classFilter and not instance:IsA(classFilter) then
+			continue
+		end
+		if nameFilter and not string.find(string.lower(instance.Name), nameFilter, 1, true) then
+			continue
+		end
+		if propertyName then
+			local readOk, value = Serialize.readProperty(instance, propertyName)
+			if not readOk then
+				continue
+			end
+			if propertyValue ~= nil and tostring(value) ~= tostring(propertyValue) then
+				continue
+			end
+		end
+		table.insert(matched, instance)
+	end
+
+	local items: { { [string]: any } } = {}
+	for index = offset + 1, math.min(offset + limit, #matched) do
+		table.insert(items, summarise(matched[index] :: Instance))
+	end
+
+	return {
+		items = items,
+		total = #matched,
+		offset = offset,
+		searched = #candidates,
+	}
+end
+
+function Discover.register()
+	Dispatch.registerAll("discover", {
+		tree = Discover.tree,
+		inspect = Discover.inspect,
+		find = Discover.find,
+	})
+end
+
+return Discover
+]]></ProtectedString>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="RBX5">
+        <Properties>
           <string name="Name">Session</string>
           <ProtectedString name="Source"><![CDATA[--!strict
 --[[
@@ -422,7 +702,7 @@ return Session
         </Properties>
       </Item>
     </Item>
-    <Item class="ModuleScript" referent="RBX5">
+    <Item class="ModuleScript" referent="RBX6">
       <Properties>
         <string name="Name">Net</string>
         <ProtectedString name="Source"><![CDATA[--!strict
@@ -530,7 +810,7 @@ return Net
 ]]></ProtectedString>
       </Properties>
     </Item>
-    <Item class="ModuleScript" referent="RBX6">
+    <Item class="ModuleScript" referent="RBX7">
       <Properties>
         <string name="Name">Paths</string>
         <ProtectedString name="Source"><![CDATA[--!strict
@@ -669,7 +949,7 @@ return Paths
 ]]></ProtectedString>
       </Properties>
     </Item>
-    <Item class="ModuleScript" referent="RBX7">
+    <Item class="ModuleScript" referent="RBX8">
       <Properties>
         <string name="Name">ScriptEdit</string>
         <ProtectedString name="Source"><![CDATA[--!strict
@@ -806,7 +1086,300 @@ return ScriptEdit
 ]]></ProtectedString>
       </Properties>
     </Item>
-    <Item class="ModuleScript" referent="RBX8">
+    <Item class="ModuleScript" referent="RBX9">
+      <Properties>
+        <string name="Name">Serialize</string>
+        <ProtectedString name="Source"><![CDATA[--!strict
+--[[
+	Converts Roblox values into JSON-safe, token-cheap representations.
+
+	Format mirrors what the Studio Properties panel shows -- Vector3 as
+	"12, 0, 5", Enums as "Enum.Material.Plastic", instance references as their
+	path. Two reasons: a Roblox developer reading the transcript sees what they
+	would see in Studio, and a model has seen far more of that notation in
+	training than any bespoke JSON envelope. It is also markedly cheaper than
+	{"__type":"Vector3","x":12,"y":0,"z":5} on every property of every instance.
+
+	`Serialize.parse` is the exact inverse, so a value read here can be written
+	straight back without the agent reformatting it.
+]]
+
+local Serialize = {}
+
+-- Floats are rounded before display: Studio reports positions like
+-- 12.000000476837158, which costs tokens and means nothing to the caller.
+local PRECISION = 4
+
+-- API-dump type names that accept a plain Luau number.
+local NUMERIC_TYPES: { [string]: boolean } = {
+	int = true,
+	int64 = true,
+	float = true,
+	double = true,
+	number = true,
+}
+
+local function num(value: number): string
+	local rounded = math.round(value * 10 ^ PRECISION) / 10 ^ PRECISION
+	if rounded == math.floor(rounded) and math.abs(rounded) < 1e15 then
+		return string.format("%d", rounded)
+	end
+	return tostring(rounded)
+end
+
+--[[
+	Serializes one value. Unknown userdata falls back to `tostring`, which is
+	always better than dropping the property silently.
+]]
+function Serialize.value(value: any): any
+	local kind = typeof(value)
+
+	if kind == "string" or kind == "boolean" or kind == "nil" then
+		return value
+	end
+	if kind == "number" then
+		-- Kept numeric so the agent can do arithmetic without parsing.
+		return math.round(value * 10 ^ PRECISION) / 10 ^ PRECISION
+	end
+	if kind == "Vector3" then
+		return string.format("%s, %s, %s", num(value.X), num(value.Y), num(value.Z))
+	end
+	if kind == "Vector2" then
+		return string.format("%s, %s", num(value.X), num(value.Y))
+	end
+	if kind == "CFrame" then
+		local position = value.Position
+		local rx, ry, rz = value:ToOrientation()
+		return string.format(
+			"pos %s, %s, %s | rot %s, %s, %s",
+			num(position.X),
+			num(position.Y),
+			num(position.Z),
+			num(math.deg(rx)),
+			num(math.deg(ry)),
+			num(math.deg(rz))
+		)
+	end
+	if kind == "Color3" then
+		return string.format("%s, %s, %s", num(value.R), num(value.G), num(value.B))
+	end
+	if kind == "BrickColor" then
+		return value.Name
+	end
+	if kind == "UDim2" then
+		return string.format(
+			"{%s, %s}, {%s, %s}",
+			num(value.X.Scale),
+			num(value.X.Offset),
+			num(value.Y.Scale),
+			num(value.Y.Offset)
+		)
+	end
+	if kind == "UDim" then
+		return string.format("{%s, %s}", num(value.Scale), num(value.Offset))
+	end
+	if kind == "EnumItem" then
+		return string.format("Enum.%s.%s", tostring(value.EnumType), value.Name)
+	end
+	if kind == "Instance" then
+		return value:GetFullName()
+	end
+	if kind == "NumberRange" then
+		return string.format("%s..%s", num(value.Min), num(value.Max))
+	end
+	if kind == "Rect" then
+		return string.format(
+			"%s, %s, %s, %s",
+			num(value.Min.X),
+			num(value.Min.Y),
+			num(value.Max.X),
+			num(value.Max.Y)
+		)
+	end
+	if kind == "ColorSequence" then
+		local parts: { string } = {}
+		for _, keypoint in value.Keypoints do
+			table.insert(
+				parts,
+				string.format("%s=%s", num(keypoint.Time), Serialize.value(keypoint.Value))
+			)
+		end
+		return table.concat(parts, " ")
+	end
+	if kind == "NumberSequence" then
+		local parts: { string } = {}
+		for _, keypoint in value.Keypoints do
+			table.insert(parts, string.format("%s=%s", num(keypoint.Time), num(keypoint.Value)))
+		end
+		return table.concat(parts, " ")
+	end
+	if kind == "table" then
+		local copy: { [any]: any } = {}
+		for key, item in value :: { [any]: any } do
+			copy[key] = Serialize.value(item)
+		end
+		return copy
+	end
+
+	return tostring(value)
+end
+
+--[[
+	Reads a property without throwing.
+
+	Property access on an instance can error even when the API dump says the
+	property exists -- some are context-gated (only readable during a playtest,
+	or only on a loaded asset). Returning nil for those keeps one awkward
+	property from failing an inspect of 50 instances.
+]]
+function Serialize.readProperty(instance: Instance, name: string): (boolean, any)
+	local ok, value = pcall(function()
+		return (instance :: any)[name]
+	end)
+	if not ok then
+		return false, nil
+	end
+	return true, Serialize.value(value)
+end
+
+--[[
+	Parses a serialized string back into a Roblox value, given the target type
+	from the API dump. Returns ok=false with a reason the agent can act on
+	rather than raising, so batch writes can report per-property failures.
+]]
+function Serialize.parse(text: any, valueType: string): (boolean, any, string?)
+	local kind = typeof(text)
+
+	-- Values already of the right primitive shape pass straight through. The
+	-- number case is matched against the target type rather than excluded from
+	-- one: a bare 5 is a valid `float`, but not a valid Vector3, Enum or Color3.
+	if kind == "boolean" then
+		return true, text, nil
+	end
+	if kind == "number" and NUMERIC_TYPES[valueType] then
+		return true, text, nil
+	end
+
+	if valueType == "string" or valueType == "Content" or valueType == "ProtectedString" then
+		return true, tostring(text), nil
+	end
+	if valueType == "bool" then
+		if kind == "boolean" then
+			return true, text, nil
+		end
+		return true, text == "true", nil
+	end
+	if NUMERIC_TYPES[valueType] then
+		local parsed = tonumber(text)
+		if not parsed then
+			return false, nil, string.format('expected a number, got "%s"', tostring(text))
+		end
+		return true, parsed, nil
+	end
+
+	local numbers: { number } = {}
+	if kind == "string" then
+		for match in string.gmatch(text, "-?%d+%.?%d*") do
+			table.insert(numbers, tonumber(match) :: number)
+		end
+	elseif kind == "table" then
+		for _, item in text :: { any } do
+			local parsed = tonumber(item)
+			if parsed then
+				table.insert(numbers, parsed)
+			end
+		end
+	end
+
+	if valueType == "Vector3" then
+		if #numbers < 3 then
+			return false, nil, 'expected three numbers, e.g. "12, 0, 5"'
+		end
+		return true, Vector3.new(numbers[1], numbers[2], numbers[3]), nil
+	end
+	if valueType == "Vector2" then
+		if #numbers < 2 then
+			return false, nil, 'expected two numbers, e.g. "12, 5"'
+		end
+		return true, Vector2.new(numbers[1], numbers[2]), nil
+	end
+	if valueType == "Color3" then
+		if #numbers < 3 then
+			return false, nil, 'expected three 0-1 components, e.g. "1, 0.5, 0"'
+		end
+		-- 0-255 is a common mistake and unambiguous to detect, so accept it.
+		local scale = if numbers[1] > 1 or numbers[2] > 1 or numbers[3] > 1 then 255 else 1
+		return true, Color3.new(numbers[1] / scale, numbers[2] / scale, numbers[3] / scale), nil
+	end
+	if valueType == "BrickColor" then
+		-- Cast because the API definitions type this overload as a literal union
+		-- of every BrickColor name. At runtime it takes any string and throws on
+		-- an unknown one, which is exactly what the pcall is here to catch.
+		local ok, color = pcall(function()
+			return BrickColor.new(tostring(text) :: any)
+		end)
+		if not ok then
+			return false, nil, string.format('"%s" is not a BrickColor name', tostring(text))
+		end
+		return true, color, nil
+	end
+	if valueType == "UDim2" then
+		if #numbers < 4 then
+			return false, nil, 'expected four numbers, e.g. "{0.5, 10}, {0.5, 20}"'
+		end
+		return true, UDim2.new(numbers[1], numbers[2], numbers[3], numbers[4]), nil
+	end
+	if valueType == "UDim" then
+		if #numbers < 2 then
+			return false, nil, 'expected two numbers, e.g. "{0.5, 10}"'
+		end
+		return true, UDim.new(numbers[1], numbers[2]), nil
+	end
+	if valueType == "CFrame" then
+		if #numbers >= 6 then
+			return true,
+				CFrame.new(numbers[1], numbers[2], numbers[3])
+					* CFrame.fromOrientation(
+						math.rad(numbers[4]),
+						math.rad(numbers[5]),
+						math.rad(numbers[6])
+					),
+				nil
+		end
+		if #numbers >= 3 then
+			return true, CFrame.new(numbers[1], numbers[2], numbers[3]), nil
+		end
+		return false, nil, 'expected "pos x, y, z" or "pos x, y, z | rot rx, ry, rz"'
+	end
+	if valueType == "NumberRange" then
+		if #numbers < 2 then
+			return false, nil, 'expected "min..max"'
+		end
+		return true, NumberRange.new(numbers[1], numbers[2]), nil
+	end
+
+	-- Enum values arrive as "Enum.Material.Plastic" or bare "Plastic".
+	local enumType = (Enum :: any)[valueType]
+	if enumType then
+		local name = tostring(text):match("([^%.]+)$") or tostring(text)
+		for _, item in enumType:GetEnumItems() do
+			if item.Name == name then
+				return true, item, nil
+			end
+		end
+		return false,
+			nil,
+			string.format('"%s" is not a member of Enum.%s', tostring(text), valueType)
+	end
+
+	return false, nil, string.format('no conversion known for type "%s"', valueType)
+end
+
+return Serialize
+]]></ProtectedString>
+      </Properties>
+    </Item>
+    <Item class="ModuleScript" referent="RBX10">
       <Properties>
         <string name="Name">Transport</string>
         <ProtectedString name="Source"><![CDATA[--!strict
@@ -1075,7 +1648,7 @@ return Transport
 ]]></ProtectedString>
       </Properties>
     </Item>
-    <Item class="ModuleScript" referent="RBX9">
+    <Item class="ModuleScript" referent="RBX11">
       <Properties>
         <string name="Name">Undo</string>
         <ProtectedString name="Source"><![CDATA[--!strict

@@ -3,6 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { DEFAULT_PORT, startBridgeServer } from "./bridge/server.js";
 import type { ToolContext } from "./lib/tool.js";
+import { registerDiscoverTools } from "./tools/discover.js";
 import { registerSessionTools } from "./tools/session.js";
 
 const VERSION = "0.1.0";
@@ -40,6 +41,7 @@ async function main(): Promise<void> {
 
   const context: ToolContext = { server, bridge: bridgeServer.bridge };
   registerSessionTools(context);
+  registerDiscoverTools(context);
 
   const shutdown = async (): Promise<void> => {
     await bridgeServer.close();
