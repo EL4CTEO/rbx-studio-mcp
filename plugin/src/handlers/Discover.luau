@@ -29,11 +29,11 @@ local MAX_VISITS = 200_000
 	authors content into. Listing them costs thousands of tokens and buries the
 	handful of containers that matter.
 
-	So the root level is filtered by rule rather than by blocklist: always show
-	the containers developers actually work in, always hide the engine-internal
-	ones, and for everything else show it only if it actually holds content.
-	That last clause is what keeps this correct as Roblox adds services -- an
-	unusual service with real content in it still appears.
+	A "show it if it has children" rule was tried first and let too much through:
+	MemStorageService alone reports 197 children of pure engine state. So the
+	root level is an explicit allowlist of the containers a place is actually
+	authored in. Everything else stays reachable by passing its path directly,
+	and the response says how many were hidden so that is discoverable.
 ]]
 local ROOT_ALWAYS = {
 	Workspace = true,
@@ -50,17 +50,9 @@ local ROOT_ALWAYS = {
 	Teams = true,
 	MaterialService = true,
 	TextChatService = true,
-}
-
-local ROOT_NEVER = {
-	CoreGui = true,
-	CorePackages = true,
-	PluginGuiService = true,
-	PluginDebugService = true,
-	RemoteDebuggerServer = true,
-	SelectionHighlightManager = true,
-	Packages = true,
-	Visit = true,
+	Chat = true,
+	LocalizationService = true,
+	TestService = true,
 }
 
 local Discover = {}
@@ -91,13 +83,7 @@ local function topService(instance: Instance): Instance?
 end
 
 local function isVisibleService(service: Instance): boolean
-	if ROOT_NEVER[service.Name] then
-		return false
-	end
-	if ROOT_ALWAYS[service.Name] then
-		return true
-	end
-	return #service:GetChildren() > 0
+	return ROOT_ALWAYS[service.Name] == true
 end
 
 --[[
@@ -133,6 +119,7 @@ function Discover.tree(params: { [string]: any }): { [string]: any }
 	local nameFilter = if params.nameContains then string.lower(params.nameContains) else nil
 
 	local matched: { Instance } = {}
+	local hidden = 0
 	local visits = 0
 	local frontier: { Instance } = { root }
 
@@ -145,6 +132,9 @@ function Discover.tree(params: { [string]: any }): { [string]: any }
 					break
 				end
 				if isNoisy(child) then
+					if parent == game then
+						hidden += 1
+					end
 					continue
 				end
 
@@ -180,6 +170,7 @@ function Discover.tree(params: { [string]: any }): { [string]: any }
 		items = items,
 		total = #matched,
 		offset = offset,
+		hiddenServices = hidden,
 	}
 end
 
@@ -209,10 +200,12 @@ function Discover.inspect(params: { [string]: any }): { [string]: any }
 		local ok, instance = pcall(Paths.resolve, path)
 		if not ok then
 			local err = instance :: any
-			table.insert(
-				failures,
-				string.format("%s: %s", path, if typeof(err) == "table" then err.message else tostring(err))
-			)
+			-- The hint carries the sibling listing ("It does have: ..."), which is
+			-- what lets the agent correct the path without another round trip.
+			local reason = if typeof(err) == "table"
+				then (if err.hint then err.message .. " " .. err.hint else err.message)
+				else tostring(err)
+			table.insert(failures, string.format("%s: %s", path, reason))
 			continue
 		end
 
@@ -227,19 +220,30 @@ function Discover.inspect(params: { [string]: any }): { [string]: any }
 			end
 		end
 
-		local attributes: { [string]: any } = {}
-		for name, value in target:GetAttributes() do
-			attributes[name] = Serialize.value(value)
-		end
-
 		local entry: { [string]: any } = {
 			path = Paths.of(target, memo),
 			className = target.ClassName,
 			properties = properties,
-			attributes = attributes,
-			tags = CollectionService:GetTags(target),
 			childCount = #target:GetChildren(),
 		}
+
+		-- Empty attribute and tag sets are omitted rather than sent as empty
+		-- containers: most instances have neither, and Luau encodes an empty
+		-- table as [] which reads as a list and confuses the shape.
+		local attributes: { [string]: any } = {}
+		local hasAttributes = false
+		for name, value in target:GetAttributes() do
+			attributes[name] = Serialize.value(value)
+			hasAttributes = true
+		end
+		if hasAttributes then
+			entry.attributes = attributes
+		end
+
+		local tags = CollectionService:GetTags(target)
+		if #tags > 0 then
+			entry.tags = tags
+		end
 
 		if includeChildren then
 			local children: { { [string]: any } } = {}

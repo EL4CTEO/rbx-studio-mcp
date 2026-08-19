@@ -19,6 +19,7 @@ interface ListResponse {
   offset: number;
   root?: string;
   searched?: number;
+  hiddenServices?: number;
 }
 
 interface InspectResponse {
@@ -72,10 +73,10 @@ export function registerDiscoverTools(context: ToolContext): void {
         "Use this to orient yourself in an unfamiliar place. Use `find` instead " +
         "when you already know what you are looking for; a deep `tree` over a " +
         "whole place wastes context on instances you will never touch.\n\n" +
-        "With `path` omitted it lists the containers you author in — Workspace, " +
-        "ReplicatedStorage, ServerScriptService and friends — plus any other " +
-        "service that actually holds content. The ~100 empty engine singletons " +
-        "Roblox exposes at the root are hidden. Pass an explicit `path` to look " +
+        "With `path` omitted it lists only the containers a place is authored in " +
+        "— Workspace, ReplicatedStorage, ServerScriptService and friends. Roblox " +
+        "exposes ~120 services at the root, almost all engine internals; those are " +
+        "hidden and the response says how many. Pass an explicit `path` to look " +
         "inside one of them anyway.",
       inputSchema: {
         path: z
@@ -119,7 +120,16 @@ export function registerDiscoverTools(context: ToolContext): void {
         },
         { studioId: args.studioId },
       );
-      return pageOf(response, args.detail);
+      // Say what was withheld at the root, so an agent that genuinely needs an
+      // engine service knows it can ask for one by path.
+      const hidden = response.hiddenServices ?? 0;
+      return pageOf(
+        response,
+        args.detail,
+        hidden > 0
+          ? `${hidden} engine services hidden — pass an explicit \`path\` to inspect one`
+          : undefined,
+      );
     },
   );
 

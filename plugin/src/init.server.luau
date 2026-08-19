@@ -3,12 +3,14 @@
 	Studio MCP -- plugin entry point.
 
 	Owns the toolbar UI, the persistent Studio identity, and the command loop.
-	Handlers do the actual work; this file only wires them to the transport.
+	Handlers do the actual work; this file only wires them to the transport and
+	reports what is happening to the console widget.
 ]]
 
 local HttpService = game:GetService("HttpService")
 
 local Config = require(script.Config)
+local Console = require(script.Console)
 local Dispatch = require(script.Dispatch)
 local Transport = require(script.Transport)
 local Discover = require(script.handlers.Discover)
@@ -43,70 +45,74 @@ Discover.register()
 local toolbar = plugin:CreateToolbar("Studio MCP")
 local button = toolbar:CreateButton(
 	"Studio MCP",
-	"Connect this place to the Studio MCP server",
+	"Show the Studio MCP console",
 	"rbxasset://textures/ui/common/robux.png"
 )
 button.ClickableWhenViewportHidden = true
 
+-- Enabled by default: the whole point is that opening a place shows you it
+-- connected without touching anything. Studio remembers the user's choice after
+-- the first time they close it.
 local widget = plugin:CreateDockWidgetPluginGuiAsync(
-	"StudioMCP_Status",
-	DockWidgetPluginGuiInfo.new(Enum.InitialDockState.Float, false, true, 320, 120, 260, 100)
+	"StudioMCP_Console",
+	DockWidgetPluginGuiInfo.new(Enum.InitialDockState.Float, true, false, 560, 320, 360, 200)
 )
 widget.Title = "Studio MCP"
 
-local background = Instance.new("Frame")
-background.Size = UDim2.fromScale(1, 1)
-background.BorderSizePixel = 0
-background.Parent = widget
-
-local padding = Instance.new("UIPadding")
-padding.PaddingTop = UDim.new(0, 8)
-padding.PaddingLeft = UDim.new(0, 10)
-padding.PaddingRight = UDim.new(0, 10)
-padding.Parent = background
-
-local label = Instance.new("TextLabel")
-label.Size = UDim2.fromScale(1, 1)
-label.BackgroundTransparency = 1
-label.TextWrapped = true
-label.TextXAlignment = Enum.TextXAlignment.Left
-label.TextYAlignment = Enum.TextYAlignment.Top
-label.Font = Enum.Font.Code
-label.TextSize = 13
-label.Text = ""
-label.Parent = background
-
--- Studio themes are user-switchable at runtime, so colours are read from the
--- theme on every render rather than baked in once.
-local studioSettings = settings():GetService("Studio")
-
 local currentStatus: Transport.Status = "disconnected"
 
---[[
-	The widget is the only feedback channel a user has -- the plugin deliberately
-	prints nothing to the output window, since that log is also what the agent
-	reads through the `console` tool and plugin chatter would pollute it.
-]]
-local function render(detail: string?)
-	local theme = (studioSettings :: any).Theme
-	label.TextColor3 = theme:GetColor(Enum.StudioStyleGuideColor.MainText)
-	background.BackgroundColor3 = theme:GetColor(Enum.StudioStyleGuideColor.MainBackground)
-
-	local lines = {
-		string.format("Status: %s", currentStatus),
-		string.format("Port:   %d (%s)", Config.getPort(), Transport.getMode()),
-	}
-	if detail then
-		table.insert(lines, "")
-		table.insert(lines, detail)
-	end
-	label.Text = table.concat(lines, "\n")
+local function refreshMeta()
+	Console.setStatus(
+		currentStatus,
+		string.format(
+			"127.0.0.1:%d  %s  build %s",
+			Config.getPort(),
+			Transport.getMode(),
+			Config.BUILD_ID
+		)
+	)
 	button:SetActive(currentStatus == "connected")
 end
 
+local connect: () -> ()
+
+Console.mount(widget, {
+	onReconnect = function()
+		Console.log("info", "reconnect requested")
+		Transport.stop()
+		task.wait(0.2)
+		connect()
+	end,
+	onClear = function()
+		Console.clear()
+	end,
+})
+
+Console.log("info", string.format("Studio MCP v%s", Config.PLUGIN_VERSION), "build " .. Config.BUILD_ID)
+Console.log("dim", string.format("place: %s (%d)", game.Name, game.PlaceId))
+
 local function onStatus(status: Transport.Status, detail: string?)
+	local previous = currentStatus
 	currentStatus = status
-	render(detail)
+	refreshMeta()
+
+	-- Only narrate transitions. The transport re-reports its state on every
+	-- reconnect attempt, and echoing an unchanged status would bury real events.
+	if status == previous and detail == nil then
+		return
+	end
+
+	if status == "connected" then
+		Console.log(
+			"ok",
+			string.format("connected to 127.0.0.1:%d", Config.getPort()),
+			if detail then "(" .. detail .. ")" else nil
+		)
+	elseif status == "connecting" then
+		Console.log("dim", string.format("connecting to 127.0.0.1:%d...", Config.getPort()))
+	else
+		Console.log("error", "disconnected", detail)
+	end
 end
 
 --[[
@@ -116,43 +122,48 @@ end
 ]]
 local function onCommand(id: string, op: string, params: { [string]: any }?)
 	task.spawn(function()
-		Transport.sendResult(Dispatch.invoke(id, op, params))
+		local startedAt = os.clock()
+		Console.log("call", "-> " .. op)
+
+		local result = Dispatch.invoke(id, op, params)
+		local elapsed = string.format("%.0fms", (os.clock() - startedAt) * 1000)
+
+		if result.ok then
+			Console.log("reply", "<- " .. op, elapsed)
+		else
+			local err = result.error
+			Console.log(
+				"error",
+				string.format("<- %s failed: %s", op, if err then err.code else "unknown"),
+				elapsed
+			)
+			if err and err.message then
+				Console.log("dim", "   " .. err.message)
+			end
+		end
+
+		Transport.sendResult(result)
 	end)
 end
 
-local function connect()
+function connect()
 	Transport.start(studioId(), { onCommand = onCommand, onStatus = onStatus })
 	plugin:SetSetting(SETTING_AUTOCONNECT, true)
 end
 
-local function disconnect()
-	Transport.stop()
-	plugin:SetSetting(SETTING_AUTOCONNECT, false)
-	onStatus("disconnected", "Disconnected. Click the toolbar button to reconnect.")
-end
-
 button.Click:Connect(function()
-	if Transport.isRunning() then
-		disconnect()
-	else
-		widget.Enabled = true
-		connect()
-	end
-end)
-
-widget:GetPropertyChangedSignal("Enabled"):Connect(function()
-	if widget.Enabled then
-		render()
-	end
+	widget.Enabled = not widget.Enabled
 end)
 
 plugin.Unloading:Connect(function()
 	Transport.stop()
 end)
 
-render()
+refreshMeta()
 
--- Reconnect automatically unless the user explicitly disconnected last session.
+-- Connect on load unless the user explicitly disconnected last session.
 if plugin:GetSetting(SETTING_AUTOCONNECT) ~= false then
 	connect()
+else
+	Console.log("warn", "auto-connect disabled — press reconnect to start")
 end
