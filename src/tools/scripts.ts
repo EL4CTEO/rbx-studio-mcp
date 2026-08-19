@@ -47,7 +47,8 @@ interface GrepResponse {
 
 interface CreateResponse {
   items: Array<{ path: string; className: string }>;
-  undoStep: string;
+  /** Absent when Studio refused to open a recording, so nothing claims an undo. */
+  undoStep?: string;
 }
 
 /**
@@ -379,8 +380,10 @@ export function registerScriptTools(context: ToolContext): void {
       title: "Create scripts",
       description:
         "Creates Script, LocalScript or ModuleScript instances with their source.\n\n" +
-        "Batch related scripts into one call: they are created as a single undo " +
-        "step, so the user can drop a whole generated system with one Ctrl+Z.\n\n" +
+        "Batch related scripts into one call: they are created inside one " +
+        "ChangeHistoryService recording, so the user can drop a whole generated " +
+        "system in a single undo. The response says whether that recording was " +
+        "actually opened — Studio refuses while another one is in progress.\n\n" +
         "Prefer `Script` with `runContext: \"Client\"` over `LocalScript` in new " +
         "work — a Script with an explicit RunContext runs wherever you parent it, " +
         "while LocalScript only runs under a player's character, backpack or " +
@@ -429,7 +432,13 @@ export function registerScriptTools(context: ToolContext): void {
       return table(
         ["path", "className"],
         response.items as unknown as Array<Record<string, unknown>>,
-        { more: `created as one undo step, "${response.undoStep}"` },
+        {
+          more: response.undoStep
+            ? `undoable as one step, "${response.undoStep}" — Ctrl+Z with focus ` +
+              "outside the script editor"
+            : "Studio would not open an undo recording, so this is not undoable " +
+              "as a single step",
+        },
       );
     },
   );

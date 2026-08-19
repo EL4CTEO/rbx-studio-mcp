@@ -332,7 +332,7 @@ function Scripts.create(params: { [string]: any }): { [string]: any }
 
 	-- No shared path memo here: each creation changes its parent's children, so a
 	-- cached sibling grouping would go stale mid-batch and mis-number the paths.
-	return Undo.record("StudioMCP.ScriptCreate", "MCP create script", function()
+	local created, recorded = Undo.record("StudioMCP.ScriptCreate", "MCP create script", function()
 		local created: { { [string]: any } } = {}
 
 		for _, request in requests do
@@ -369,8 +369,10 @@ function Scripts.create(params: { [string]: any }): { [string]: any }
 			})
 		end
 
-		return { items = created, undoStep = "MCP create script" }
+		return created
 	end)
+
+	return { items = created, undoStep = if recorded then "MCP create script" else nil }
 end
 
 function Scripts.register()

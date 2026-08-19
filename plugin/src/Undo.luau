@@ -21,23 +21,29 @@ local ChangeHistoryService = game:GetService("ChangeHistoryService")
 local Undo = {}
 
 --[[
-	Runs `body` inside a named recording and returns its result.
+	Runs `body` inside a named recording. Returns its result, and whether a
+	recording was actually opened.
 
 	`TryBeginRecording` returns nil when another recording is already open (for
 	example the user is mid-drag in the viewport) or when history is unavailable.
 	The work still runs in that case -- refusing to act would be worse than a
 	slightly coarser undo stack -- it simply joins the surrounding recording.
+
+	That second return value is not decoration. Whether an operation is undoable
+	is something tools tell the agent, and therefore the user, so it has to be
+	observed rather than assumed: a claim of "one Ctrl+Z" that silently degrades
+	to no undo entry at all is worse than no claim.
 ]]
-function Undo.record<T>(name: string, displayName: string, body: () -> T): T
+function Undo.record<T>(name: string, displayName: string, body: () -> T): (T, boolean)
 	local identifier = ChangeHistoryService:TryBeginRecording(name, displayName)
 	if not identifier then
-		return body()
+		return body(), false
 	end
 
 	local ok, result = pcall(body)
 	if ok then
 		ChangeHistoryService:FinishRecording(identifier, Enum.FinishRecordingOperation.Commit)
-		return result
+		return result, true
 	end
 
 	ChangeHistoryService:FinishRecording(identifier, Enum.FinishRecordingOperation.Cancel)
@@ -49,10 +55,10 @@ end
 	effects are still wanted. Used only by handlers that report per-item results
 	and therefore tell the agent exactly what did and did not apply.
 ]]
-function Undo.recordPartial<T>(name: string, displayName: string, body: () -> T): T
+function Undo.recordPartial<T>(name: string, displayName: string, body: () -> T): (T, boolean)
 	local identifier = ChangeHistoryService:TryBeginRecording(name, displayName)
 	if not identifier then
-		return body()
+		return body(), false
 	end
 
 	local ok, result = pcall(body)
@@ -60,7 +66,7 @@ function Undo.recordPartial<T>(name: string, displayName: string, body: () -> T)
 	if not ok then
 		error(result, 0)
 	end
-	return result
+	return result, true
 end
 
 return Undo
