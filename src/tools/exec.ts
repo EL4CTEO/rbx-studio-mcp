@@ -1,0 +1,187 @@
+import { z } from "zod";
+import { json, table, text, type ToolResult } from "../lib/format.js";
+import { defineTool, type ToolContext } from "../lib/tool.js";
+
+interface ExecResponse {
+  ok: boolean;
+  error?: string;
+  returned?: unknown[];
+  output: Array<{ level: string; message: string }>;
+  milliseconds: number;
+}
+
+interface RaycastResponse {
+  hit: boolean;
+  path?: string;
+  className?: string;
+  position?: string;
+  normal?: string;
+  distance?: number;
+  material?: string;
+  origin?: string;
+  direction?: string;
+}
+
+interface SelectResponse {
+  items: Array<{ path: string; className: string }>;
+  count: number;
+}
+
+export function registerExecTools(context: ToolContext): void {
+  const { bridge } = context;
+
+  defineTool(
+    context,
+    {
+      name: "execute_luau",
+      title: "Run Luau in Studio",
+      description:
+        "Runs Luau in Studio's plugin context and returns whatever it printed, " +
+        "returned, or threw.\n\n" +
+        "This is the escape hatch. Reach for it only when no dedicated tool " +
+        "fits — `create`, `modify`, `delete`, `move`, `script_edit` and `find` " +
+        "validate their input, type values from the live API dump, and wrap " +
+        "writes in an undo recording. Code run here does none of that, so a typo " +
+        "becomes a runtime error instead of a suggestion, and changes it makes " +
+        "may not be undoable as one step.\n\n" +
+        "Good uses: reading something no tool exposes, a one-off calculation " +
+        "over many instances, or calling an engine API the tools do not cover.\n\n" +
+        "Output printed while it runs is captured and returned, so `print` is a " +
+        "reasonable way to get values out. `return` works too. There is no " +
+        "timeout: an infinite loop will hang Studio until it is force-quit.",
+      inputSchema: {
+        source: z
+          .string()
+          .min(1)
+          .describe(
+            "Luau to run. Runs with plugin permissions, so `game`, `workspace` " +
+              "and plugin-only APIs are all reachable.",
+          ),
+        studioId: z.string().optional().describe("Target Studio; omit for the active one."),
+      },
+      destructive: true,
+    },
+    async (args): Promise<ToolResult> => {
+      const response = await bridge.call<ExecResponse>(
+        "exec.run",
+        { source: args.source },
+        { studioId: args.studioId, timeoutMs: 60_000 },
+      );
+
+      const parts: string[] = [];
+      if (response.output.length > 0) {
+        parts.push(
+          "Output:\n" +
+            response.output.map((line) => `  [${line.level}] ${line.message}`).join("\n"),
+        );
+      }
+      if (response.ok) {
+        if (response.returned && response.returned.length > 0) {
+          parts.push(`Returned: ${JSON.stringify(response.returned)}`);
+        }
+        if (parts.length === 0) {
+          parts.push("Ran successfully. Nothing was printed or returned.");
+        }
+        parts.push(`(${response.milliseconds}ms)`);
+        return text(parts.join("\n\n"));
+      }
+
+      // A thrown error is reported as content rather than a tool failure: the
+      // output captured before the throw is usually what explains it.
+      parts.push(`Error: ${response.error ?? "unknown"}`);
+      parts.push(`(${response.milliseconds}ms)`);
+      return text(parts.join("\n\n"));
+    },
+  );
+
+  defineTool(
+    context,
+    {
+      name: "viewport",
+      title: "Viewport and selection",
+      description:
+        "Works with the 3D view and the Studio selection.\n\n" +
+        "`select` sets, extends or shrinks what is highlighted in Studio. Select " +
+        "what you just built or changed — it shows the user the result, and puts " +
+        "the instance under Studio's own move and scale handles. `studio_status` " +
+        "reports the current selection; this sets it.\n\n" +
+        "`raycast` fires a ray through the world and reports the first thing it " +
+        "hits, with position, surface normal, distance and material. This answers " +
+        "'what occupies this space', which the data model alone cannot: use it to " +
+        "find the ground under a spawn point, or check whether a gap is clear " +
+        "before placing something.",
+      inputSchema: {
+        op: z
+          .enum(["select", "raycast"])
+          .describe("'select' changes the Studio selection; 'raycast' queries the world."),
+        paths: z
+          .array(z.string())
+          .optional()
+          .describe("select only: instances to select. An empty array clears the selection."),
+        mode: z
+          .enum(["set", "add", "remove"])
+          .default("set")
+          .describe("select only: replace the selection, extend it, or remove from it."),
+        origin: z
+          .string()
+          .optional()
+          .describe('raycast only: where the ray starts, e.g. "0, 50, 0".'),
+        direction: z
+          .string()
+          .optional()
+          .describe('raycast only: which way it points, e.g. "0, -1, 0" for straight down.'),
+        maxDistance: z
+          .number()
+          .positive()
+          .default(1000)
+          .describe("raycast only: how far to look, in studs."),
+        ignore: z
+          .array(z.string())
+          .optional()
+          .describe("raycast only: instances the ray passes through."),
+        studioId: z.string().optional().describe("Target Studio; omit for the active one."),
+      },
+      destructive: false,
+      idempotent: true,
+    },
+    async (args): Promise<ToolResult> => {
+      if (args.op === "raycast") {
+        if (!args.origin || !args.direction) {
+          return text(
+            "raycast needs `origin` and `direction`.\n" +
+              'For example origin "0, 100, 0" and direction "0, -1, 0" to find the ' +
+              "ground below a point.",
+          );
+        }
+        const response = await bridge.call<RaycastResponse>(
+          "viewport.raycast",
+          {
+            origin: args.origin,
+            direction: args.direction,
+            maxDistance: args.maxDistance,
+            ignore: args.ignore,
+          },
+          { studioId: args.studioId },
+        );
+        if (!response.hit) {
+          return text(
+            `Nothing within ${args.maxDistance} studs along that ray.\n` +
+              "Check the direction points the way you expect, or raise `maxDistance`.",
+          );
+        }
+        return json(response);
+      }
+
+      const response = await bridge.call<SelectResponse>(
+        "viewport.select",
+        { paths: args.paths ?? [], mode: args.mode },
+        { studioId: args.studioId },
+      );
+      if (response.count === 0) return text("Selection cleared.");
+      return table(["path", "className"], response.items, {
+        total: response.count,
+        more: `${response.count} selected in Studio`,
+      });
+    },
+  );
+}

@@ -13,10 +13,12 @@
 ]]
 
 local LogService = game:GetService("LogService")
+local ScriptContext = game:GetService("ScriptContext")
 local ScriptProfilerService = game:GetService("ScriptProfilerService")
 local Stats = game:GetService("Stats")
 
 local Dispatch = require(script.Parent.Parent.Dispatch)
+local Paths = require(script.Parent.Parent.Paths)
 
 -- The log holds thousands of lines in a busy session; an unbounded tail would
 -- swamp any context window.
@@ -305,6 +307,82 @@ function Perf.profile(params: { [string]: any }): { [string]: any }
 	}
 end
 
+--[[
+	Line coverage: which lines of which scripts actually ran.
+
+	Coverage has to be switched on for a script before that script executes, so a
+	call that only reads the stats reports nothing on a first run. `enable` turns
+	it on for named scripts; the caller then plays, and reads back afterwards.
+]]
+function Perf.coverage(params: { [string]: any }): { [string]: any }
+	local enabled: { string } = {}
+	for _, path in (params.enable or {}) :: { string } do
+		local target = Paths.resolve(path)
+		local ok = pcall(function()
+			ScriptContext:EnableCoverage(target)
+		end)
+		if ok then
+			table.insert(enabled, Paths.of(target))
+		end
+	end
+
+	local ok, stats = pcall(function()
+		return ScriptContext:GetCoverageStats()
+	end)
+	if not ok or typeof(stats) ~= "table" then
+		return { enabled = enabled, scripts = {}, problem = tostring(stats) }
+	end
+
+	--[[
+		The payload is undocumented. Each entry is expected to carry the script
+		and a per-line hit list, so it is reduced to counts -- covered lines out of
+		instrumented lines -- rather than passing thousands of raw numbers back.
+		Anything that does not match that shape is handed over untouched instead of
+		being silently reported as zero coverage.
+	]]
+	local scripts: { { [string]: any } } = {}
+	local unrecognised: any = nil
+
+	for _, entry in stats :: { any } do
+		if typeof(entry) ~= "table" then
+			unrecognised = stats
+			break
+		end
+
+		local record = entry :: { [string]: any }
+		local target = record.script or record.Script
+		local lines = record.lines or record.Lines or record.coverage
+
+		if typeof(lines) == "table" then
+			local instrumented = 0
+			local covered = 0
+			for _, hits in lines :: { any } do
+				instrumented += 1
+				if typeof(hits) == "number" and hits > 0 then
+					covered += 1
+				end
+			end
+			table.insert(scripts, {
+				path = if typeof(target) == "Instance" then Paths.of(target) else tostring(target),
+				instrumentedLines = instrumented,
+				coveredLines = covered,
+				percent = if instrumented > 0
+					then math.floor(covered / instrumented * 1000 + 0.5) / 10
+					else 0,
+			})
+		else
+			unrecognised = stats
+			break
+		end
+	end
+
+	return {
+		enabled = enabled,
+		scripts = scripts,
+		raw = unrecognised,
+	}
+end
+
 function Perf.register()
 	Dispatch.registerAll("perf", {
 		console = Perf.console,
@@ -312,6 +390,7 @@ function Perf.register()
 			return Perf.snapshot()
 		end,
 		profile = Perf.profile,
+		coverage = Perf.coverage,
 	})
 end
 

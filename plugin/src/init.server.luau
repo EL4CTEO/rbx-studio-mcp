@@ -8,14 +8,17 @@
 ]]
 
 local HttpService = game:GetService("HttpService")
+local RunService = game:GetService("RunService")
 
 local Config = require(script.Config)
 local Console = require(script.Console)
 local Dispatch = require(script.Dispatch)
 local Transport = require(script.Transport)
 local Discover = require(script.handlers.Discover)
+local Exec = require(script.handlers.Exec)
 local Instances = require(script.handlers.Instances)
 local Perf = require(script.handlers.Perf)
+local Viewport = require(script.handlers.Viewport)
 local Scripts = require(script.handlers.Scripts)
 local Session = require(script.handlers.Session)
 
@@ -42,6 +45,26 @@ local function studioId(): string
 	return SESSION_ID
 end
 
+--[[
+	Whether this copy of the plugin can reach the bridge at all.
+
+	Pressing Play loads the plugin into the playtest's DataModels as well as the
+	editor's, and HttpService refuses every request from a client one: "Http
+	requests can only be executed by game server". The transport read that as a
+	dropped connection and retried forever, filling the console with red while
+	nothing was actually wrong.
+
+	The editor session and the play session's server can both connect and are
+	worth connecting -- addressing a running server is useful. The client half
+	simply says so once and stops.
+]]
+local function canConnect(): (boolean, string?)
+	if RunService:IsEdit() or RunService:IsServer() then
+		return true, nil
+	end
+	return false, "client sessions cannot make HTTP requests -- the server session handles this place"
+end
+
 local storedPort = plugin:GetSetting(SETTING_PORT)
 if typeof(storedPort) == "number" then
 	Config.setPort(storedPort)
@@ -51,6 +74,8 @@ Session.register()
 Discover.register()
 Instances.register()
 Perf.register()
+Exec.register()
+Viewport.register()
 Scripts.register()
 
 local toolbar = plugin:CreateToolbar("Studio MCP")
@@ -160,6 +185,11 @@ local function onCommand(id: string, op: string, params: { [string]: any }?)
 end
 
 function connect()
+	local allowed, reason = canConnect()
+	if not allowed then
+		Console.log("warn", "not connecting", reason)
+		return
+	end
 	Transport.start(studioId(), { onCommand = onCommand, onStatus = onStatus })
 	plugin:SetSetting(SETTING_AUTOCONNECT, true)
 end

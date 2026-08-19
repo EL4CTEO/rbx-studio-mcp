@@ -20,6 +20,17 @@ interface SnapshotResponse {
   };
 }
 
+interface CoverageResponse {
+  enabled: string[];
+  scripts: Array<{
+    path: string;
+    instrumentedLines: number;
+    coveredLines: number;
+    percent: number;
+  }>;
+  raw?: unknown;
+}
+
 /**
  * Roblox's profiler payload. Undocumented, so this is the shape observed from a
  * real capture: `Nodes` is a call tree and `Functions` the flat per-function
@@ -114,13 +125,27 @@ export function registerPerfTools(context: ToolContext): void {
         "— for `seconds` and reports which scripts consumed CPU. It blocks for " +
         "that long, so keep it short. It only sees code that actually runs, so " +
         "start a playtest first; profiling an idle edit session returns nothing.\n\n" +
+        "`coverage` reports which lines of which scripts actually executed — dead " +
+        "code, untested branches, whether a fix was even reached. Coverage must be " +
+        "switched on before a script runs, so pass `enable` first, play, then read " +
+        "back.\n\n" +
         "Frame and network figures are only meaningful while something is " +
         "running. Instance counts and memory are useful in edit mode too.",
       inputSchema: {
         op: z
-          .enum(["snapshot", "profile"])
+          .enum(["snapshot", "profile", "coverage"])
           .default("snapshot")
-          .describe("'snapshot' reads counters now; 'profile' samples running scripts."),
+          .describe(
+            "'snapshot' reads counters now; 'profile' samples running scripts; " +
+              "'coverage' reports which lines have executed.",
+          ),
+        enable: z
+          .array(z.string())
+          .optional()
+          .describe(
+            "coverage only: scripts to start measuring. Coverage must be switched " +
+              "on before the code runs, so enable first, then play, then read back.",
+          ),
         seconds: z
           .number()
           .int()
@@ -148,6 +173,37 @@ export function registerPerfTools(context: ToolContext): void {
       readOnly: true,
     },
     async (args): Promise<ToolResult> => {
+      if (args.op === "coverage") {
+        const response = await bridge.call<CoverageResponse>(
+          "perf.coverage",
+          { enable: args.enable },
+          { studioId: args.studioId },
+        );
+
+        if (response.raw !== undefined) {
+          return json(
+            response.raw,
+            "Coverage came back in an unrecognised shape, so it is shown as Studio " +
+              "returned it rather than summarised into numbers that might be wrong.",
+          );
+        }
+        if (response.scripts.length === 0) {
+          return text(
+            (response.enabled.length > 0
+              ? `Coverage enabled for ${response.enabled.length} script(s). `
+              : "") +
+              "No coverage recorded yet.\n" +
+              "Coverage must be switched on before a script runs: enable it, start " +
+              "a playtest, then read back.",
+          );
+        }
+        return table(
+          ["path", "coveredLines", "instrumentedLines", "percent"],
+          response.scripts as unknown as Array<Record<string, unknown>>,
+          { more: "percent is lines executed at least once" },
+        );
+      }
+
       if (args.op === "profile") {
         const response = await bridge.call<ProfileResponse>(
           "perf.profile",
