@@ -114,6 +114,24 @@ export function registerScriptTools(context: ToolContext): void {
 
       const blocks = response.items.map((item) => {
         const shown = item.source.length === 0 ? 0 : item.source.split("\n").length;
+
+        // An empty window means the requested range sits past the end of the
+        // file, or runs backwards. Reporting it as "lines 50-49 of 9" alongside
+        // no content reads as a broken tool rather than a bad argument.
+        if (shown === 0) {
+          if (item.lineCount === 0) {
+            return `${item.path}  (${item.className}) is empty.`;
+          }
+          const asked =
+            args.endLine !== undefined
+              ? `Lines ${item.startLine}-${args.endLine}`
+              : `Line ${item.startLine} onwards`;
+          return (
+            `${item.path}  (${item.className}, ${item.lineCount} lines)\n` +
+            `${asked} is empty — the file ends at line ${item.lineCount}.`
+          );
+        }
+
         const range =
           shown === item.lineCount
             ? `${item.lineCount} lines`
