@@ -126,12 +126,18 @@ Two behaviours worth knowing, both measured:
 - Put a breakpoint on a line that *does* something. A `return` or an `end` can
   report `Verified` and then never fire, which reads like a broken condition.
 
-### What a plugin genuinely cannot reach
+### Not reached yet, and why
 
-| | why |
+Neither of these is settled. Both were first written here as things a plugin
+could not do, which is the same word this project has already been wrong with
+twice — `RunService:Run` looked like proof that playtests were out of reach, and
+`DebuggerManager` looked like proof that debugging was. Both were the wrong API,
+not a closed door.
+
+| | where it stands |
 |---|---|
-| Reading a playtest client's output | Studio forbids client sessions from making HTTP requests, so the client half of a playtest can never reach this bridge. Its server half is fully reachable. |
-| Stepping through code line by line | The debugger's `OnStopped` callback must return its resume decision synchronously; it cannot wait for a tool call to come back. Breakpoints therefore record and continue instead of stepping. |
+| Reading a playtest **client's** output | Studio bars client sessions from making HTTP requests, so the client cannot talk to this bridge directly. It is not sealed off, though: client and server DataModels replicate to each other, so a plugin on the client could pass its log to the server session over a `RemoteEvent` and let that forward it. Not built. |
+| Stepping through code | `OnStopped` must return its resume decision synchronously, so it cannot wait for a tool call — interactive, one-step-per-request debugging is genuinely out. But the decision it returns may be `StepInto`, `StepOut` or `StepOver` as well as `Resume`, so a "step N lines from here and record each stop" tool is possible. Not built. |
 
 ## Security
 
