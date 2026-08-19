@@ -133,7 +133,13 @@ local function capture(stopped: any)
 					if index > MAX_FRAMES then
 						break
 					end
-					local frameId = if typeof(frame) == "table" then (frame :: any).FrameId else nil
+					-- `Id`, measured: a frame is {Id, Line, Name, ScriptPath}. The
+					-- StackFrame *instance* used by Studio's own debugger calls
+					-- it FrameId, which is what this read first, and the
+					-- mismatch cost only the variables -- the frame itself still
+					-- listed, so the stack looked complete.
+					local raw = frame :: any
+					local frameId = if typeof(frame) == "table" then (raw.Id or raw.FrameId) else nil
 					if frameId ~= nil then
 						local gotVars, vars = pcall(function()
 							return service:GetRootVariables(frameId)
