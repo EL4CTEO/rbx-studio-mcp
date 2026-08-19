@@ -42,13 +42,33 @@ end
 	Replaces source through the editor. `transform` receives the current text and
 	returns the replacement; returning the input unchanged is a no-op.
 
+	`transform` is allowed to raise a structured Dispatch failure -- a bad line
+	range is only discoverable once the authoritative source is in hand. Such a
+	failure is stashed rather than thrown from inside the callback: throwing
+	there would surface as an opaque engine error and lose the code and hint the
+	agent needs. The callback instead returns the text untouched, making that one
+	script a no-op, and the original failure is re-raised afterwards.
+
 	Raises SCRIPT_LOCKED when the write is refused, which normally means the
 	script is a package member or is owned by another Team Create session.
 ]]
 function ScriptEdit.write(target: LuaSourceContainer, transform: (string) -> string)
+	local pending: any = nil
+
 	local ok, err = pcall(function()
-		ScriptEditorService:UpdateSourceAsync(target, transform)
+		ScriptEditorService:UpdateSourceAsync(target, function(source)
+			local applied, result = pcall(transform, source)
+			if applied then
+				return result
+			end
+			pending = result
+			return source
+		end)
 	end)
+
+	if pending ~= nil then
+		error(pending, 0)
+	end
 	if ok then
 		return
 	end
@@ -67,57 +87,6 @@ function ScriptEdit.write(target: LuaSourceContainer, transform: (string) -> str
 		"EDIT_FAILED",
 		string.format("Could not edit %s: %s", target:GetFullName(), message)
 	)
-end
-
---[[
-	Applies a line-range replacement. Lines are 1-based and inclusive, matching
-	what `script_read` returns, so an agent can read lines 40-60 and write back
-	to exactly those numbers without an off-by-one conversion.
-]]
-function ScriptEdit.replaceLines(
-	target: LuaSourceContainer,
-	startLine: number,
-	endLine: number,
-	replacement: string
-)
-	ScriptEdit.write(target, function(source)
-		local lines = ScriptEdit.toLines(source)
-		if startLine < 1 or startLine > #lines + 1 then
-			Dispatch.fail(
-				"BAD_RANGE",
-				string.format(
-					"startLine %d is outside %s, which has %d lines.",
-					startLine,
-					target:GetFullName(),
-					#lines
-				),
-				"Call script_read on this script first to get current line numbers; "
-					.. "they shift after every edit."
-			)
-		end
-
-		local result: { string } = {}
-		table.move(lines, 1, startLine - 1, 1, result)
-		for _, line in ScriptEdit.toLines(replacement) do
-			table.insert(result, line)
-		end
-		if endLine < #lines then
-			table.move(lines, endLine + 1, #lines, #result + 1, result)
-		end
-		return table.concat(result, "\n")
-	end)
-end
-
-function ScriptEdit.toLines(source: string): { string }
-	local lines: { string } = {}
-	for line in string.gmatch(source .. "\n", "([^\n]*)\n") do
-		table.insert(lines, line)
-	end
-	-- gmatch on the sentinel newline yields one trailing empty entry.
-	if #lines > 0 and lines[#lines] == "" then
-		table.remove(lines)
-	end
-	return lines
 end
 
 --[[

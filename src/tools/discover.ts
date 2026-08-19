@@ -2,7 +2,9 @@ import { z } from "zod";
 import { propertiesOf, standardProperties } from "../lib/apidump.js";
 import {
   cursorSchema,
+  decodeCursor,
   detailSchema,
+  encodeCursor,
   json,
   limitSchema,
   table,
@@ -33,15 +35,6 @@ interface InspectResponse {
     children?: Array<{ name: string; className: string }>;
   }>;
   failures: string[];
-}
-
-/** Cursors are just offsets, encoded so callers treat them as opaque. */
-const encodeCursor = (offset: number): string => Buffer.from(String(offset)).toString("base64url");
-
-function decodeCursor(cursor: string | undefined): number {
-  if (!cursor) return 0;
-  const parsed = Number.parseInt(Buffer.from(cursor, "base64url").toString("utf8"), 10);
-  return Number.isInteger(parsed) && parsed >= 0 ? parsed : 0;
 }
 
 /**

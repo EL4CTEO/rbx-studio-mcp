@@ -39,6 +39,20 @@ export const limitSchema = z
   .default(DEFAULT_PAGE_SIZE)
   .describe(`Maximum items to return (1-${MAX_PAGE_SIZE}).`);
 
+/**
+ * Cursors are just offsets. They are encoded so callers treat them as opaque
+ * and pass them back verbatim instead of doing arithmetic on a number whose
+ * meaning may change.
+ */
+export const encodeCursor = (offset: number): string =>
+  Buffer.from(String(offset)).toString("base64url");
+
+export function decodeCursor(cursor: string | undefined): number {
+  if (!cursor) return 0;
+  const parsed = Number.parseInt(Buffer.from(cursor, "base64url").toString("utf8"), 10);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : 0;
+}
+
 /** Minimal MCP content result. Kept local so tools never import SDK types. */
 export interface ToolResult {
   content: Array<{ type: "text"; text: string }>;
@@ -168,6 +182,18 @@ function fitToLimit(items: unknown[], budget: number): unknown[] {
     kept.push(item);
   }
   return kept;
+}
+
+/**
+ * Emits a plain text body, clipping at the character limit with an explicit
+ * marker. Used for source listings, where the content is already line-oriented
+ * and reflowing it into JSON would only add escaping noise.
+ */
+export function body(content: string, advice: string): ToolResult {
+  if (content.length <= CHARACTER_LIMIT) return text(content);
+  return text(
+    `${content.slice(0, CHARACTER_LIMIT)}\n\n[clipped at ${CHARACTER_LIMIT} characters — ${advice}]`,
+  );
 }
 
 /**
