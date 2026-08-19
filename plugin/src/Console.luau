@@ -203,9 +203,13 @@ function Console.setStatus(status: string, meta: string)
 		return
 	end
 
+	-- "standby" is a working state, not a fault: the client half of a playtest
+	-- cannot use HTTP and is not meant to connect. Painting it red like a real
+	-- disconnection made a correct setup look broken.
 	local color = if status == "connected"
 		then PALETTE.green
 		elseif status == "connecting" then PALETTE.amber
+		elseif status == "standby" then PALETTE.dim
 		else PALETTE.red
 
 	dot.TextColor3 = color

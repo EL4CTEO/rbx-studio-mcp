@@ -187,7 +187,14 @@ end
 function connect()
 	local allowed, reason = canConnect()
 	if not allowed then
-		Console.log("warn", "not connecting", reason)
+		-- Reported as standby rather than an error: nothing failed, and this
+		-- session was never going to connect.
+		currentStatus = "disconnected"
+		Console.log("dim", "standby", reason)
+		Console.setStatus(
+			"standby",
+			string.format("%s  build %s", "client session", Config.BUILD_ID)
+		)
 		return
 	end
 	Transport.start(studioId(), { onCommand = onCommand, onStatus = onStatus })

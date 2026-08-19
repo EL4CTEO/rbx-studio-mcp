@@ -15,6 +15,8 @@ interface StudioStatus {
   descendantCount: number;
   scriptCount: number;
   studioVersion: string;
+  /** "edit", "playtest server", "playtest (solo)" ... */
+  context?: string;
   /** Data model name, present only when it differs from the published name. */
   dataModelName?: string;
   /** Scripts open in the editor, absent when none are. */
@@ -98,9 +100,13 @@ export function registerSessionTools(context: ToolContext): void {
         "one place without changing the default.\n\n" +
         "Each Studio is queried live, so `placeName` is the published name the " +
         "user would recognise. A place never saved to Roblox has no published " +
-        "name and falls back to its data model name ('Place1'), so if two entries " +
-        "look alike, `openScripts` — what each window has open — is usually how " +
-        "the user tells them apart. Ask rather than guessing.",
+        "name and falls back to its data model name ('Place1').\n\n" +
+        "`context` matters more than it looks. Pressing Play adds a second entry " +
+        "for the playtest's server — same place, same name, same id as the editor " +
+        "session. Instances created or changed in a 'playtest' context are thrown " +
+        "away the moment the user stops, so building there looks like it worked " +
+        "and then vanishes. Target 'edit' unless the user specifically wants to " +
+        "inspect or affect the running game.",
       inputSchema: {},
       readOnly: true,
     },
@@ -134,6 +140,7 @@ export function registerSessionTools(context: ToolContext): void {
             bridge.notePlaceName(session.studioId, status.placeName);
             return {
               placeName: status.placeName,
+              context: status.context,
               openScripts: (status.openScripts ?? []).map((script) => script.path),
             };
           } catch {
@@ -190,7 +197,22 @@ export function registerSessionTools(context: ToolContext): void {
     async ({ studioId }): Promise<ToolResult> => {
       bridge.setActive(studioId);
       const session = bridge.list().find((s) => s.studioId === studioId);
-      return text(`Active Studio is now "${session?.placeName ?? studioId}".`);
+
+      // Confirmed with the session's context because two entries can share a
+      // place name, and picking the playtest one means work that disappears
+      // when the user presses stop.
+      const status = await bridge
+        .call<StudioStatus>("studio.status", {}, { studioId, timeoutMs: 3_000 })
+        .catch(() => null);
+      const where = status?.context && status.context !== "edit" ? ` (${status.context})` : "";
+
+      return text(
+        `Active Studio is now "${status?.placeName ?? session?.placeName ?? studioId}"${where}.` +
+          (where
+            ? "\nThis is a running playtest, not the editor. Changes made here are " +
+              "discarded when the user stops it."
+            : ""),
+      );
     },
   );
 }

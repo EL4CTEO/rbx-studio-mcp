@@ -94,6 +94,28 @@ local function publishedPlaceName(): string?
 	return resolvedName
 end
 
+--[[
+	Which of Studio's sessions this is.
+
+	Pressing Play adds a second connection for the playtest's server, on the same
+	place with the same name, so a listing shows two entries that look identical.
+	Choosing wrongly is not a small mistake: instances created or changed in a
+	play session are discarded the moment the user stops, so the work looks like
+	it succeeded and then vanishes.
+]]
+local function context(): string
+	if RunService:IsEdit() then
+		return "edit"
+	end
+	if not RunService:IsRunning() then
+		return "unknown"
+	end
+	if RunService:IsServer() and RunService:IsClient() then
+		return "playtest (solo)"
+	end
+	return if RunService:IsServer() then "playtest server" else "playtest client"
+end
+
 local Session = {}
 
 function Session.status(): { [string]: any }
@@ -120,6 +142,7 @@ function Session.status(): { [string]: any }
 		-- name stays explicable next to a place called something else entirely.
 		dataModelName = if published and published ~= game.Name then game.Name else nil,
 		placeId = game.PlaceId,
+		context = context(),
 		-- RunService:IsRunning() is true for both Play and Run; IsEdit()
 		-- distinguishes the authoring session from a live one.
 		isRunning = RunService:IsRunning(),
