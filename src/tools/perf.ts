@@ -33,6 +33,8 @@ interface CoverageResponse {
     instrumentedLines: number;
     coveredLines: number;
     percent: number;
+    /** Line numbers that were instrumented but never executed. */
+    uncoveredLines?: number[];
   }>;
   raw?: unknown;
 }
@@ -230,10 +232,22 @@ export function registerPerfTools(context: ToolContext): void {
               "a playtest, then read back.",
           );
         }
-        return table(
+        const summary = table(
           ["path", "coveredLines", "instrumentedLines", "percent"],
           response.scripts as unknown as Array<Record<string, unknown>>,
-          { more: "percent is lines executed at least once" },
+          { more: "instrumented lines only; blanks, comments and `end` are excluded" },
+        ).content[0]!.text;
+
+        // The percentage says how much ran; these say what did not, which is the
+        // thing anyone measuring coverage is actually looking for.
+        const misses = response.scripts
+          .filter((entry) => entry.uncoveredLines && entry.uncoveredLines.length > 0)
+          .map((entry) => `  ${entry.path}: ${entry.uncoveredLines!.join(", ")}`);
+
+        return text(
+          misses.length > 0
+            ? `${summary}\n\nLines never executed:\n${misses.join("\n")}`
+            : summary,
         );
       }
 

@@ -32,6 +32,10 @@ local MAX_PROFILE_SECONDS = 30
 local DEFAULT_PROFILE_SECONDS = 5
 local PROFILE_DATA_TIMEOUT = 5
 
+-- Uncovered line numbers are listed, not just counted, but a script that never
+-- ran at all would otherwise list every line it has.
+local MAX_UNCOVERED_LINES = 50
+
 local Perf = {}
 
 local function round(value: number, places: number): number
@@ -328,11 +332,19 @@ function Perf.coverage(params: { [string]: any }): { [string]: any }
 	end
 
 	--[[
-		The payload is undocumented. Each entry is expected to carry the script
-		and a per-line hit list, so it is reduced to counts -- covered lines out of
-		instrumented lines -- rather than passing thousands of raw numbers back.
-		Anything that does not match that shape is handed over untouched instead of
-		being silently reported as zero coverage.
+		The payload is undocumented, so this is the shape measured from a real
+		capture rather than a guess: each entry is `{ Script = Instance, GetHits =
+		function }`, and `GetHits()` returns an array indexed by line number.
+
+		The values carry three distinct meanings, and conflating them is what an
+		earlier attempt here did:
+		  -1  the line cannot be instrumented at all -- blank, a comment, an `end`
+		   0  instrumented and never executed: the lines worth reporting
+		  >0  the number of times it ran
+
+		Counting every element as instrumented drags the denominator up by every
+		blank line and comment in the file, which understates coverage on exactly
+		the well-commented code most likely to be measured.
 	]]
 	local scripts: { { [string]: any } } = {}
 	local unrecognised: any = nil
@@ -344,30 +356,49 @@ function Perf.coverage(params: { [string]: any }): { [string]: any }
 		end
 
 		local record = entry :: { [string]: any }
-		local target = record.script or record.Script
-		local lines = record.lines or record.Lines or record.coverage
+		local target = record.Script or record.script
+		local getHits = record.GetHits
 
-		if typeof(lines) == "table" then
-			local instrumented = 0
-			local covered = 0
-			for _, hits in lines :: { any } do
-				instrumented += 1
-				if typeof(hits) == "number" and hits > 0 then
-					covered += 1
-				end
-			end
-			table.insert(scripts, {
-				path = if typeof(target) == "Instance" then Paths.of(target) else tostring(target),
-				instrumentedLines = instrumented,
-				coveredLines = covered,
-				percent = if instrumented > 0
-					then math.floor(covered / instrumented * 1000 + 0.5) / 10
-					else 0,
-			})
-		else
+		if typeof(getHits) ~= "function" then
 			unrecognised = stats
 			break
 		end
+
+		local gotHits, hits = pcall(getHits, record)
+		if not gotHits or typeof(hits) ~= "table" then
+			unrecognised = stats
+			break
+		end
+
+		local instrumented = 0
+		local covered = 0
+		-- The lines that never ran are the entire point of asking, so they are
+		-- named rather than left to be inferred from a percentage.
+		local missed: { number } = {}
+
+		for line, count in hits :: { number } do
+			if typeof(count) ~= "number" or count < 0 then
+				continue
+			end
+			instrumented += 1
+			if count > 0 then
+				covered += 1
+			elseif #missed < MAX_UNCOVERED_LINES then
+				table.insert(missed, line)
+			end
+		end
+
+		table.sort(missed)
+
+		table.insert(scripts, {
+			path = if typeof(target) == "Instance" then Paths.of(target) else tostring(target),
+			instrumentedLines = instrumented,
+			coveredLines = covered,
+			uncoveredLines = missed,
+			percent = if instrumented > 0
+				then math.floor(covered / instrumented * 1000 + 0.5) / 10
+				else 0,
+		})
 	end
 
 	return {
