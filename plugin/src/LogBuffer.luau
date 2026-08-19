@@ -181,13 +181,22 @@ function LogBuffer.start()
 		if buffered then
 			if message == STACK_CLOSE then
 				collecting = nil
-				-- Only used when nothing better arrived. ScriptContext.Error
-				-- gives the originating instance as well, so it wins when both
-				-- are available.
+				--[[
+					ScriptContext.Error is preferred -- it names the originating
+					instance too -- but not blindly. Measured on a nested failure
+					the two agree exactly, one frame each, so folding loses
+					nothing today. They are still compared by frame count rather
+					than trusted to stay equal, because the cost of being wrong
+					is a silently shallower trace and the check is one compare.
+				]]
 				if #buffered > 0 then
 					local recent = entries[#entries]
-					if recent and recent.level == "error" and recent.stack == nil then
-						recent.stack = table.concat(buffered, "\n")
+					if recent and recent.level == "error" then
+						local existing = recent.stack
+						local existingFrames = if existing then #string.split(existing, "\n") else 0
+						if existing == nil or #buffered > existingFrames then
+							recent.stack = table.concat(buffered, "\n")
+						end
 					end
 				end
 				return
