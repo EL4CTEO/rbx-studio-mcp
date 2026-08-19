@@ -35,8 +35,14 @@ export function registerDebugTools(context: ToolContext): void {
         "here' is, which is usually the actual question.\n\n" +
         "`condition` is a Luau expression evaluated where the breakpoint sits, so " +
         "a breakpoint can fire only on the case that matters — `health < 0`, " +
-        "`player.Name == \"someone\"`. `logMessage` writes a line to the output " +
-        "instead, readable with `console`.\n\n" +
+        "`player.Name == \"someone\"`.\n\n" +
+        "`logMessage` is ALSO a Luau expression, not a template string: its value " +
+        'is printed when the breakpoint is hit, so write `"index=" .. index` ' +
+        "rather than `index={index}`. Prose is a syntax error and the breakpoint " +
+        "is skipped. It pauses nothing, which makes it the cheapest way to watch " +
+        "a value change in a running game — read the lines back with `console`.\n\n" +
+        "Only one breakpoint exists per line, so a log and a pause on the same " +
+        "line will not both apply.\n\n" +
         "Breakpoints belong to the session that holds them. Set them in the " +
         "editor session BEFORE starting a playtest, since code that already ran " +
         "cannot be caught retroactively.\n\n" +

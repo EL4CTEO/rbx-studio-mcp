@@ -101,7 +101,21 @@ local function capture(stopped: any)
 		stopped = flatten(stopped, 0),
 	}
 
-	local threadId = if typeof(stopped) == "table" then (stopped :: any).ThreadId else nil
+	--[[
+		`ThreadIds`, plural, holding an array -- measured from a real stop:
+
+			{ ThreadIds = {3002}, Reason = Enum.ScriptStoppedReason.Breakpoint }
+
+		Reading `ThreadId` instead cost nothing visible: snapshots still arrived,
+		carrying the reason and nothing else, so a breakpoint looked like it was
+		working while the stack and variables it exists to collect were never
+		fetched.
+	]]
+	local threadId: any = nil
+	if typeof(stopped) == "table" then
+		local ids = (stopped :: any).ThreadIds
+		threadId = if typeof(ids) == "table" then (ids :: { any })[1] else (stopped :: any).ThreadId
+	end
 
 	if threadId ~= nil then
 		local ok, trace = pcall(function()
