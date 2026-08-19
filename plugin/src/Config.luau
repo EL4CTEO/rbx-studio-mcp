@@ -29,6 +29,12 @@ Config.CLIENT_HEADER = "x-roblox-studio-mcp"
 Config.RECONNECT_DELAY = 1
 Config.MAX_RECONNECT_DELAY = 30
 
+-- How long a healthy long-poll session runs before standing aside so streaming
+-- can be tried again. Long enough that a Studio which genuinely cannot stream
+-- is not reconnecting constantly, short enough that a session downgraded by one
+-- unlucky attempt does not spend the rest of its life slower than it should be.
+Config.RESTREAM_INTERVAL = 60
+
 local port: number? = nil
 
 function Config.setPort(value: number)

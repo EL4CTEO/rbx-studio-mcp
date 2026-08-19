@@ -46,6 +46,7 @@ local LogBuffer = {}
 local entries: { Entry } = {}
 local dropped = 0
 local started = false
+local startedAt = 0
 
 local function push(message: string, messageType: Enum.MessageType, timestamp: number?)
 	table.insert(entries, {
@@ -70,6 +71,7 @@ function LogBuffer.start()
 		return
 	end
 	started = true
+	startedAt = os.time()
 
 	-- Seeded before subscribing so the backlog stays in order ahead of live
 	-- lines. MessageOut only fires for messages after the connection, so nothing
@@ -97,6 +99,22 @@ end
 ]]
 function LogBuffer.all(): ({ Entry }, number)
 	return table.move(entries, 1, #entries, 1, {}), dropped
+end
+
+--[[
+	How long this buffer has been recording, in seconds.
+
+	An empty log is ambiguous without it. In a playtest the plugin loads at the
+	same moment as the place's own scripts, so a script that logs on startup can
+	beat the subscription -- and "nothing was logged" then looks identical to
+	"recording began after the thing you are asking about". Reporting the window
+	lets the two be told apart instead of guessed at.
+]]
+function LogBuffer.recordingSeconds(): number
+	if not started then
+		return 0
+	end
+	return math.max(0, os.time() - startedAt)
 end
 
 return LogBuffer

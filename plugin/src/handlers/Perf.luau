@@ -138,6 +138,7 @@ function Perf.console(params: { [string]: any }): { [string]: any }
 		-- Lines lost to the buffer's own capacity, as opposed to ones trimmed to
 		-- satisfy this call's limit. Only the first is a reason to worry.
 		evicted = if evicted > 0 then evicted else nil,
+		recordingSeconds = LogBuffer.recordingSeconds(),
 	}
 end
 

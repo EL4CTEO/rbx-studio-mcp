@@ -156,20 +156,33 @@ end
 --[[
 	Long-poll fallback. The bridge parks each request for ~25s and answers with a
 	command or an idle marker, so this is a blocking wait rather than a busy loop.
+
+	Returns true when it is giving way so streaming can be tried again.
+
+	That return exists because this loop used to have no exit while it was
+	succeeding, which quietly made the fallback permanent: streaming is only
+	attempted when a connection is being established, so a single failed attempt
+	-- Studio's four-stream cap being momentarily full, or the bridge restarting
+	at the wrong instant -- dropped the session onto long-poll for as long as it
+	stayed connected. Nothing reported it, because polling works; it is just
+	slower, which is precisely the thing this project claims to fix. Both windows
+	of this session were found sitting on poll with no error anywhere.
 ]]
-local function runPolling(callbacks: Callbacks)
+local function runPolling(callbacks: Callbacks): boolean
 	mode = "poll"
 	local handshake = Net.postJson("/connect", identity("poll"))
 	if not handshake.ok then
 		callbacks.onStatus("disconnected", handshake.error or "handshake failed")
-		return
+		return false
 	end
 	callbacks.onStatus("connected", "polling")
+
+	local retryStreamAt = os.clock() + Config.RESTREAM_INTERVAL
 
 	while running do
 		local response = Net.request("GET", "/poll?studioId=" .. studioId)
 		if not running then
-			return
+			return false
 		end
 
 		if response.statusCode == 409 then
@@ -177,18 +190,25 @@ local function runPolling(callbacks: Callbacks)
 			local retry = Net.postJson("/connect", identity("poll"))
 			if not retry.ok then
 				callbacks.onStatus("disconnected", retry.error or "reconnect failed")
-				return
+				return false
 			end
 		elseif not response.ok then
 			callbacks.onStatus("disconnected", response.error or "poll failed")
-			return
+			return false
 		else
 			local payload = Net.decode(response.body)
 			if typeof(payload) == "table" and typeof(payload.command) == "table" then
 				handleFrame(callbacks, payload.command)
 			end
 		end
+
+		-- Checked after handling rather than before waiting, so the handover
+		-- happens between commands instead of while one is outstanding.
+		if os.clock() >= retryStreamAt then
+			return true
+		end
 	end
+	return false
 end
 
 --[[
@@ -227,13 +247,23 @@ function Transport.start(id: string, callbacks: Callbacks)
 			callbacks.onStatus("connecting")
 
 			local streamed = supportsWebStream() and runStream(callbacks)
+			local upgrading = false
 			if running and not streamed then
-				runPolling(callbacks)
+				upgrading = runPolling(callbacks)
 			end
 
 			if not running then
 				break
 			end
+
+			-- Polling was healthy and stood aside to let streaming be retried.
+			-- The backoff exists to slow down repeated failures, and this is not
+			-- one, so go straight back round.
+			if upgrading then
+				delay = Config.RECONNECT_DELAY
+				continue
+			end
+
 			task.wait(delay)
 			delay = math.min(delay * 2, Config.MAX_RECONNECT_DELAY)
 			-- A connection that lasted long enough to do real work resets the

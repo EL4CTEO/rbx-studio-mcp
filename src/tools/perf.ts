@@ -8,6 +8,8 @@ interface ConsoleResponse {
   dropped: number;
   /** Lines lost to the buffer's capacity, not to this call's limit. */
   evicted?: number;
+  /** How long this session has been recording. Disambiguates an empty log. */
+  recordingSeconds?: number;
 }
 
 interface SnapshotResponse {
@@ -105,10 +107,20 @@ export function registerPerfTools(context: ToolContext): void {
       );
 
       if (response.items.length === 0) {
+        // "Empty" on its own is ambiguous, and the ambiguity is the whole
+        // problem: in a playtest the plugin starts recording at the same moment
+        // the place's own scripts run, so anything logged during startup can be
+        // missed. Saying how long the window has been open lets the reader tell
+        // "nothing was logged" from "recording started after the event".
+        const window =
+          response.recordingSeconds !== undefined
+            ? ` This session has been recording for ${response.recordingSeconds}s, ` +
+              "since its plugin loaded; anything logged before that is not recoverable."
+            : "";
         return text(
-          args.level || args.pattern
+          (args.level || args.pattern
             ? "No output matched. Try dropping the filter, or run a playtest first."
-            : "The output log is empty.",
+            : "Nothing has been logged in this session.") + window,
         );
       }
 
