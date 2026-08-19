@@ -1,15 +1,21 @@
 --!strict
 --[[
-	Terminal-style status console for the plugin widget.
+	The Studio MCP console.
 
 	This is the only feedback channel the plugin has. It deliberately never
 	writes to Studio's Output window, because that log is also what the agent
 	reads back through the console tool -- plugin chatter there would pollute the
 	very thing it is reporting on.
 
+	Visual design is deliberate rather than default-dark: a sigil gutter that
+	makes call/reply/error scannable without reading the text, right-aligned
+	latencies that line up into a column you can eyeball for outliers, and a live
+	status bar with session counters. Every glyph is drawn from a monospace-safe
+	set so the columns stay true at any width.
+
 	Rendering is one RichText label inside a ScrollingFrame rather than a label
-	per line. Managing hundreds of Instances for a log that scrolls constantly is
-	both slower and more code; one string with colour spans does the same job.
+	per line. A log that scrolls constantly should not churn hundreds of
+	Instances, and colour spans do the same job in a fraction of the code.
 ]]
 
 local Console = {}
@@ -18,29 +24,38 @@ local Console = {}
 -- re-rendering the whole string on every append stays cheap.
 local MAX_LINES = 300
 
+-- Violet-tinted near-black. The cast is slight but it stops the panel reading
+-- as the same grey as every other Studio dock.
 local PALETTE = {
-	background = Color3.fromRGB(13, 14, 18),
-	surface = Color3.fromRGB(20, 22, 28),
-	text = Color3.fromRGB(202, 208, 219),
-	dim = Color3.fromRGB(110, 117, 133),
-	green = Color3.fromRGB(126, 211, 133),
-	red = Color3.fromRGB(240, 113, 120),
-	yellow = Color3.fromRGB(229, 192, 123),
-	cyan = Color3.fromRGB(97, 175, 239),
-	violet = Color3.fromRGB(180, 142, 235),
+	background = Color3.fromRGB(11, 12, 20),
+	surface = Color3.fromRGB(18, 20, 31),
+	rule = Color3.fromRGB(167, 139, 250),
+	text = Color3.fromRGB(206, 212, 226),
+	dim = Color3.fromRGB(90, 97, 120),
+	green = Color3.fromRGB(110, 231, 168),
+	red = Color3.fromRGB(251, 113, 133),
+	amber = Color3.fromRGB(251, 191, 36),
+	cyan = Color3.fromRGB(103, 232, 249),
+	violet = Color3.fromRGB(167, 139, 250),
 }
 
-local LEVEL_COLOR = {
-	ok = PALETTE.green,
-	error = PALETTE.red,
-	warn = PALETTE.yellow,
-	info = PALETTE.text,
-	dim = PALETTE.dim,
-	call = PALETTE.cyan,
-	reply = PALETTE.violet,
+-- Sigil plus colour per level. The sigil is what makes the log scannable at a
+-- glance; colour alone fails for anyone who cannot separate red from green.
+local LEVELS: { [string]: { sigil: string, color: Color3 } } = {
+	ok = { sigil = "\u{25C6}", color = PALETTE.green },
+	error = { sigil = "\u{2715}", color = PALETTE.red },
+	warn = { sigil = "\u{25B2}", color = PALETTE.amber },
+	info = { sigil = "\u{25C6}", color = PALETTE.violet },
+	dim = { sigil = "\u{00B7}", color = PALETTE.dim },
+	call = { sigil = "\u{25B8}", color = PALETTE.cyan },
+	reply = { sigil = "\u{25C2}", color = PALETTE.violet },
 }
 
 export type Level = "ok" | "error" | "warn" | "info" | "dim" | "call" | "reply"
+
+-- Column the right-aligned detail is padded out to, in characters. Latencies
+-- landing in one column is what lets you spot a slow call without reading.
+local DETAIL_COLUMN = 64
 
 type State = {
 	lines: { string },
@@ -49,7 +64,12 @@ type State = {
 	statusDot: TextLabel?,
 	statusText: TextLabel?,
 	metaText: TextLabel?,
+	cursor: TextLabel?,
+	countersText: TextLabel?,
 	pinned: boolean,
+	calls: number,
+	errors: number,
+	totalMs: number,
 }
 
 local state: State = {
@@ -59,7 +79,12 @@ local state: State = {
 	statusDot = nil,
 	statusText = nil,
 	metaText = nil,
+	cursor = nil,
+	countersText = nil,
 	pinned = true,
+	calls = 0,
+	errors = 0,
+	totalMs = 0,
 }
 
 local function hex(color: Color3): string
@@ -84,10 +109,6 @@ local function span(color: Color3, value: string): string
 	return string.format('<font color="%s">%s</font>', hex(color), escape(value))
 end
 
-local function timestamp(): string
-	return os.date("%H:%M:%S") :: string
-end
-
 local function redraw()
 	local label = state.label
 	if not label then
@@ -106,15 +127,39 @@ local function redraw()
 	end
 end
 
+local function refreshCounters()
+	local counters = state.countersText
+	if not counters then
+		return
+	end
+	if state.calls == 0 then
+		counters.Text = "idle"
+		return
+	end
+	counters.Text = string.format(
+		"%d call%s  %d error%s  avg %.0fms",
+		state.calls,
+		if state.calls == 1 then "" else "s",
+		state.errors,
+		if state.errors == 1 then "" else "s",
+		state.totalMs / state.calls
+	)
+end
+
 --[[
-	Appends one line. `detail` is rendered dim after the message, for things like
-	latencies that should be readable but not compete with the message itself.
+	Appends one line. `detail` is padded to a fixed column and dimmed, so
+	latencies stack into a readable column instead of trailing each message at a
+	ragged offset.
 ]]
 function Console.log(level: Level, message: string, detail: string?)
-	local color = LEVEL_COLOR[level] or PALETTE.text
-	local line = span(PALETTE.dim, timestamp()) .. " " .. span(color, message)
+	local spec = LEVELS[level] or LEVELS.info
+
+	local body = string.format("%s %s", spec.sigil, message)
+	local line = span(PALETTE.dim, os.date("%H:%M:%S") :: string) .. " " .. span(spec.color, body)
+
 	if detail then
-		line ..= " " .. span(PALETTE.dim, detail)
+		local padding = math.max(1, DETAIL_COLUMN - #body)
+		line ..= span(PALETTE.dim, string.rep(" ", padding) .. detail)
 	end
 
 	table.insert(state.lines, line)
@@ -124,8 +169,25 @@ function Console.log(level: Level, message: string, detail: string?)
 	redraw()
 end
 
+--[[
+	Records one completed command for the session counters. Kept separate from
+	`log` so callers can log freely without skewing the statistics.
+]]
+function Console.recordCall(ok: boolean, milliseconds: number)
+	state.calls += 1
+	state.totalMs += milliseconds
+	if not ok then
+		state.errors += 1
+	end
+	refreshCounters()
+end
+
 function Console.clear()
 	table.clear(state.lines)
+	state.calls = 0
+	state.errors = 0
+	state.totalMs = 0
+	refreshCounters()
 	redraw()
 end
 
@@ -143,11 +205,11 @@ function Console.setStatus(status: string, meta: string)
 
 	local color = if status == "connected"
 		then PALETTE.green
-		elseif status == "connecting" then PALETTE.yellow
+		elseif status == "connecting" then PALETTE.amber
 		else PALETTE.red
 
 	dot.TextColor3 = color
-	text.Text = status
+	text.Text = string.upper(status)
 	text.TextColor3 = color
 	metaLabel.Text = meta
 end
@@ -157,24 +219,33 @@ local function makeButton(parent: Instance, text: string, order: number): TextBu
 	button.Name = text
 	button.Text = text
 	button.Font = Enum.Font.Code
-	button.TextSize = 12
+	button.TextSize = 11
 	button.TextColor3 = PALETTE.dim
-	button.BackgroundColor3 = PALETTE.surface
+	button.BackgroundColor3 = PALETTE.background
 	button.AutoButtonColor = false
 	button.BorderSizePixel = 0
-	button.Size = UDim2.new(0, 78, 1, -10)
+	button.Size = UDim2.new(0, 76, 0, 20)
 	button.LayoutOrder = order
 	button.Parent = parent
 
 	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, 4)
+	corner.CornerRadius = UDim.new(0, 3)
 	corner.Parent = button
 
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = PALETTE.dim
+	stroke.Transparency = 0.6
+	stroke.Parent = button
+
 	button.MouseEnter:Connect(function()
-		button.TextColor3 = PALETTE.text
+		button.TextColor3 = PALETTE.violet
+		stroke.Color = PALETTE.violet
+		stroke.Transparency = 0.3
 	end)
 	button.MouseLeave:Connect(function()
 		button.TextColor3 = PALETTE.dim
+		stroke.Color = PALETTE.dim
+		stroke.Transparency = 0.6
 	end)
 
 	return button
@@ -198,20 +269,20 @@ function Console.mount(parent: Instance, handlers: Handlers)
 
 	-- Header ---------------------------------------------------------------
 	local header = Instance.new("Frame")
-	header.Size = UDim2.new(1, 0, 0, 34)
+	header.Size = UDim2.new(1, 0, 0, 32)
 	header.BackgroundColor3 = PALETTE.surface
 	header.BorderSizePixel = 0
 	header.Parent = root
 
 	local headerPadding = Instance.new("UIPadding")
-	headerPadding.PaddingLeft = UDim.new(0, 10)
-	headerPadding.PaddingRight = UDim.new(0, 6)
+	headerPadding.PaddingLeft = UDim.new(0, 12)
+	headerPadding.PaddingRight = UDim.new(0, 8)
 	headerPadding.Parent = header
 
 	local dot = Instance.new("TextLabel")
 	dot.Text = "\u{25CF}"
 	dot.Font = Enum.Font.Code
-	dot.TextSize = 14
+	dot.TextSize = 13
 	dot.TextColor3 = PALETTE.red
 	dot.BackgroundTransparency = 1
 	dot.Size = UDim2.new(0, 12, 1, 0)
@@ -219,34 +290,34 @@ function Console.mount(parent: Instance, handlers: Handlers)
 	state.statusDot = dot
 
 	local status = Instance.new("TextLabel")
-	status.Text = "disconnected"
+	status.Text = "DISCONNECTED"
 	status.Font = Enum.Font.Code
-	status.TextSize = 13
+	status.TextSize = 12
 	status.TextColor3 = PALETTE.red
 	status.TextXAlignment = Enum.TextXAlignment.Left
 	status.BackgroundTransparency = 1
-	status.Position = UDim2.new(0, 16, 0, 0)
-	status.Size = UDim2.new(0, 100, 1, 0)
+	status.Position = UDim2.new(0, 18, 0, 0)
+	status.Size = UDim2.new(0, 110, 1, 0)
 	status.Parent = header
 	state.statusText = status
 
 	local meta = Instance.new("TextLabel")
 	meta.Text = ""
 	meta.Font = Enum.Font.Code
-	meta.TextSize = 12
+	meta.TextSize = 11
 	meta.TextColor3 = PALETTE.dim
 	meta.TextXAlignment = Enum.TextXAlignment.Left
 	meta.TextTruncate = Enum.TextTruncate.AtEnd
 	meta.BackgroundTransparency = 1
-	meta.Position = UDim2.new(0, 120, 0, 0)
-	meta.Size = UDim2.new(1, -300, 1, 0)
+	meta.Position = UDim2.new(0, 132, 0, 0)
+	meta.Size = UDim2.new(1, -310, 1, 0)
 	meta.Parent = header
 	state.metaText = meta
 
 	local buttons = Instance.new("Frame")
-	buttons.AnchorPoint = Vector2.new(1, 0)
-	buttons.Position = UDim2.fromScale(1, 0)
-	buttons.Size = UDim2.new(0, 166, 1, 0)
+	buttons.AnchorPoint = Vector2.new(1, 0.5)
+	buttons.Position = UDim2.new(1, 0, 0.5, 0)
+	buttons.Size = UDim2.new(0, 160, 0, 20)
 	buttons.BackgroundTransparency = 1
 	buttons.Parent = header
 
@@ -261,14 +332,32 @@ function Console.mount(parent: Instance, handlers: Handlers)
 	makeButton(buttons, "reconnect", 1).MouseButton1Click:Connect(handlers.onReconnect)
 	makeButton(buttons, "clear", 2).MouseButton1Click:Connect(handlers.onClear)
 
+	-- Accent rule under the header. One hairline in the signature violet is what
+	-- separates this from every other grey dock in Studio.
+	local rule = Instance.new("Frame")
+	rule.Position = UDim2.new(0, 0, 0, 32)
+	rule.Size = UDim2.new(1, 0, 0, 1)
+	rule.BackgroundColor3 = PALETTE.rule
+	rule.BorderSizePixel = 0
+	rule.Parent = root
+
+	local ruleFade = Instance.new("UIGradient")
+	ruleFade.Color = ColorSequence.new(PALETTE.rule)
+	ruleFade.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.15),
+		NumberSequenceKeypoint.new(1, 0.85),
+	})
+	ruleFade.Parent = rule
+
 	-- Log ------------------------------------------------------------------
 	local scroller = Instance.new("ScrollingFrame")
-	scroller.Position = UDim2.new(0, 0, 0, 34)
-	scroller.Size = UDim2.new(1, 0, 1, -34)
+	scroller.Position = UDim2.new(0, 0, 0, 33)
+	scroller.Size = UDim2.new(1, 0, 1, -55)
 	scroller.BackgroundTransparency = 1
 	scroller.BorderSizePixel = 0
-	scroller.ScrollBarThickness = 6
-	scroller.ScrollBarImageColor3 = PALETTE.dim
+	scroller.ScrollBarThickness = 5
+	scroller.ScrollBarImageColor3 = PALETTE.violet
+	scroller.ScrollBarImageTransparency = 0.5
 	scroller.CanvasSize = UDim2.new()
 	scroller.AutomaticCanvasSize = Enum.AutomaticSize.Y
 	scroller.ScrollingDirection = Enum.ScrollingDirection.Y
@@ -278,8 +367,8 @@ function Console.mount(parent: Instance, handlers: Handlers)
 	local logPadding = Instance.new("UIPadding")
 	logPadding.PaddingTop = UDim.new(0, 8)
 	logPadding.PaddingBottom = UDim.new(0, 8)
-	logPadding.PaddingLeft = UDim.new(0, 10)
-	logPadding.PaddingRight = UDim.new(0, 10)
+	logPadding.PaddingLeft = UDim.new(0, 12)
+	logPadding.PaddingRight = UDim.new(0, 12)
 	logPadding.Parent = scroller
 
 	local label = Instance.new("TextLabel")
@@ -288,6 +377,7 @@ function Console.mount(parent: Instance, handlers: Handlers)
 	label.BackgroundTransparency = 1
 	label.Font = Enum.Font.Code
 	label.TextSize = 12
+	label.LineHeight = 1.25
 	label.TextColor3 = PALETTE.text
 	label.RichText = true
 	label.TextWrapped = true
@@ -296,6 +386,64 @@ function Console.mount(parent: Instance, handlers: Handlers)
 	label.Text = ""
 	label.Parent = scroller
 	state.label = label
+
+	-- Status bar ------------------------------------------------------------
+	local footer = Instance.new("Frame")
+	footer.AnchorPoint = Vector2.new(0, 1)
+	footer.Position = UDim2.fromScale(0, 1)
+	footer.Size = UDim2.new(1, 0, 0, 22)
+	footer.BackgroundColor3 = PALETTE.surface
+	footer.BorderSizePixel = 0
+	footer.Parent = root
+
+	local footerPadding = Instance.new("UIPadding")
+	footerPadding.PaddingLeft = UDim.new(0, 12)
+	footerPadding.PaddingRight = UDim.new(0, 12)
+	footerPadding.Parent = footer
+
+	local prompt = Instance.new("TextLabel")
+	prompt.Text = "studio\u{00B7}mcp"
+	prompt.Font = Enum.Font.Code
+	prompt.TextSize = 11
+	prompt.TextColor3 = PALETTE.violet
+	prompt.TextXAlignment = Enum.TextXAlignment.Left
+	prompt.BackgroundTransparency = 1
+	prompt.Size = UDim2.new(0, 70, 1, 0)
+	prompt.Parent = footer
+
+	-- A blinking block cursor: the cheapest possible signal that the panel is
+	-- live rather than a frozen screenshot of an old session.
+	local cursor = Instance.new("TextLabel")
+	cursor.Text = "\u{2588}"
+	cursor.Font = Enum.Font.Code
+	cursor.TextSize = 11
+	cursor.TextColor3 = PALETTE.violet
+	cursor.TextXAlignment = Enum.TextXAlignment.Left
+	cursor.BackgroundTransparency = 1
+	cursor.Position = UDim2.new(0, 72, 0, 0)
+	cursor.Size = UDim2.new(0, 10, 1, 0)
+	cursor.Parent = footer
+	state.cursor = cursor
+
+	local counters = Instance.new("TextLabel")
+	counters.Text = "idle"
+	counters.Font = Enum.Font.Code
+	counters.TextSize = 11
+	counters.TextColor3 = PALETTE.dim
+	counters.TextXAlignment = Enum.TextXAlignment.Right
+	counters.BackgroundTransparency = 1
+	counters.AnchorPoint = Vector2.new(1, 0)
+	counters.Position = UDim2.fromScale(1, 0)
+	counters.Size = UDim2.new(1, -90, 1, 0)
+	counters.Parent = footer
+	state.countersText = counters
+
+	task.spawn(function()
+		while cursor.Parent do
+			cursor.TextTransparency = if cursor.TextTransparency > 0.5 then 0 else 1
+			task.wait(0.6)
+		end
+	end)
 
 	-- Treat "scrolled away from the bottom" as the user reading history, and
 	-- stop yanking the view down under them until they scroll back.

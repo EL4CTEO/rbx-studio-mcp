@@ -58,6 +58,29 @@ function pageOf(response: ListResponse, detail: Detail, more?: string): ToolResu
   });
 }
 
+/**
+ * Sorts property and attribute keys alphabetically.
+ *
+ * Luau table iteration order is unspecified, so the same instance inspected
+ * twice comes back with its keys shuffled. That defeats prompt caching, makes
+ * two inspects impossible to diff, and reads as though something changed when
+ * nothing did.
+ */
+function withSortedProperties(
+  item: InspectResponse["items"][number],
+): InspectResponse["items"][number] {
+  const sortKeys = (record: Record<string, unknown> | undefined) =>
+    record
+      ? Object.fromEntries(Object.entries(record).sort(([a], [b]) => a.localeCompare(b)))
+      : undefined;
+
+  return {
+    ...item,
+    properties: sortKeys(item.properties) ?? {},
+    ...(item.attributes ? { attributes: sortKeys(item.attributes) as Record<string, unknown> } : {}),
+  };
+}
+
 export function registerDiscoverTools(context: ToolContext): void {
   const { bridge } = context;
 
@@ -210,7 +233,7 @@ export function registerDiscoverTools(context: ToolContext): void {
           ? `Could not resolve ${response.failures.length} path(s):\n` +
             response.failures.map((failure) => `  - ${failure}`).join("\n")
           : undefined;
-      return json(response.items, note);
+      return json(response.items.map(withSortedProperties), note);
     },
   );
 

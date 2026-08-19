@@ -128,6 +128,8 @@ local function onCommand(id: string, op: string, params: { [string]: any }?)
 		local result = Dispatch.invoke(id, op, params)
 		local elapsed = string.format("%.0fms", (os.clock() - startedAt) * 1000)
 
+		Console.recordCall(result.ok, (os.clock() - startedAt) * 1000)
+
 		if result.ok then
 			Console.log("reply", "<- " .. op, elapsed)
 		else
