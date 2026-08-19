@@ -43,6 +43,12 @@ export function registerDebugTools(context: ToolContext): void {
         "a value change in a running game — read the lines back with `console`.\n\n" +
         "Only one breakpoint exists per line, so a log and a pause on the same " +
         "line will not both apply.\n\n" +
+        "Put the breakpoint on a line that does something. A `return`, an `end` " +
+        "or a bare declaration can verify and then never fire — measured, not " +
+        "guessed: the same breakpoint moved from `return squared, tag` to the " +
+        "assignment above it went from silent to firing on every pass. If one " +
+        "verifies but catches nothing, suspect the line before suspecting the " +
+        "condition.\n\n" +
         "Breakpoints belong to the session that holds them. Set them in the " +
         "editor session BEFORE starting a playtest, since code that already ran " +
         "cannot be caught retroactively.\n\n" +
