@@ -27,6 +27,74 @@ function Paths.split(path: string): { string }
 	return segments
 end
 
+--[[
+	Splits "Part[3]" into ("Part", 3), or ("Part", nil) when unindexed.
+
+	Sibling names are not unique in Roblox -- a Workspace with 77 parts all named
+	"Part" is completely ordinary -- so a bare dotted path is ambiguous and
+	`FindFirstChild` would silently pick the first match. Every path this module
+	emits therefore carries a 1-based index whenever the name is shared, and
+	`resolve` honours it.
+]]
+local function parseSegment(segment: string): (string, number?)
+	local name, index = string.match(segment, "^(.*)%[(%d+)%]$")
+	if name and index then
+		return name, tonumber(index)
+	end
+	return segment, nil
+end
+
+export type NameIndex = { [Instance]: { [string]: { Instance } } }
+
+--[[
+	Groups a parent's children by name, memoised across one request. Without the
+	memo, formatting paths for N same-named siblings is O(N^2); a listing of a
+	few thousand parts would stall Studio's main thread.
+]]
+local function childrenByName(parent: Instance, memo: NameIndex?): { [string]: { Instance } }
+	local cached = if memo then memo[parent] else nil
+	if cached then
+		return cached
+	end
+
+	local byName: { [string]: { Instance } } = {}
+	for _, child in parent:GetChildren() do
+		local list = byName[child.Name]
+		if not list then
+			list = {}
+			byName[child.Name] = list
+		end
+		table.insert(list, child)
+	end
+
+	if memo then
+		memo[parent] = byName
+	end
+	return byName
+end
+
+--[[
+	1-based position among identically named siblings, or nil when the name is
+	already unique and no index is needed.
+]]
+local function siblingIndex(instance: Instance, memo: NameIndex?): number?
+	local parent = instance.Parent
+	if not parent then
+		return nil
+	end
+
+	local list = childrenByName(parent, memo)[instance.Name]
+	if not list or #list <= 1 then
+		return nil
+	end
+	for index, child in list do
+		if child == instance then
+			return index
+		end
+	end
+	return nil
+end
+
 local function childNames(parent: Instance, limit: number): string
 	local names: { string } = {}
 	for _, child in parent:GetChildren() do
@@ -64,17 +132,22 @@ function Paths.resolve(path: string): Instance
 
 	local current: Instance = game
 	for index, segment in segments do
+		local name, ordinal = parseSegment(segment)
 		local nextInstance: Instance? = nil
 
-		if index == 1 then
+		if ordinal then
+			-- Explicit disambiguation: take the nth child with this exact name.
+			local list = childrenByName(current, nil)[name]
+			nextInstance = if list then list[ordinal] else nil
+		elseif index == 1 then
 			-- Services must be fetched by class name, and are not always
 			-- present as children until first accessed.
 			local ok, service = pcall(function()
-				return game:GetService(segment :: any)
+				return game:GetService(name :: any)
 			end)
-			nextInstance = if ok then service else current:FindFirstChild(segment)
+			nextInstance = if ok then service else current:FindFirstChild(name)
 		else
-			nextInstance = current:FindFirstChild(segment)
+			nextInstance = current:FindFirstChild(name)
 		end
 
 		if not nextInstance then
@@ -122,12 +195,38 @@ function Paths.resolveMany(paths: { string }): ({ Instance }, { string })
 end
 
 --[[
-	Formats an instance back into a path the tools accept. `GetFullName` returns
-	"Workspace.Map.Spawn" for descendants of services, which round-trips through
-	`resolve` unchanged.
+	Formats an instance into a path that resolves back to that exact instance.
+
+	`GetFullName` is deliberately not used: it emits "Workspace.Part" for every
+	one of 77 parts named "Part", so the paths it produces are not addresses at
+	all. Here each segment gains a [n] suffix when its name is shared with a
+	sibling.
+
+	Pass a shared `memo` when formatting many instances in one request.
+
+	The index is positional, so it shifts if same-named siblings are inserted or
+	removed between calls. Read a fresh path after any structural change.
 ]]
-function Paths.of(instance: Instance): string
-	return instance:GetFullName()
+function Paths.of(instance: Instance, memo: NameIndex?): string
+	if instance == game then
+		return "game"
+	end
+
+	local segments: { string } = {}
+	local current: Instance? = instance
+
+	while current ~= nil and current ~= game do
+		local node = current :: Instance
+		local ordinal = siblingIndex(node, memo)
+		table.insert(
+			segments,
+			1,
+			if ordinal then string.format("%s[%d]", node.Name, ordinal) else node.Name
+		)
+		current = node.Parent
+	end
+
+	return table.concat(segments, ".")
 end
 
 return Paths

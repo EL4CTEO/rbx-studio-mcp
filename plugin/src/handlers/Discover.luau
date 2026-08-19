@@ -110,9 +110,11 @@ local function isNoisy(instance: Instance): boolean
 	return service ~= nil and not isVisibleService(service)
 end
 
-local function summarise(instance: Instance): { [string]: any }
+-- One memo per request keeps path formatting linear when many siblings share a
+-- name; see Paths.of.
+local function summarise(instance: Instance, memo: Paths.NameIndex): { [string]: any }
 	return {
-		path = Paths.of(instance),
+		path = Paths.of(instance, memo),
 		className = instance.ClassName,
 		childCount = #instance:GetChildren(),
 	}
@@ -168,12 +170,13 @@ function Discover.tree(params: { [string]: any }): { [string]: any }
 	end
 
 	local items: { { [string]: any } } = {}
+	local memo: Paths.NameIndex = {}
 	for index = offset + 1, math.min(offset + limit, #matched) do
-		table.insert(items, summarise(matched[index] :: Instance))
+		table.insert(items, summarise(matched[index] :: Instance, memo))
 	end
 
 	return {
-		root = Paths.of(root),
+		root = Paths.of(root, memo),
 		items = items,
 		total = #matched,
 		offset = offset,
@@ -200,6 +203,7 @@ function Discover.inspect(params: { [string]: any }): { [string]: any }
 
 	local results: { { [string]: any } } = {}
 	local failures: { string } = {}
+	local memo: Paths.NameIndex = {}
 
 	for _, path in paths do
 		local ok, instance = pcall(Paths.resolve, path)
@@ -229,7 +233,7 @@ function Discover.inspect(params: { [string]: any }): { [string]: any }
 		end
 
 		local entry: { [string]: any } = {
-			path = Paths.of(target),
+			path = Paths.of(target, memo),
 			className = target.ClassName,
 			properties = properties,
 			attributes = attributes,
@@ -320,8 +324,9 @@ function Discover.find(params: { [string]: any }): { [string]: any }
 	end
 
 	local items: { { [string]: any } } = {}
+	local memo: Paths.NameIndex = {}
 	for index = offset + 1, math.min(offset + limit, #matched) do
-		table.insert(items, summarise(matched[index] :: Instance))
+		table.insert(items, summarise(matched[index] :: Instance, memo))
 	end
 
 	return {
