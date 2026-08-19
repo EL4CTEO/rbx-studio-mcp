@@ -109,18 +109,22 @@ function Playtest.control(params: { [string]: any }): { [string]: any }
 		The server tool routes a stop to that session; this op is what it calls.
 	]]
 	if op == "endTest" then
-		local ok, err = pcall(function()
-			service():EndTest(params.value or "stopped by studio-mcp")
+		--[[
+			Deferred, because EndTest destroys the DataModel this handler is
+			running in -- including the connection carrying the reply. Called
+			inline it does end the test and the caller sees only DISCONNECTED,
+			which reads as a failed stop for something that worked perfectly.
+
+			The reply goes out first and the teardown follows. Whether it
+			actually ended is not taken on trust either way: the caller confirms
+			against the editor session, which survives.
+		]]
+		task.delay(0.25, function()
+			pcall(function()
+				service():EndTest(params.value or "stopped by studio-mcp")
+			end)
 		end)
-		if not ok then
-			Dispatch.fail(
-				"REFUSED",
-				string.format("EndTest refused: %s", tostring(err)),
-				"EndTest only works from inside a running test session."
-			)
-		end
-		task.wait(SETTLE_SECONDS)
-		return { changed = true, state = state() }
+		return { changed = true, deferred = true, state = before }
 	end
 
 	if op == "stop" then

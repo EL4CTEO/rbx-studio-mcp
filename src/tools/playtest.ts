@@ -121,20 +121,46 @@ export function registerPlaytestTools(context: ToolContext): void {
       // bridge, so only `EndTest`, from the playtest's server session, ends a
       // test. Both problems have the same answer: find that session.
       //]]
-      let target = args.studioId;
-      let operation = args.op;
       if (args.op === "stop") {
         const playtest = await findPlaytestSession(bridge);
         if (playtest) {
-          target = playtest;
-          operation = "endTest" as typeof args.op;
+          //[[
+          // The stop is sent to the session it will destroy, so its reply is
+          // expected to go missing and a transport failure here says nothing
+          // about whether the test ended. The answer comes from the editor
+          // session, which survives — and which is also the only session that
+          // holds the value EndTest passed back.
+          //]]
+          await bridge
+            .call("playtest.control", { op: "endTest", value: args.args }, {
+              studioId: playtest,
+              timeoutMs: 10_000,
+            })
+            .catch(() => null);
+
+          const survivor = bridge.list().find((session) => session.studioId !== playtest);
+          if (survivor) {
+            const after = await bridge.call<PlaytestResponse>(
+              "playtest.control",
+              { op: "state" },
+              { studioId: survivor.studioId, timeoutMs: 10_000 },
+            );
+            const stopped = after.state.editModeActive !== false && !after.state.testPending;
+            return json(
+              after.state,
+              stopped
+                ? undefined
+                : "The stop was sent but Studio is still in a test. Check whether " +
+                    "something inside it is holding the session open.",
+            );
+          }
         }
       }
 
       const response = await bridge.call<PlaytestResponse>(
         "playtest.control",
-        { op: operation, players: args.players, args: args.args },
-        { studioId: target, timeoutMs: 30_000 },
+        { op: args.op, players: args.players, args: args.args },
+        { studioId: args.studioId, timeoutMs: 30_000 },
       );
 
       const notes: string[] = [];
