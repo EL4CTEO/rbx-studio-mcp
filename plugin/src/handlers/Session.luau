@@ -9,6 +9,7 @@ local RunService = game:GetService("RunService")
 local Selection = game:GetService("Selection")
 
 local Dispatch = require(script.Parent.Parent.Dispatch)
+local Editor = require(script.Parent.Parent.Editor)
 local Paths = require(script.Parent.Parent.Paths)
 
 -- `version()` is marked deprecated but remains the only way to read the Studio
@@ -61,7 +62,13 @@ function Session.status(): { [string]: any }
 	end
 
 	local totals = counts()
+	-- Open tabs ride along with status rather than getting their own tool: this
+	-- is the call agents are told to make first, and "which script is the user
+	-- looking at" is orientation, not a separate question.
+	local openScripts = Editor.documents()
+
 	return {
+		openScripts = if #openScripts > 0 then openScripts else nil,
 		placeName = if game.Name ~= "" then game.Name else "Untitled place",
 		placeId = game.PlaceId,
 		-- RunService:IsRunning() is true for both Play and Run; IsEdit()

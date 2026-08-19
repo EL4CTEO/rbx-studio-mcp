@@ -15,6 +15,18 @@ interface StudioStatus {
   descendantCount: number;
   scriptCount: number;
   studioVersion: string;
+  /** Scripts open in the editor, absent when none are. */
+  openScripts?: Array<{
+    path: string;
+    className?: string;
+    commandBar: boolean;
+    lineCount?: number;
+    cursorLine?: number;
+    cursorColumn?: number;
+    selectedLines?: string;
+    selectedText?: string;
+    visibleLines?: string;
+  }>;
 }
 
 export function registerSessionTools(context: ToolContext): void {
@@ -27,14 +39,21 @@ export function registerSessionTools(context: ToolContext): void {
       title: "Studio status",
       description:
         "One-call snapshot of the connected Roblox Studio: place name and id, " +
-        "whether it is in edit / run / play mode, the current selection, and how " +
-        "big the data model is.\n\n" +
+        "whether it is in edit / run / play mode, the current selection, which " +
+        "scripts are open in the editor, and how big the data model is.\n\n" +
         "Call this FIRST in any Studio session, and again whenever a tool reports " +
         "NO_STUDIO or TIMEOUT — it is the cheapest way to tell a disconnected " +
         "plugin apart from a genuinely failing request. Also call it before and " +
         "after `playtest`, because most tools behave differently in run mode.\n\n" +
-        "Returns JSON. Selection is capped at 50 entries; use `find` if you need " +
-        "more than that.",
+        "`openScripts` is what the user is actually working on: for each open tab " +
+        "it gives the script's path, the cursor line, any selected text, and which " +
+        "lines are on screen. Use it whenever a request is deictic — 'this " +
+        "function', 'the script I'm in', 'fix this' — instead of searching the " +
+        "place or asking which file they mean. Studio exposes no focused-tab API, " +
+        "so with several open, prefer the one holding a selection and otherwise " +
+        "ask.\n\n" +
+        "Returns JSON. Selection is capped at 50 entries and selected text at 400 " +
+        "characters; use `find` or `script_read` for more.",
       inputSchema: {
         studioId: z
           .string()
