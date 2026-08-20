@@ -1,16 +1,47 @@
 # Roblox Studio MCP
 
-Connects Claude Code, Claude Desktop, Cursor, Codex, Gemini CLI — anything that speaks MCP — to a live Roblox Studio session. 29 tools. Free, MIT.
+MCP server for Roblox Studio. 29 tools over a push-based bridge. MIT.
 
 ## Install
 
+**1. The Studio plugin**
+
 ```bash
-claude mcp add roblox-studio -- npx -y roblox-studio-mcp   # Claude Code
-npx -y roblox-studio-mcp --install-plugin                  # the Studio plugin
+npx -y roblox-studio-mcp --install-plugin
 ```
 
+Or download `StudioMCP.rbxmx` from [Releases](https://github.com/EL4CTEO/roblox-studio-mcp/releases) into your Studio plugins folder.
+
+**2. The server**, in whichever client you use:
+
 <details>
-<summary>Claude Desktop / Cursor JSON</summary>
+<summary><b>Claude Code</b></summary>
+
+```bash
+claude mcp add roblox-studio -- npx -y roblox-studio-mcp
+```
+</details>
+
+<details>
+<summary><b>Codex CLI</b></summary>
+
+```bash
+codex mcp add roblox-studio -- npx -y roblox-studio-mcp
+```
+
+Or in `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.roblox-studio]
+command = "npx"
+args = ["-y", "roblox-studio-mcp"]
+```
+</details>
+
+<details>
+<summary><b>Cursor</b></summary>
+
+`~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (per project):
 
 ```json
 {
@@ -24,27 +55,97 @@ npx -y roblox-studio-mcp --install-plugin                  # the Studio plugin
 ```
 </details>
 
-Open Studio, accept the `127.0.0.1` permission prompt, and check the **Studio MCP** toolbar button. Verify with `studio_status`.
+<details>
+<summary><b>opencode</b></summary>
 
-Server and plugin default to port **44755** — change with `--port` or `ROBLOX_STUDIO_MCP_PORT`, and match it in the plugin widget. Loopback only.
+`opencode.json`:
 
-## Why this one
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "roblox-studio": {
+      "type": "local",
+      "command": ["npx", "-y", "roblox-studio-mcp"],
+      "enabled": true
+    }
+  }
+}
+```
+</details>
 
-**Push, not poll.** Others long-poll every 500 ms. This holds an SSE stream, so commands arrive immediately and idle costs nothing. Falls back to long-poll automatically where web streams are unavailable.
+<details>
+<summary><b>Claude Desktop</b></summary>
 
-| 50 sequential round trips | SSE | long-poll |
-|---|---|---|
-| mean | **13.6 ms** | 25.8 ms |
-| median | **12.8 ms** | 29.9 ms |
-| p95 | **22.0 ms** | 30.9 ms |
+`claude_desktop_config.json`:
 
-Reproduce with `node scripts/latency.mjs --count 50 --compare`.
+```json
+{
+  "mcpServers": {
+    "roblox-studio": {
+      "command": "npx",
+      "args": ["-y", "roblox-studio-mcp"]
+    }
+  }
+}
+```
+</details>
 
-**Safe script edits.** Others assign `script.Source`, which discards your unsaved editor buffer. Every write here goes through `ScriptEditorService:UpdateSourceAsync` and every read through `GetEditorSource`. Batched edits are all-or-nothing.
+<details>
+<summary><b>VS Code / Copilot</b></summary>
 
-**One Ctrl+Z per action.** Instance changes are wrapped in a `ChangeHistoryService` recording named after the tool that made them.
+`.vscode/mcp.json`:
 
-**Cheap in context.** 29 workflow-shaped tools (~16k tokens of schema) instead of 43–51 thin API wrappers — `find` alone replaces six. Everything is cursor-paged and capped, with `detail: concise | standard | full`. Property validation comes from the live Roblox API dump, so new properties work the day they ship and typos get suggestions (`Anchorred` → `Anchored`).
+```json
+{
+  "servers": {
+    "roblox-studio": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "roblox-studio-mcp"]
+    }
+  }
+}
+```
+</details>
+
+<details>
+<summary><b>Gemini CLI</b></summary>
+
+`~/.gemini/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "roblox-studio": {
+      "command": "npx",
+      "args": ["-y", "roblox-studio-mcp"]
+    }
+  }
+}
+```
+</details>
+
+<details>
+<summary><b>Windsurf</b></summary>
+
+`~/.codeium/windsurf/mcp_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "roblox-studio": {
+      "command": "npx",
+      "args": ["-y", "roblox-studio-mcp"]
+    }
+  }
+}
+```
+</details>
+
+**3.** Open Studio, accept the `127.0.0.1` prompt, check the **Studio MCP** toolbar button. Verify with `studio_status`.
+
+Port defaults to **44755** — `--port` or `ROBLOX_STUDIO_MCP_PORT`, matched in the plugin widget. Loopback only.
 
 ## Tools
 
@@ -52,18 +153,13 @@ Reproduce with `node scripts/latency.mjs --count 50 --compare`.
 |---|---|
 | **Discover** | `studio_status` `tree` `inspect` `find` `api` |
 | **Scripts** | `script_read` `script_edit` `script_grep` `script_create` |
-| **Instances** | `create` `modify` `delete` `move` — all batched, one undo step |
+| **Instances** | `create` `modify` `delete` `move` |
 | **World** | `geometry` `assets` `collision` `undo` |
 | **Run & debug** | `playtest` `execute_luau` `character` `input` `console` `debug` `performance` |
 | **Look** | `screenshot` `viewport` `device` |
 | **Session** | `list_studios` `set_active_studio` |
 
-Each tool carries its own documentation in its MCP schema. A few things worth knowing up front:
-
-- `input` sends real key and mouse events to a running playtest. `character` pathfinds — use it for going places, `input` for testing controls.
-- `device` emulates 42 phones, tablets and consoles. Emulation persists until `device op="stop"`.
-- `screenshot` does not work during a playtest; Studio only lets client sessions capture, and bars them from HTTP.
-- `debug` needs **API debugger Luau** enabled in `File → Beta Features`.
+Gotchas: `screenshot` doesn't work mid-playtest. `debug` needs **API debugger Luau** in `File → Beta Features`. `device` emulation persists until `device op="stop"`.
 
 ## Compared to what else exists
 
@@ -76,11 +172,17 @@ Each tool carries its own documentation in its MCP schema. A few things worth kn
 | [boshyxd](https://github.com/boshyxd/robloxstudio-mcp) | 43 | long-poll | no | no | no | MIT (archived) |
 | [Roblox/studio-rust-mcp-server](https://github.com/Roblox/studio-rust-mcp-server) | 2 | HTTP | no | no | no | MIT (superseded) |
 
-Not built here: terrain, and AI mesh and material generation. Keep the built-in server alongside if you need those.
+- **Push, not poll.** SSE stream instead of a 500 ms poll. 50 sequential round trips: **13.6 ms** mean vs 25.8 ms, **12.8 ms** median vs 29.9 ms. Reproduce with `node scripts/latency.mjs --count 50 --compare`.
+- **Safe script edits.** `ScriptEditorService:UpdateSourceAsync`, not `script.Source` — your unsaved editor buffer survives. Batches are all-or-nothing.
+- **One Ctrl+Z per action**, via `ChangeHistoryService`.
+- **29 tools, ~16k tokens of schema**, against 43–51 elsewhere. Cursor-paged, capped, with `detail: concise | standard | full`.
+- **Live API dump** for property validation, so typos get suggestions (`Anchorred` → `Anchored`).
+
+Not built here: terrain, AI mesh and material generation.
 
 ## Security
 
-Binds `127.0.0.1` only, rejects any request carrying an `Origin` header, and requires a custom header a browser cannot set cross-origin — which closes the DNS-rebinding hole a plain localhost port leaves open. Studio grants HTTP per plugin and per URL, so this never touches your experience's "Allow HTTP Requests" setting.
+Binds `127.0.0.1`, rejects requests carrying `Origin`, and requires a header a browser cannot set cross-origin — closing the DNS-rebinding hole. Studio grants HTTP per plugin and per URL, so your experience's "Allow HTTP Requests" setting is untouched.
 
 ## Development
 
@@ -92,9 +194,9 @@ npm run install:plugin # build + copy into the Studio plugins folder
 npm test               # Luau unit tests
 ```
 
-`build:plugin` compiles every Luau file first and refuses to pack if one fails. Put `luau`, `luau-compile` and `luau-analyze` from [the Luau releases](https://github.com/luau-lang/luau/releases) on `PATH` or in `tools/`.
+Needs `luau`, `luau-compile` and `luau-analyze` from [the Luau releases](https://github.com/luau-lang/luau/releases) on `PATH` or in `tools/`.
 
-`evals/` holds ten questions answerable only by driving a real Studio session, plus a fixture that makes the answers stable — see [evals/README.md](evals/README.md).
+`evals/` holds ten questions answerable only by driving a real Studio session — see [evals/README.md](evals/README.md).
 
 ## Licence
 
