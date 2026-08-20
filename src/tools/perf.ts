@@ -43,8 +43,14 @@ interface CoverageResponse {
     percent: number;
     /** Line numbers that were instrumented but never executed. */
     uncoveredLines?: number[];
+    /** Compiled before coverage was on, so no line of it can be measured. */
+    notMeasurable?: boolean;
   }>;
   raw?: unknown;
+  /** Scripts this session instrumented for itself as it loaded. */
+  carriedOver?: string[];
+  carriedFailed?: Array<{ path: string; error: string }>;
+  remembered?: string[];
 }
 
 /**
@@ -183,9 +189,16 @@ export function registerPerfTools(context: ToolContext): void {
         "that long, so keep it short. It only sees code that actually runs, so " +
         "start a playtest first; profiling an idle edit session returns nothing.\n\n" +
         "`coverage` reports which lines of which scripts actually executed — dead " +
-        "code, untested branches, whether a fix was even reached. Coverage must be " +
-        "switched on before a script runs, so pass `enable` first, play, then read " +
-        "back.\n\n" +
+        "code, untested branches, whether a fix was even reached. Pass `enable` " +
+        "first, then play, then read the coverage back FROM THE PLAYTEST session, " +
+        "not the editor: instrumenting is per data model, and the playtest is a " +
+        "different one. `enable` is remembered for the place and re-applied by " +
+        "each new session as it loads. Pass an empty `enable` array to stop.\n\n" +
+        "What it can and cannot see: instrumentation is fixed when a script is " +
+        "first compiled, so it measures modules required after that point — where " +
+        "most game logic lives — but never a script that starts with the place, " +
+        "which the data model compiles before any plugin exists. Those report 0 " +
+        "lines and are named as unmeasurable rather than counted as dead code.\n\n" +
         "Frame and network figures are only meaningful while something is " +
         "running. Instance counts and memory are useful in edit mode too.",
       inputSchema: {
@@ -200,8 +213,10 @@ export function registerPerfTools(context: ToolContext): void {
           .array(z.string())
           .optional()
           .describe(
-            "coverage only: scripts to start measuring. Coverage must be switched " +
-              "on before the code runs, so enable first, then play, then read back.",
+            "coverage only: scripts to start measuring. Remembered for this place " +
+              "and switched on by every session that loads afterwards, so a " +
+              "playtest instruments them before its scripts run. An empty array " +
+              "stops instrumenting.",
           ),
         seconds: z
           .number()
@@ -250,8 +265,12 @@ export function registerPerfTools(context: ToolContext): void {
               ? `Coverage enabled for ${response.enabled.length} script(s). `
               : "") +
               "No coverage recorded yet.\n" +
-              "Coverage must be switched on before a script runs: enable it, start " +
-              "a playtest, then read back.",
+              "Coverage is recorded per session. If the code runs in a playtest, " +
+              "read it back from the playtest's studioId — the editor session " +
+              "instruments its own data model and never ran that code.\n" +
+              `This session carried over: ${JSON.stringify(response.carriedOver ?? [])}; ` +
+              `failed: ${JSON.stringify(response.carriedFailed ?? [])}; ` +
+              `remembered: ${JSON.stringify(response.remembered ?? [])}.`,
           );
         }
         const summary = table(
@@ -266,11 +285,25 @@ export function registerPerfTools(context: ToolContext): void {
           .filter((entry) => entry.uncoveredLines && entry.uncoveredLines.length > 0)
           .map((entry) => `  ${entry.path}: ${entry.uncoveredLines!.join(", ")}`);
 
-        return text(
-          misses.length > 0
-            ? `${summary}\n\nLines never executed:\n${misses.join("\n")}`
-            : summary,
-        );
+        // Reported separately from a genuine zero, because they look identical
+        // in the table and mean opposite things.
+        const unmeasured = response.scripts.filter((entry) => entry.notMeasurable);
+
+        const sections = [summary];
+        if (misses.length > 0) sections.push(`Lines never executed:\n${misses.join("\n")}`);
+        if (unmeasured.length > 0) {
+          sections.push(
+            `Not measurable, reported as 0 lines: ${unmeasured.map((e) => e.path).join(", ")}.\n` +
+              "These were already compiled when coverage was switched on, and Luau " +
+              "keeps its first bytecode — re-running them does not help. This is " +
+              "normal for a script that starts with the place, since nothing can " +
+              "instrument it before the data model loads it. Coverage measures " +
+              "modules required after instrumentation, which is where most game " +
+              "logic lives.",
+          );
+        }
+
+        return text(sections.join("\n\n"));
       }
 
       if (args.op === "profile") {

@@ -308,15 +308,73 @@ function Perf.profile(params: { [string]: any }): { [string]: any }
 end
 
 --[[
+	Which scripts to instrument the moment a session starts.
+
+	`EnableCoverage` applies to the DataModel it is called in, and a playtest is a
+	different DataModel, built when Play is pressed. So enabling from the editor
+	and then playing -- the sequence this tool used to instruct -- instruments the
+	editor and measures the playtest, which is why it reported nothing at all: the
+	editor never ran the code, and the playtest was never instrumented.
+
+	Nothing can be enabled from outside in time either, because a playtest's
+	scripts start with the DataModel. The request has to be waiting before the
+	session exists, so it is remembered here and replayed by whichever session
+	loads next.
+
+	Kept per place. Plugin settings live in one file shared by every Studio
+	process, so a path remembered while working on one game would otherwise be
+	resolved against a different one.
+]]
+local COVERAGE_SETTING = "coverageTargets"
+local pluginRef: Plugin? = nil
+local carriedOver: { string } = {}
+local carriedFailed: { { [string]: any } } = {}
+
+local function rememberCoverage(paths: { string })
+	local host = pluginRef
+	if host == nil then
+		return
+	end
+	pcall(function()
+		(host :: Plugin):SetSetting(COVERAGE_SETTING, {
+			placeId = game.PlaceId,
+			paths = paths,
+		})
+	end)
+end
+
+local function rememberedCoverage(): { string }
+	local host = pluginRef
+	if host == nil then
+		return {}
+	end
+	local ok, stored = pcall(function()
+		return (host :: Plugin):GetSetting(COVERAGE_SETTING)
+	end)
+	if not ok or typeof(stored) ~= "table" then
+		return {}
+	end
+	local record = stored :: { [string]: any }
+	if record.placeId ~= game.PlaceId or typeof(record.paths) ~= "table" then
+		return {}
+	end
+	return record.paths :: { string }
+end
+
+--[[
 	Line coverage: which lines of which scripts actually ran.
 
 	Coverage has to be switched on for a script before that script executes, so a
 	call that only reads the stats reports nothing on a first run. `enable` turns
-	it on for named scripts; the caller then plays, and reads back afterwards.
+	it on for named scripts and remembers them for the next session to switch on
+	for itself; the caller then plays, and reads back from the playtest.
 ]]
 function Perf.coverage(params: { [string]: any }): { [string]: any }
 	local enabled: { string } = {}
-	for _, path in (params.enable or {}) :: { string } do
+	-- Distinguished from absent on purpose: an explicit empty list is how a
+	-- caller stops instrumenting every future session for this place.
+	local requested = params.enable
+	for _, path in (requested or {}) :: { string } do
 		local target = Paths.resolve(path)
 		local ok = pcall(function()
 			ScriptContext:EnableCoverage(target)
@@ -324,6 +382,9 @@ function Perf.coverage(params: { [string]: any }): { [string]: any }
 		if ok then
 			table.insert(enabled, Paths.of(target))
 		end
+	end
+	if requested ~= nil then
+		rememberCoverage(enabled)
 	end
 
 	local ok, stats = pcall(function()
@@ -400,6 +461,18 @@ function Perf.coverage(params: { [string]: any }): { [string]: any }
 			percent = if instrumented > 0
 				then math.floor(covered / instrumented * 1000 + 0.5) / 10
 				else 0,
+			--[[
+				Zero instrumented lines does not mean an empty script; it means
+				this one was already compiled when coverage was switched on, and
+				Luau keeps the bytecode it first built.
+
+				Measured: a script re-run from scratch, after enabling, still
+				reported every line as uninstrumentable -- it printed its output
+				twice and reported 0 both times. So the distinction matters and
+				cannot be recovered later. Without saying so, 0/0 reads as "this
+				never ran", which is the opposite of what happened.
+			]]
+			notMeasurable = if instrumented == 0 then true else nil,
 		})
 	end
 
@@ -407,10 +480,41 @@ function Perf.coverage(params: { [string]: any }): { [string]: any }
 		enabled = enabled,
 		scripts = scripts,
 		raw = unrecognised,
+		-- What this session switched on for itself as it loaded, which is the
+		-- only thing that can instrument code running at startup.
+		carriedOver = if #carriedOver > 0 then carriedOver else nil,
+		carriedFailed = if #carriedFailed > 0 then carriedFailed else nil,
+		remembered = rememberedCoverage(),
 	}
 end
 
-function Perf.register()
+function Perf.register(host: Plugin?)
+	pluginRef = host
+
+	--[[
+		Applied at load, which is the only moment early enough to matter. A
+		playtest's scripts run as its DataModel starts, so a session that waited
+		for a tool call to tell it what to instrument would already have missed
+		the run it was meant to measure.
+
+		Paths that no longer resolve are skipped rather than reported: the set is
+		remembered across sessions, and a script deleted in between is a stale
+		entry, not a failure worth surfacing here.
+	]]
+	for _, path in rememberedCoverage() do
+		local ok, err = pcall(function()
+			ScriptContext:EnableCoverage(Paths.resolve(path))
+		end)
+		if ok then
+			table.insert(carriedOver, path)
+		else
+			-- Reported rather than swallowed. When this silently did nothing the
+			-- symptom was identical to the bug it was written to fix -- an empty
+			-- coverage read -- and there was no way to tell which half had failed.
+			table.insert(carriedFailed, { path = path, error = tostring(err) })
+		end
+	end
+
 	Dispatch.registerAll("perf", {
 		console = Perf.console,
 		snapshot = function()
