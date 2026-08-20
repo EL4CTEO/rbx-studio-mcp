@@ -12,6 +12,25 @@ This one holds a Server-Sent Events stream via `HttpService:CreateWebStreamClien
 
 Studio permits only 4 concurrent web streams and closes them after 30 minutes, so exactly one is held and reconnects are routine. Where web streams are unavailable the plugin falls back to long-poll automatically — same protocol, same handlers, nothing to configure.
 
+**Measured, not asserted.** 50 sequential `studio.ping` round trips on each transport, one run, same machine and same place:
+
+| | push (SSE) | long-poll |
+|---|---|---|
+| mean | **13.6 ms** | 25.8 ms |
+| median | **12.8 ms** | 29.9 ms |
+| p95 | **22.0 ms** | 30.9 ms |
+| best | 6.9 ms | 12.9 ms |
+
+Roughly twice as fast, and the median gap is wider than the mean gap — polling's cost is not an occasional slow call but a floor under every one of them. Sequential rather than parallel on purpose: an agent waits for each answer before choosing what to ask next, so serial round trips are the figure that matters.
+
+Reproduce it yourself against your own Studio, no source changes and nothing to shut down:
+
+```
+node scripts/latency.mjs --count 50 --compare
+```
+
+It times the transport in use, switches the plugin to the other, times that, and puts it back the way it found it.
+
 ## 2. It doesn't corrupt scripts you have open
 
 Other servers assign `script.Source` directly. When that script is open in the Studio editor, the editor holds its own buffer: your unsaved edits get discarded, or the write gets silently reverted.
