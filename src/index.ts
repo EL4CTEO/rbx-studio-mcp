@@ -9,6 +9,7 @@ import { registerDebugTools } from "./tools/debug.js";
 import { registerExecTools } from "./tools/exec.js";
 import { registerPerfTools } from "./tools/perf.js";
 import { registerPlaytestTools } from "./tools/playtest.js";
+import { registerScreenshotTools } from "./tools/screenshot.js";
 import { registerScriptTools } from "./tools/scripts.js";
 import { registerSessionTools } from "./tools/session.js";
 
@@ -59,6 +60,7 @@ async function main(): Promise<void> {
   registerPlaytestTools(context);
   registerExecTools(context);
   registerDebugTools(context);
+  registerScreenshotTools(context);
 
   const shutdown = async (): Promise<void> => {
     await bridgeServer.close();

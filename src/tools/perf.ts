@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { json, limitSchema, table, text, type ToolResult } from "../lib/format.js";
+import { json, limitSchema, table, text, textOf, type ToolResult } from "../lib/format.js";
 import { defineTool, type ToolContext } from "../lib/tool.js";
 
 interface ConsoleResponse {
@@ -273,11 +273,13 @@ export function registerPerfTools(context: ToolContext): void {
               `remembered: ${JSON.stringify(response.remembered ?? [])}.`,
           );
         }
-        const summary = table(
-          ["path", "coveredLines", "instrumentedLines", "percent"],
-          response.scripts as unknown as Array<Record<string, unknown>>,
-          { more: "instrumented lines only; blanks, comments and `end` are excluded" },
-        ).content[0]!.text;
+        const summary = textOf(
+          table(
+            ["path", "coveredLines", "instrumentedLines", "percent"],
+            response.scripts as unknown as Array<Record<string, unknown>>,
+            { more: "instrumented lines only; blanks, comments and `end` are excluded" },
+          ),
+        );
 
         // The percentage says how much ran; these say what did not, which is the
         // thing anyone measuring coverage is actually looking for.
@@ -361,17 +363,19 @@ export function registerPerfTools(context: ToolContext): void {
       // scanned for an outlier, so it gets a table instead of nested JSON.
       const categories = snapshot.memory.categories.slice(0, 15);
       const parts = [
-        json({
-          frame: snapshot.frame,
-          scene: snapshot.scene,
-          network: snapshot.network,
-          totalMemoryMb: snapshot.memory.totalMb,
-        }).content[0]!.text,
+        textOf(
+          json({
+            frame: snapshot.frame,
+            scene: snapshot.scene,
+            network: snapshot.network,
+            totalMemoryMb: snapshot.memory.totalMb,
+          }),
+        ),
       ];
       if (categories.length > 0) {
         parts.push(
           "\nMemory by category (MB):\n" +
-            table(["category", "megabytes"], categories).content[0]!.text,
+            textOf(table(["category", "megabytes"], categories)),
         );
       } else {
         // An absent breakdown beside a healthy total reads as "this place uses

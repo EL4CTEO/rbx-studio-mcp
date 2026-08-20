@@ -55,7 +55,9 @@ export function decodeCursor(cursor: string | undefined): number {
 
 /** Minimal MCP content result. Kept local so tools never import SDK types. */
 export interface ToolResult {
-  content: Array<{ type: "text"; text: string }>;
+  content: Array<
+    { type: "text"; text: string } | { type: "image"; data: string; mimeType: string }
+  >;
   isError?: boolean;
   [key: string]: unknown;
 }
@@ -64,8 +66,38 @@ export function text(body: string): ToolResult {
   return { content: [{ type: "text", text: body }] };
 }
 
+/**
+ * An image the model can actually look at, with a line of text alongside it.
+ *
+ * The caption is not decoration: an image arrives with no path, no size and no
+ * indication of which of several Studio windows it came from, and none of that
+ * is recoverable from the pixels.
+ */
+export function image(data: string, caption: string, mimeType = "image/png"): ToolResult {
+  return {
+    content: [
+      { type: "image", data, mimeType },
+      { type: "text", text: caption },
+    ],
+  };
+}
+
 export function errorText(body: string): ToolResult {
   return { content: [{ type: "text", text: body }], isError: true };
+}
+
+/**
+ * The rendered text of a result, for composing one helper's output into another.
+ *
+ * Results can now carry an image, so reading `content[0].text` is no longer
+ * always meaningful. Callers that stitch tables together want the text and
+ * nothing else, which is exactly what this returns.
+ */
+export function textOf(result: ToolResult): string {
+  return result.content
+    .filter((part): part is { type: "text"; text: string } => part.type === "text")
+    .map((part) => part.text)
+    .join("\n");
 }
 
 export interface PageMeta {
