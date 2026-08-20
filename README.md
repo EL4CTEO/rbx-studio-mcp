@@ -2,6 +2,8 @@
 
 MCP server for Roblox Studio. 29 tools over a push-based bridge. MIT.
 
+![The Studio MCP panel, showing calls and their latency](docs/console.png)
+
 ## Install
 
 **1. The Studio plugin**
