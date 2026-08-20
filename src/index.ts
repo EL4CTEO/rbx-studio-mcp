@@ -14,6 +14,9 @@ import { registerWorldTools } from "./tools/world.js";
 import { registerCharacterTools } from "./tools/character.js";
 import { registerScriptTools } from "./tools/scripts.js";
 import { registerSessionTools } from "./tools/session.js";
+import { registerInputTools } from "./tools/input.js";
+import { registerDeviceTools } from "./tools/device.js";
+import { registerApiTools } from "./tools/api.js";
 import { registerResources } from "./resources.js";
 
 const VERSION = "0.1.0";
@@ -64,6 +67,9 @@ async function main(): Promise<void> {
   registerExecTools(context);
   registerDebugTools(context);
   registerScreenshotTools(context);
+  registerInputTools(context);
+  registerDeviceTools(context);
+  registerApiTools(context);
   registerWorldTools(context);
   registerCharacterTools(context);
   registerResources(context);

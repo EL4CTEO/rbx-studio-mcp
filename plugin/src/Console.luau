@@ -65,6 +65,46 @@ export type Level = "ok" | "error" | "warn" | "info" | "dim" | "call" | "reply"
 ]]
 local DETAIL_COLUMN = 52
 
+--[[
+	How far past the column an inline detail may run before it is moved below the
+	message instead. A latency fits; a sentence does not.
+]]
+local INLINE_DETAIL = 14
+
+-- Continuation lines sit under the message text, clear of the timestamp and the
+-- sigil, so a wrapped explanation reads as belonging to the line above it.
+local DETAIL_INDENT = string.rep(" ", 11)
+
+-- Characters per continuation line. Fixed rather than measured from the widget:
+-- the console is monospaced, and a width that changes as the user drags the
+-- panel would rewrap history every frame.
+local DETAIL_WRAP = 74
+
+--[[
+	Breaks a long detail into lines at word boundaries.
+
+	Roblox's own TextWrapped would do this, and would wrap to column 0 -- there
+	is no hanging indent for a TextLabel -- which is the ragged shape this
+	replaces. Wrapping here means every continuation line can carry the indent.
+]]
+local function wrapDetail(detail: string): { string }
+	local lines: { string } = {}
+	local current = ""
+	for word in string.gmatch(detail, "%S+") do
+		local candidate = if current == "" then word else current .. " " .. word
+		if (utf8.len(candidate) or #candidate) > DETAIL_WRAP and current ~= "" then
+			table.insert(lines, current)
+			current = word
+		else
+			current = candidate
+		end
+	end
+	if current ~= "" then
+		table.insert(lines, current)
+	end
+	return lines
+end
+
 type State = {
 	lines: { string },
 	label: TextLabel?,
@@ -183,9 +223,18 @@ function Console.log(level: Level, message: string, detail: string?)
 		never straight, and the cause was invisible until two different sigils
 		sat next to each other.
 	]]
+	--[[
+		Only a detail that will actually sit in the column costs the message any
+		of its width. Cutting the message to make room for a detail that then
+		goes on its own line below would shorten it for nothing.
+	]]
+	local detailWidth = if detail then (utf8.len(detail) or #detail) else 0
+	local inlineDetail = detail ~= nil
+		and (utf8.len(message) or #message) + detailWidth + 3 <= DETAIL_COLUMN + INLINE_DETAIL
+
 	local trimmed = message
 	local budget = DETAIL_COLUMN - 3
-	if detail and (utf8.len(trimmed) or #trimmed) > budget then
+	if inlineDetail and (utf8.len(trimmed) or #trimmed) > budget then
 		-- Cut rather than wrap. A wrapped line destroys the alignment and
 		-- carries the detail off the end of the visible width as well.
 		local offset = utf8.offset(trimmed, budget) or budget
@@ -196,12 +245,28 @@ function Console.log(level: Level, message: string, detail: string?)
 	local bodyWidth = utf8.len(body) or #body
 	local line = span(PALETTE.dim, os.date("%H:%M:%S") :: string) .. " " .. span(spec.color, body)
 
-	if detail then
-		local padding = math.max(1, DETAIL_COLUMN - bodyWidth)
-		line ..= span(PALETTE.dim, string.rep(" ", padding) .. detail)
-	end
+	--[[
+		Short details ride the right-hand column; long ones get their own lines.
 
+		The column exists for latencies -- "12ms" stacking into something
+		readable -- and it was applied to every detail regardless of length. A
+		sentence of prose therefore started at column 52, ran off the widget, and
+		wrapped back to column 0, so the explanation of a standby session came
+		out as a ragged block that began in the middle of the screen and ended at
+		the left edge. Anything that will not fit beside the message is better
+		off beneath it.
+	]]
 	table.insert(state.lines, line)
+	if detail then
+		if inlineDetail then
+			local padding = math.max(1, DETAIL_COLUMN - bodyWidth)
+			state.lines[#state.lines] ..= span(PALETTE.dim, string.rep(" ", padding) .. detail)
+		else
+			for _, wrapped in wrapDetail(detail) do
+				table.insert(state.lines, span(PALETTE.dim, DETAIL_INDENT .. wrapped))
+			end
+		end
+	end
 	while #state.lines > MAX_LINES do
 		table.remove(state.lines, 1)
 	end

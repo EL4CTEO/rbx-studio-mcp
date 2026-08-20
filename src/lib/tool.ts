@@ -1,5 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { objectOutputType, ZodRawShape, ZodTypeAny } from "zod";
+import { z, type ZodRawShape } from "zod";
 import type { Bridge } from "../bridge/rpc.js";
 import { toToolError } from "./errors.js";
 import { errorText, type ToolResult } from "./format.js";
@@ -34,12 +34,13 @@ export interface ToolSpec<Shape extends ZodRawShape> {
  * the agent can read the hint and correct itself, where a transport error just
  * aborts the turn.
  */
-/** Parsed argument object for a tool declared with `inputSchema: Shape`. */
-export type ToolArgs<Shape extends ZodRawShape> = objectOutputType<
-  Shape,
-  ZodTypeAny,
-  "strip"
->;
+/**
+ * Parsed argument object for a tool declared with `inputSchema: Shape`.
+ *
+ * Zod 4 dropped `objectOutputType`, so this goes through `z.object` and infers
+ * the result — the same type, derived rather than named.
+ */
+export type ToolArgs<Shape extends ZodRawShape> = z.infer<z.ZodObject<Shape>>;
 
 export function defineTool<Shape extends ZodRawShape>(
   context: ToolContext,

@@ -16,7 +16,7 @@ interface PropertySpec {
 }
 
 const propertyBag = z
-  .record(z.union([z.string(), z.number(), z.boolean()]))
+  .record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
   .optional()
   .describe(
     'Properties to set, as name → value. Values are written the way Studio\'s ' +
@@ -25,7 +25,7 @@ const propertyBag = z
   );
 
 const attributeBag = z
-  .record(z.union([z.string(), z.number(), z.boolean()]))
+  .record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
   .optional()
   .describe("Attributes to set, as name → value. An empty string removes one.");
 

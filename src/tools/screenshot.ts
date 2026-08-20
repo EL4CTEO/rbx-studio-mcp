@@ -1,15 +1,37 @@
+import { zstdDecompressSync } from "node:zlib";
 import { z } from "zod";
 import { image, type ToolResult } from "../lib/format.js";
+import { encodePng } from "../lib/png.js";
 import { defineTool, type ToolContext } from "../lib/tool.js";
 
 interface ScreenshotResponse {
+  /** "zstd-rgb" when the plugin sent pixels; "png" from a Studio without EncodingService. */
+  encoding?: "zstd-rgb" | "png";
   data: string;
   width: number;
   height: number;
   sourceWidth: number;
   sourceHeight: number;
+  rawBytes?: number;
   bytes: number;
   context: string;
+}
+
+/**
+ * Turns whatever the plugin sent into base64 PNG.
+ *
+ * Two shapes arrive because the plugin cannot always produce the good one.
+ * Where `EncodingService` exists it sends Zstd-compressed raw RGB, and the PNG
+ * is built here with real deflate. Where it does not, it falls back to the
+ * hand-written Luau encoder, whose output is a valid PNG carrying uncompressed
+ * stored blocks — larger, but a picture either way.
+ */
+function toPngBase64(response: ScreenshotResponse): string {
+  if (response.encoding !== "zstd-rgb") {
+    return response.data;
+  }
+  const rgb = zstdDecompressSync(Buffer.from(response.data, "base64"));
+  return encodePng(rgb, response.width, response.height).toString("base64");
 }
 
 export function registerScreenshotTools(context: ToolContext): void {
@@ -65,8 +87,10 @@ export function registerScreenshotTools(context: ToolContext): void {
         { studioId: args.studioId, timeoutMs: 60_000 },
       );
 
+      const png = toPngBase64(response);
+
       return image(
-        response.data,
+        png,
         `Studio viewport (${response.context}), ${response.width}x${response.height}` +
           ` scaled from ${response.sourceWidth}x${response.sourceHeight}.`,
       );

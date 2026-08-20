@@ -14,6 +14,7 @@
 
 local ScriptContext = game:GetService("ScriptContext")
 local RunService = game:GetService("RunService")
+local SceneAnalysisService = game:GetService("SceneAnalysisService")
 local ScriptProfilerService = game:GetService("ScriptProfilerService")
 local Stats = game:GetService("Stats")
 
@@ -515,6 +516,121 @@ function Perf.register(host: Plugin?)
 		end
 	end
 
+--[[
+	What this place is made of, and where its weight sits.
+
+	`SceneAnalysisService` answers questions the counters cannot. A snapshot says
+	memory is 2.4GB; this says which assets hold it and which instances are
+	responsible, broken down by category rather than by process.
+
+	The return shapes are undocumented -- the reference page lists the six
+	methods and names their result types without describing a single field -- so
+	what follows was read off a live session. Every one of them returns the same
+	recursive node: `{ Name, Size, Children }`, with two exceptions.
+	`GetTriangleCompositionAsync` carries `Sizes`, a dictionary of Triangles and
+	Drawcalls, in place of the single `Size`; and animation nodes add `AssetId`
+	and `Owners`, each owner being `{ Name, ClassName }`.
+
+	Sizes are counts for instance composition and bytes for the memory readings,
+	which the engine does not label either -- so this file labels them.
+]]
+local function flatten(node: any, depth: number, into: { { [string]: any } })
+	if typeof(node) ~= "table" then
+		return
+	end
+	local children = (node :: any).Children
+	if typeof(children) ~= "table" then
+		return
+	end
+	for _, child in children do
+		local entry: { [string]: any } = {
+			name = tostring((child :: any).Name),
+			depth = depth,
+		}
+		local size = (child :: any).Size
+		if typeof(size) == "number" then
+			entry.size = size
+		end
+		local sizes = (child :: any).Sizes
+		if typeof(sizes) == "table" then
+			for key, value in sizes :: { [string]: any } do
+				entry[string.lower(tostring(key))] = value
+			end
+		end
+		local assetId = (child :: any).AssetId
+		if assetId ~= nil then
+			entry.assetId = tostring(assetId)
+		end
+		local owners = (child :: any).Owners
+		if typeof(owners) == "table" then
+			local names: { string } = {}
+			for _, owner in owners :: { any } do
+				if typeof(owner) == "table" then
+					table.insert(names, string.format("%s (%s)", tostring(owner.Name), tostring(owner.ClassName)))
+				end
+			end
+			entry.owners = names
+		end
+		table.insert(into, entry)
+
+		-- Two levels is the useful depth: "3D Objects -> MeshPart" answers the
+		-- question, while a third level is per-instance detail that `find` gives
+		-- better and on demand.
+		if depth < 2 then
+			flatten(child, depth + 1, into)
+		end
+	end
+end
+
+local SCENE_SECTIONS = {
+	{ key = "composition", method = "GetInstanceCompositionAsync", unit = "instances" },
+	{ key = "triangles", method = "GetTriangleCompositionAsync", unit = "triangles" },
+	{ key = "scriptMemory", method = "GetScriptMemoryAsync", unit = "bytes" },
+	{ key = "animationMemory", method = "GetAnimationMemoryAsync", unit = "bytes" },
+	{ key = "audioMemory", method = "GetAudioMemoryAsync", unit = "bytes" },
+	{ key = "unparented", method = "GetUnparentedInstancesAsync", unit = "instances" },
+}
+
+function Perf.scene(params: { [string]: any }): { [string]: any }
+	local only = if typeof(params.section) == "string" and params.section ~= "" then params.section else nil
+	local sections: { [string]: any } = {}
+
+	for _, spec in SCENE_SECTIONS do
+		if only ~= nil and only ~= spec.key then
+			continue
+		end
+		local ok, root = pcall(function()
+			return (SceneAnalysisService :: any)[spec.method](SceneAnalysisService)
+		end)
+		if not ok then
+			sections[spec.key] = { error = tostring(root) }
+			continue
+		end
+
+		local rows: { { [string]: any } } = {}
+		flatten(root, 1, rows)
+
+		local total = (root :: any).Size
+		local totals = (root :: any).Sizes
+		sections[spec.key] = {
+			total = if typeof(total) == "number" then total else nil,
+			totals = if typeof(totals) == "table" then totals else nil,
+			unit = spec.unit,
+			entries = rows,
+		}
+	end
+
+	if only ~= nil and sections[only] == nil then
+		Dispatch.fail(
+			"BAD_PARAMS",
+			string.format("unknown scene section %q", only),
+			"Sections are: composition, triangles, scriptMemory, animationMemory, audioMemory, unparented."
+		)
+	end
+
+	return sections
+end
+
 	Dispatch.registerAll("perf", {
 		console = Perf.console,
 		snapshot = function()
@@ -522,6 +638,7 @@ function Perf.register(host: Plugin?)
 		end,
 		profile = Perf.profile,
 		coverage = Perf.coverage,
+		scene = Perf.scene,
 	})
 end
 

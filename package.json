@@ -14,7 +14,7 @@
     "LICENSE"
   ],
   "engines": {
-    "node": ">=18"
+    "node": ">=22.15"
   },
   "scripts": {
     "build": "tsc",
@@ -39,10 +39,10 @@
   ],
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.22.0",
-    "zod": "^3.25.76"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@types/node": "^22.10.2",
-    "typescript": "^5.7.2"
+    "@types/node": "^26.2.0",
+    "typescript": "^7.0.2"
   }
 }

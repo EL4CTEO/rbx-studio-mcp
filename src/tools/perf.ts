@@ -74,6 +74,24 @@ interface ProfileResponse {
   raw?: string;
 }
 
+interface SceneEntry {
+  name: string;
+  depth: number;
+  size?: number;
+  triangles?: number;
+  drawcalls?: number;
+  assetId?: string;
+  owners?: string[];
+}
+
+interface SceneSection {
+  total?: number;
+  totals?: Record<string, number>;
+  unit: string;
+  entries: SceneEntry[];
+  error?: string;
+}
+
 type ProfileFrame = NonNullable<NonNullable<ProfileResponse["data"]>["Functions"]>[number];
 
 /**
@@ -222,15 +240,36 @@ export function registerPerfTools(context: ToolContext): void {
         "most game logic lives — but never a script that starts with the place, " +
         "which the data model compiles before any plugin exists. Those report 0 " +
         "lines and are named as unmeasurable rather than counted as dead code.\n\n" +
+        "`scene` breaks the place down by what it is actually made of: instances " +
+        "by category, triangles and draw calls, and the assets holding script, " +
+        "animation and audio memory — each named, so \"2.4GB of memory\" becomes " +
+        "\"this animation is 138KB and these are the Animators using it\". It also " +
+        "reports UNPARENTED INSTANCES, which is the closest thing here to a leak " +
+        "detector: objects still alive with nothing holding them in the tree, " +
+        "invisible to `find` and to `tree` because they are in neither.\n\n" +
         "Frame and network figures are only meaningful while something is " +
         "running. Instance counts and memory are useful in edit mode too.",
       inputSchema: {
         op: z
-          .enum(["snapshot", "profile", "coverage"])
+          .enum(["snapshot", "profile", "coverage", "scene"])
           .default("snapshot")
           .describe(
             "'snapshot' reads counters now; 'profile' samples running scripts; " +
-              "'coverage' reports which lines have executed.",
+              "'coverage' reports which lines have executed; 'scene' breaks the " +
+              "place down by what it is made of.",
+          ),
+        section: z
+          .enum([
+            "composition",
+            "triangles",
+            "scriptMemory",
+            "animationMemory",
+            "audioMemory",
+            "unparented",
+          ])
+          .optional()
+          .describe(
+            "scene only: return just one section instead of all six.",
           ),
         enable: z
           .array(z.string())
@@ -341,6 +380,60 @@ export function registerPerfTools(context: ToolContext): void {
         }
 
         return text(sections.join("\n\n"));
+      }
+
+      if (args.op === "scene") {
+        const response = await bridge.call<Record<string, SceneSection>>(
+          "perf.scene",
+          { section: args.section },
+          { studioId: args.studioId, timeoutMs: 45_000 },
+        );
+
+        const blocks: string[] = [];
+        for (const [name, section] of Object.entries(response)) {
+          if (section.error !== undefined) {
+            blocks.push(`${name}: unavailable (${section.error})`);
+            continue;
+          }
+          const heading =
+            section.totals !== undefined
+              ? `${name} — ${Object.entries(section.totals)
+                  .map(([key, value]) => `${value} ${key.toLowerCase()}`)
+                  .join(", ")}`
+              : `${name} — ${section.total ?? 0} ${section.unit}`;
+
+          if (section.entries.length === 0) {
+            // Worth stating rather than printing an empty heading: zero
+            // unparented instances is a clean bill of health, not missing data.
+            blocks.push(`${heading}\n  (nothing)`);
+            continue;
+          }
+
+          const shown = section.entries.slice(0, 40);
+          const rows = shown
+            .map((entry) => {
+              const indent = "  ".repeat(entry.depth);
+              const size =
+                entry.size !== undefined
+                  ? ` — ${entry.size} ${section.unit}`
+                  : entry.triangles !== undefined
+                    ? ` — ${entry.triangles} triangles, ${entry.drawcalls ?? 0} draw calls`
+                    : "";
+              // Owners are what turn a number into something actionable: the
+              // asset's size says how much, the owners say who to go and look at.
+              const owners =
+                entry.owners && entry.owners.length > 0
+                  ? `\n${indent}    used by ${entry.owners.slice(0, 3).join(", ")}`
+                  : "";
+              return `${indent}${entry.name}${size}${owners}`;
+            })
+            .join("\n");
+
+          const dropped = section.entries.length - shown.length;
+          blocks.push(`${heading}\n${rows}${dropped > 0 ? `\n  (${dropped} more)` : ""}`);
+        }
+
+        return text(blocks.join("\n\n"));
       }
 
       if (args.op === "profile") {

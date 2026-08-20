@@ -15,6 +15,7 @@
 
 local AssetService = game:GetService("AssetService")
 local CaptureService = game:GetService("CaptureService")
+local EncodingService = game:GetService("EncodingService")
 local RunService = game:GetService("RunService")
 
 local Dispatch = require(script.Parent.Parent.Dispatch)
@@ -30,6 +31,10 @@ local MIN_WIDTH = 160
 -- calls back fails with something an agent can act on rather than hanging the
 -- session until the request deadline.
 local CAPTURE_TIMEOUT = 10
+
+-- Zstd level. 3 is its default and already gets most of the win on screen
+-- content; the higher levels cost Studio's main thread for a few percent.
+local COMPRESSION_LEVEL = 3
 
 local Capture = {}
 
@@ -112,9 +117,52 @@ function Capture.screenshot(params: { [string]: any }): { [string]: any }
 	end
 
 	local rgb, outWidth, outHeight = Png.downscaleToRgb(pixels, sourceWidth, sourceHeight, width)
+
+	--[[
+		Raw pixels, compressed by the engine, assembled into a PNG by Node.
+
+		The plugin used to write the whole PNG itself, and could only write a bad
+		one: Studio has no deflate, so `Png.encode` emitted zlib *stored* blocks
+		-- the format's "compression not applied" escape hatch -- and every
+		screenshot travelled and landed at full uncompressed size. It was also
+		base64-ing by hand, a table lookup per byte in Luau.
+
+		`EncodingService` has both, natively. Zstd is the only algorithm the
+		engine exposes and PNG cannot use it, so the split is: the plugin
+		compresses the pixels for the wire, and Node -- which has real zlib --
+		decompresses and writes a properly deflated PNG. The side with the
+		compressor does the compressing.
+
+		Guarded rather than assumed: EncodingService is recent, and a Studio
+		without it should cost a bigger screenshot, not a failed one.
+	]]
+	local okPacked, packed = pcall(function()
+		local compressed = (EncodingService :: any):CompressBuffer(
+			rgb,
+			(Enum :: any).CompressionAlgorithm.Zstd,
+			COMPRESSION_LEVEL
+		)
+		return buffer.tostring((EncodingService :: any):Base64Encode(compressed))
+	end)
+
+	if okPacked then
+		return {
+			encoding = "zstd-rgb",
+			data = packed,
+			width = outWidth,
+			height = outHeight,
+			sourceWidth = sourceWidth,
+			sourceHeight = sourceHeight,
+			rawBytes = buffer.len(rgb),
+			bytes = #(packed :: string),
+			context = if RunService:IsEdit() then "edit" else "playtest",
+		}
+	end
+
 	local png = Png.encode(rgb, outWidth, outHeight)
 
 	return {
+		encoding = "png",
 		data = Png.base64(png),
 		width = outWidth,
 		height = outHeight,

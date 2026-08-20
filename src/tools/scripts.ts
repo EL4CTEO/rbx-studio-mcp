@@ -330,12 +330,21 @@ export function registerScriptTools(context: ToolContext): void {
         }
         // Suggesting `literal` to someone who already set it reads as though the
         // tool did not register the argument.
+        // `|` is called out by name because it is the one difference that fails
+        // silently. A regex habit writes `foo|bar`, Lua reads it as the literal
+        // characters, nothing matches, and the empty result looks like an
+        // answer rather than like a malformed pattern.
+        const alternation = !args.literal && args.pattern.includes("|");
         return text(
           `No matches in ${response.searched} script(s).\n` +
-            (args.literal
-              ? "The match is literal and case-sensitive unless you set `ignoreCase`."
-              : "Check case, and remember patterns are Lua patterns — set `literal` " +
-                "to search for the text exactly as written."),
+            (alternation
+              ? "This pattern contains `|`, which Lua patterns do not support — " +
+                "there is no alternation, so `|` matched as a literal character. " +
+                "Search one alternative per call, or set `literal`."
+              : args.literal
+                ? "The match is literal and case-sensitive unless you set `ignoreCase`."
+                : "Check case, and remember patterns are Lua patterns — set `literal` " +
+                  "to search for the text exactly as written."),
         );
       }
 
