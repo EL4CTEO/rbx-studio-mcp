@@ -76,30 +76,63 @@ local function signature(entry: any): string
 end
 
 --[[
-	Splits a class's own members from the ones it inherits.
+	The deprecation notice on a member, if the engine carries one.
 
-	Every entry names its `Owner`, and without using it the answer is unusable:
-	ProximityPrompt has 2 methods of its own and 42 from Instance and Object, so
-	a flat alphabetical list buries `InputHoldBegin` among `findFirstChild` and
-	thirty other pieces of boilerplate the caller already knows about. The
-	inherited ones are still counted, because "it has no such method" and "it has
-	it, from Instance" are different answers.
+	`Display.DeprecationMessage` is how the reflection data marks a member as
+	superseded, and Instance carries eight: `clone`, `remove`, `getChildren` and
+	the rest of the lowercase aliases retired years ago. They are a fifth of
+	everything Instance appears to offer, and they still run -- so an agent that
+	picks one from the list gets working code and a deprecation warning in the
+	user's output, which is exactly the sort of thing this tool exists to stop.
+]]
+local function deprecation(entry: any): string?
+	if typeof(entry) ~= "table" then
+		return nil
+	end
+	local display = (entry :: any).Display
+	if typeof(display) ~= "table" then
+		return nil
+	end
+	local message = (display :: any).DeprecationMessage
+	return if typeof(message) == "string" and message ~= "" then message else nil
+end
+
+--[[
+	Renders the members worth showing, and counts the ones left out.
+
+	Two things are held back. Deprecated members always: nothing should be
+	written against them. Inherited members unless asked for: ProximityPrompt has
+	2 methods of its own and 42 from Instance and Object, so a flat alphabetical
+	list buries `InputHoldBegin` among boilerplate the caller already knows.
+
+	Both are counted rather than silently dropped, because "it has no such
+	method" and "it has it, from Instance" and "it has it, but do not use it" are
+	three different answers and the caller needs to tell them apart.
 
 	Sorted so two calls agree: an agent comparing a class across engine versions
 	should see what changed, not a reshuffle.
 ]]
-local function split(entries: { any }, className: string): ({ string }, number)
-	local own: { string } = {}
+local function collect(entries: { any }, className: string, wantInherited: boolean): ({ string }, number, number)
+	local kept: { string } = {}
 	local inherited = 0
+	local deprecated = 0
+
 	for _, entry in entries do
-		if typeof(entry) == "table" and tostring((entry :: any).Owner) ~= className then
+		if deprecation(entry) ~= nil then
+			deprecated += 1
+			continue
+		end
+		local own = typeof(entry) ~= "table" or tostring((entry :: any).Owner) == className
+		if not own then
 			inherited += 1
-		else
-			table.insert(own, signature(entry))
+		end
+		if own or wantInherited then
+			table.insert(kept, signature(entry))
 		end
 	end
-	table.sort(own)
-	return own, inherited
+
+	table.sort(kept)
+	return kept, inherited, deprecated
 end
 
 function Api.describe(params: { [string]: any }): { [string]: any }
@@ -157,19 +190,13 @@ function Api.describe(params: { [string]: any }): { [string]: any }
 		if not ok then
 			continue
 		end
-		local own, inherited = split(entries :: { any }, exact)
-		if wantInherited then
-			local everything: { string } = {}
-			for _, entry in entries :: { any } do
-				table.insert(everything, signature(entry))
-			end
-			table.sort(everything)
-			result[source.key] = everything
-		else
-			result[source.key] = own
-			if inherited > 0 then
-				result[source.key .. "Inherited"] = inherited
-			end
+		local members, inherited, deprecated = collect(entries :: { any }, exact, wantInherited)
+		result[source.key] = members
+		if inherited > 0 and not wantInherited then
+			result[source.key .. "Inherited"] = inherited
+		end
+		if deprecated > 0 then
+			result[source.key .. "Deprecated"] = deprecated
 		end
 	end
 

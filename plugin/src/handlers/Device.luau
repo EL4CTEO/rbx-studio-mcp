@@ -12,66 +12,16 @@
 	`screenshot` it is the only way to answer "does this work on a phone"
 	without owning one: set the device, take the picture, look.
 
-	The service is undocumented on return shapes, so what is reported below was
-	read off a live session rather than from the reference. Notably
-	`GetResolutionAsync` and its siblings THROW while no device is active,
-	rather than returning a default, so every read here is guarded.
+	Reading the current state is `Emulation`'s job, shared with `screenshot` and
+	`studio_status` so the three cannot drift apart on what is being emulated.
 ]]
 
 local StudioDeviceSimulatorService = game:GetService("StudioDeviceSimulatorService")
 
 local Dispatch = require(script.Parent.Parent.Dispatch)
+local Emulation = require(script.Parent.Parent.Emulation)
 
 local Device = {}
-
-local function currentDeviceId(): string
-	local ok, id = pcall(function()
-		return (StudioDeviceSimulatorService :: any):GetDeviceAsync()
-	end)
-	return if ok then tostring(id) else "default"
-end
-
---[[
-	Everything the simulator will say about the current state.
-
-	Each read is separately guarded: with no device active they raise
-	"no device is active -- call SetDeviceAsync() first", and one of those
-	should cost its own field rather than the whole reply.
-]]
-local function currentState(): { [string]: any }
-	local state: { [string]: any } = { device = currentDeviceId() }
-
-	local okRes, resolution = pcall(function()
-		return (StudioDeviceSimulatorService :: any):GetResolutionAsync()
-	end)
-	if okRes and typeof(resolution) == "Vector2" then
-		state.resolution = string.format("%dx%d", (resolution :: Vector2).X, (resolution :: Vector2).Y)
-	end
-
-	local okOrient, orientation = pcall(function()
-		return (StudioDeviceSimulatorService :: any):GetOrientationAsync()
-	end)
-	if okOrient then
-		state.orientation = tostring(orientation)
-	end
-
-	local okDensity, density = pcall(function()
-		return (StudioDeviceSimulatorService :: any):GetPixelDensityAsync()
-	end)
-	if okDensity then
-		state.pixelDensity = math.round(tonumber(density) :: number * 100) / 100
-	end
-
-	local okScaling, scaling = pcall(function()
-		return (StudioDeviceSimulatorService :: any):GetScalingModeAsync()
-	end)
-	if okScaling then
-		state.scalingMode = tostring(scaling)
-	end
-
-	state.emulating = state.device ~= "default"
-	return state
-end
 
 function Device.list(_params: { [string]: any }): { [string]: any }
 	local ok, list = pcall(function()
@@ -105,7 +55,7 @@ function Device.list(_params: { [string]: any }): { [string]: any }
 		end
 	end
 
-	return { devices = devices, count = #devices, current = currentState() }
+	return { devices = devices, count = #devices, current = Emulation.state() }
 end
 
 function Device.set(params: { [string]: any }): { [string]: any }
@@ -140,7 +90,7 @@ function Device.set(params: { [string]: any }): { [string]: any }
 		end
 	end
 
-	return currentState()
+	return Emulation.state()
 end
 
 function Device.stop(_params: { [string]: any }): { [string]: any }
@@ -150,11 +100,11 @@ function Device.stop(_params: { [string]: any }): { [string]: any }
 	if not ok then
 		Dispatch.fail("DEVICE_UNAVAILABLE", string.format("Could not stop emulation: %s", tostring(err)))
 	end
-	return currentState()
+	return Emulation.state()
 end
 
 function Device.state(_params: { [string]: any }): { [string]: any }
-	return currentState()
+	return Emulation.state()
 end
 
 function Device.register()

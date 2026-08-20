@@ -16,10 +16,10 @@
 local AssetService = game:GetService("AssetService")
 local CaptureService = game:GetService("CaptureService")
 local EncodingService = game:GetService("EncodingService")
-local StudioDeviceSimulatorService = game:GetService("StudioDeviceSimulatorService")
 local RunService = game:GetService("RunService")
 
 local Dispatch = require(script.Parent.Parent.Dispatch)
+local Emulation = require(script.Parent.Parent.Emulation)
 local Png = require(script.Parent.Parent.Png)
 
 -- Wide enough to read a GUI label, small enough that the encode stays quick and
@@ -81,23 +81,6 @@ local function takeScreenshot(): string
 	end
 
 	return contentId :: any
-end
-
---[[
-	The emulated device, if any, so the picture can say why it is that shape.
-
-	Device emulation persists until it is switched off. A caller who set it
-	earlier, or who never set it at all and inherited it from the user, gets a
-	tall narrow screenshot and no reason -- so the reason travels with the image.
-]]
-local function emulatedDevice(): string?
-	local ok, id = pcall(function()
-		return (StudioDeviceSimulatorService :: any):GetDeviceAsync()
-	end)
-	if not ok or id == nil or tostring(id) == "default" then
-		return nil
-	end
-	return tostring(id)
 end
 
 function Capture.screenshot(params: { [string]: any }): { [string]: any }
@@ -174,7 +157,7 @@ function Capture.screenshot(params: { [string]: any }): { [string]: any }
 			rawBytes = buffer.len(rgb),
 			bytes = #(packed :: string),
 			context = if RunService:IsEdit() then "edit" else "playtest",
-			device = emulatedDevice(),
+			device = Emulation.deviceId(),
 		}
 	end
 
@@ -191,7 +174,7 @@ function Capture.screenshot(params: { [string]: any }): { [string]: any }
 		-- Which window this came from. A screenshot carries no indication of
 		-- whether it shows the editor or a running game, and the two look alike.
 		context = if RunService:IsEdit() then "edit" else "playtest",
-		device = emulatedDevice(),
+		device = Emulation.deviceId(),
 	}
 end
 
