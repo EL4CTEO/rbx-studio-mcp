@@ -10,8 +10,11 @@ import { registerExecTools } from "./tools/exec.js";
 import { registerPerfTools } from "./tools/perf.js";
 import { registerPlaytestTools } from "./tools/playtest.js";
 import { registerScreenshotTools } from "./tools/screenshot.js";
+import { registerWorldTools } from "./tools/world.js";
+import { registerCharacterTools } from "./tools/character.js";
 import { registerScriptTools } from "./tools/scripts.js";
 import { registerSessionTools } from "./tools/session.js";
+import { registerResources } from "./resources.js";
 
 const VERSION = "0.1.0";
 
@@ -61,6 +64,9 @@ async function main(): Promise<void> {
   registerExecTools(context);
   registerDebugTools(context);
   registerScreenshotTools(context);
+  registerWorldTools(context);
+  registerCharacterTools(context);
+  registerResources(context);
 
   const shutdown = async (): Promise<void> => {
     await bridgeServer.close();

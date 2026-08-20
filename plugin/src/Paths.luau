@@ -208,6 +208,29 @@ end
 	removed between calls. Read a fresh path after any structural change.
 ]]
 function Paths.of(instance: Instance, memo: NameIndex?): string
+	--[[
+		Refuses anything that is not an Instance, rather than duck-typing it.
+
+		This walks `.Name` and `.Parent`, which a plain table can also have -- so
+		handed a table carrying those two fields it used to return a perfectly
+		well-formed path for an object that exists nowhere in the data model.
+		That happened: `GeometryService:FragmentAsync` returns `{Index, Instance}`
+		wrappers, a handler assigned `.Name` and `.Parent` to the wrapper, and
+		this function reported eight new parts by full path when none had been
+		created. A fabricated path is worse than an error, because everything
+		downstream treats it as real.
+	]]
+	if typeof(instance) ~= "Instance" then
+		error(
+			string.format(
+				"Paths.of expects an Instance, got %s. This is a bug in the caller, "
+					.. "not in the request.",
+				typeof(instance)
+			),
+			2
+		)
+	end
+
 	if instance == game then
 		return "game"
 	end

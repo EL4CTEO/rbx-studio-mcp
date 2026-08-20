@@ -72,7 +72,6 @@ type State = {
 	statusDot: TextLabel?,
 	statusText: TextLabel?,
 	metaText: TextLabel?,
-	cursor: TextLabel?,
 	countersText: TextLabel?,
 	pinned: boolean,
 	calls: number,
@@ -90,7 +89,6 @@ local state: State = {
 	statusDot = nil,
 	statusText = nil,
 	metaText = nil,
-	cursor = nil,
 	countersText = nil,
 	pinned = true,
 	calls = 0,
@@ -144,13 +142,15 @@ local function refreshCounters()
 	if not counters then
 		return
 	end
-	-- What is happening now outranks what has happened: while a call is in
-	-- flight the footer reports it, and falls back to the totals when idle.
-	if state.running ~= nil then
-		counters.Text = state.running
-		counters.TextColor3 = PALETTE.cyan
-		return
-	end
+	--[[
+		The footer is for totals, and only totals.
+
+		It briefly doubled as the in-flight readout, which meant a running
+		command overwrote "4 calls 0 errors avg 84ms" with its own name -- the
+		session statistics disappearing exactly when the session was busiest.
+		Two live readouts on one small panel is one too many, and the band
+		already has the better spot for it, right beside the solid.
+	]]
 	counters.TextColor3 = PALETTE.dim
 	if state.calls == 0 then
 		counters.Text = "idle"
@@ -221,9 +221,26 @@ end
 	updates rather than accumulates, so it goes to the footer and the activity
 	band -- both of which show a single current value and neither of which grows.
 ]]
-function Console.beginCall(title: string)
+--[[
+	Colour and pace per kind of work, so the band reads as what is happening.
+
+	Reads are cool and quick because they are constant and harmless; writes are
+	violet and slower because they change the user's game; running code is green
+	and heavier still. Urgency drives both the spin rate and how strongly the
+	colour takes over, so the two never disagree.
+]]
+local KIND_LOOK: { [string]: { color: Color3, urgency: number } } = {
+	read = { color = PALETTE.cyan, urgency = 0.3 },
+	write = { color = PALETTE.violet, urgency = 0.7 },
+	run = { color = PALETTE.green, urgency = 0.9 },
+	debug = { color = PALETTE.amber, urgency = 0.5 },
+}
+
+function Console.beginCall(title: string, kind: string)
 	state.running = title
+	local look = KIND_LOOK[kind] or KIND_LOOK.read
 	Visuals.setCaption(title)
+	Visuals.setKind(look.color, look.urgency)
 	refreshCounters()
 end
 
@@ -239,6 +256,9 @@ function Console.recordCall(ok: boolean, milliseconds: number)
 	end
 	state.running = nil
 	refreshCounters()
+	-- The footer reports totals when idle, so the band shows what just ran
+	-- instead of repeating the same word on the same screen.
+	Visuals.setIdle()
 
 	-- The band plots it: bar height is how long it took, colour is whether it
 	-- worked, and a failure knocks the solid off its axis as well.
@@ -483,19 +503,14 @@ function Console.mount(parent: Instance, handlers: Handlers)
 	prompt.Size = UDim2.new(0, 70, 1, 0)
 	prompt.Parent = footer
 
-	-- A blinking block cursor: the cheapest possible signal that the panel is
-	-- live rather than a frozen screenshot of an old session.
-	local cursor = Instance.new("TextLabel")
-	cursor.Text = "\u{2588}"
-	cursor.Font = Enum.Font.Code
-	cursor.TextSize = 11
-	cursor.TextColor3 = PALETTE.violet
-	cursor.TextXAlignment = Enum.TextXAlignment.Left
-	cursor.BackgroundTransparency = 1
-	cursor.Position = UDim2.new(0, 72, 0, 0)
-	cursor.Size = UDim2.new(0, 10, 1, 0)
-	cursor.Parent = footer
-	state.cursor = cursor
+	--[[
+		No cursor here.
+
+		A blinking block after a prompt is the universal sign that something is
+		waiting to be typed into, and nothing in this panel accepts input. It
+		was there to prove the widget was live, which the activity band now does
+		honestly, by moving only when there is something to move about.
+	]]
 
 	local counters = Instance.new("TextLabel")
 	counters.Text = "idle"
@@ -509,13 +524,6 @@ function Console.mount(parent: Instance, handlers: Handlers)
 	counters.Size = UDim2.new(1, -90, 1, 0)
 	counters.Parent = footer
 	state.countersText = counters
-
-	task.spawn(function()
-		while cursor.Parent do
-			cursor.TextTransparency = if cursor.TextTransparency > 0.5 then 0 else 1
-			task.wait(0.6)
-		end
-	end)
 
 	--[[
 		The band sits above the log and pushes it down, rather than over it.
@@ -543,6 +551,13 @@ function Console.mount(parent: Instance, handlers: Handlers)
 		scroller.Position = UDim2.new(0, 0, 0, top)
 		scroller.Size = UDim2.new(1, 0, 1, -(top + 22))
 	end
+
+	-- On by default. It is the part that says the session is alive, and a signal
+	-- nobody discovers is not a signal; anyone who wants the extra 44px back can
+	-- turn it off in one click.
+	Visuals.setVisible(true)
+	visualsButton.Text = utf8.char(0x25C6) .. " visuals"
+	Visuals.setIdle()
 	layoutLog()
 
 	visualsButton.MouseButton1Click:Connect(function()

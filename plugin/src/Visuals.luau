@@ -110,11 +110,22 @@ local SHAPES: { Shape } = {
 }
 
 local MAX_EDGES = 30
+local MAX_VERTICES = 12
 local FOCAL = 3.4
 
+-- The inner solid, counter-rotating inside the outer one. An octahedron
+-- regardless of what is outside it: it reads as a core rather than as a second
+-- object competing for attention, and its 12 edges are cheap.
+local INNER_SHAPE = 2
+local INNER_SCALE = 0.42
+
 -- The strip's height, and the width reserved for the solid at its left end.
-Visuals.BAND_HEIGHT = 46
-local CELL = 46
+-- The solid was originally as tall as the band and read as looming: it crowded
+-- the caption and made a 46px strip feel like a panel. It is an indicator, not
+-- the subject, so it sits small with air around it.
+Visuals.BAND_HEIGHT = 44
+local CELL = 34
+local GUTTER = 16
 
 -- How many calls the trace remembers. Forty is about a screen's width of bars
 -- at two pixels each, and about as far back as anyone reads a trend.
@@ -137,6 +148,8 @@ type Runtime = {
 	trace: Frame?,
 	caption: TextLabel?,
 	edges: { Frame },
+	innerEdges: { Frame },
+	dots: { Frame },
 	bars: { Bar },
 	connection: RBXScriptConnection?,
 
@@ -148,7 +161,10 @@ type Runtime = {
 	shake: number,
 	tint: Color3,
 	targetTint: Color3,
+	baseTint: Color3,
+	activeTint: Color3,
 	activity: number,
+	lastTitle: string?,
 	palette: { [string]: Color3 },
 }
 
@@ -158,6 +174,8 @@ local runtime: Runtime = {
 	trace = nil,
 	caption = nil,
 	edges = {},
+	innerEdges = {},
+	dots = {},
 	bars = {},
 	connection = nil,
 	spin = Vector3.new(0.18, 0.27, 0.11),
@@ -167,7 +185,10 @@ local runtime: Runtime = {
 	shake = 0,
 	tint = Color3.fromRGB(167, 139, 250),
 	targetTint = Color3.fromRGB(167, 139, 250),
+	baseTint = Color3.fromRGB(167, 139, 250),
+	activeTint = Color3.fromRGB(167, 139, 250),
 	activity = 0,
+	lastTitle = nil,
 	palette = {},
 }
 
@@ -214,7 +235,19 @@ local function step(delta: number)
 	runtime.energy = math.max(0, runtime.energy - delta * 0.9)
 	runtime.shake = math.max(0, runtime.shake - delta * 2.4)
 	runtime.activity = math.max(0, runtime.activity - delta * 0.35)
-	runtime.tint = runtime.tint:Lerp(runtime.targetTint, math.min(1, delta * 4))
+	--[[
+		Two colours, blended by how recently something happened.
+
+		`baseTint` is the connection state, which is what the panel should read
+		as when nothing is going on. `activeTint` is the kind of work last done
+		-- reading, writing, running, debugging -- and it takes over while that
+		work is fresh, then fades back. So the strip is not one fixed colour: it
+		leans toward whatever the session is actually doing and returns to
+		resting on its own.
+	]]
+	local blend = math.clamp(runtime.energy, 0, 1)
+	runtime.targetTint = runtime.baseTint:Lerp(runtime.activeTint, blend)
+	runtime.tint = runtime.tint:Lerp(runtime.targetTint, math.min(1, delta * 5))
 
 	-- Turning faster while busy makes the rate itself readable: a glance says
 	-- whether anything is happening without reading a word.
@@ -222,7 +255,10 @@ local function step(delta: number)
 
 	local shape = SHAPES[runtime.shapeIndex]
 	local centre = Vector2.new(CELL / 2, CELL / 2)
-	local radius = CELL * (0.3 + runtime.energy * 0.04)
+	-- Kept clear of the cell's edge. The perspective divide pushes a near vertex
+	-- outward, so sizing to the full half-width clipped the solid against its own
+	-- container whenever a corner swung toward the viewer.
+	local radius = CELL * (0.2 + runtime.energy * 0.03)
 
 	-- Wobble the axis rather than the panel: shaking the strip would read as a
 	-- glitch, tilting the solid reads as it being knocked.
@@ -259,6 +295,66 @@ local function step(delta: number)
 			math.max(1, math.floor(1 + depth * 1.6)),
 			runtime.tint:Lerp(Color3.new(1, 1, 1), depth * 0.35),
 			0.84 - depth * 0.74
+		)
+	end
+
+	--[[
+		Vertices as points, brighter than the edges they join.
+
+		Wireframes read as flat when every stroke is the same weight. Lighting
+		the corners gives the eye something to track as the solid turns, which is
+		what makes it read as rotating rather than merely flickering.
+	]]
+	for index = 1, MAX_VERTICES do
+		local dot = runtime.dots[index]
+		local point = projected[index]
+		if point == nil then
+			dot.Visible = false
+			continue
+		end
+		local depth = math.clamp((depths[index] + 2) / 4, 0, 1)
+		local size = math.max(2, math.floor(1.5 + depth * 2.5))
+		dot.Visible = true
+		dot.Position = UDim2.fromOffset(point.X, point.Y)
+		dot.Size = UDim2.fromOffset(size, size)
+		dot.BackgroundColor3 = runtime.tint:Lerp(Color3.new(1, 1, 1), 0.25 + depth * 0.5)
+		dot.BackgroundTransparency = 0.55 - depth * 0.5
+	end
+
+	--[[
+		A second solid inside the first, turning the other way.
+
+		One rotating outline is a loading spinner. Two, at different rates and
+		opposite directions, read as a mechanism -- and the counter-rotation
+		makes the outer solid's direction obvious, which a lone wireframe hides
+		whenever it passes through a symmetrical angle.
+	]]
+	local inner = SHAPES[INNER_SHAPE]
+	local innerAngle = -runtime.angle * 1.6
+	local innerProjected: { Vector2 } = {}
+	local innerDepths: { number } = {}
+	for index, vertex in inner.vertices do
+		local turned = rotate(vertex, innerAngle)
+		local scale = FOCAL / (FOCAL - turned.Z)
+		innerProjected[index] = centre
+			+ Vector2.new(turned.X * scale * radius * INNER_SCALE, turned.Y * scale * radius * INNER_SCALE)
+		innerDepths[index] = turned.Z
+	end
+	for index, frame in runtime.innerEdges do
+		local edge = inner.edges[index]
+		if edge == nil then
+			frame.Visible = false
+			continue
+		end
+		local a, b = edge[1], edge[2]
+		local depth = math.clamp(((innerDepths[a] + innerDepths[b]) / 2 + 2) / 4, 0, 1)
+		drawEdge(
+			frame,
+			innerProjected[a],
+			innerProjected[b],
+			1,
+			runtime.tint:Lerp(Color3.new(1, 1, 1), 0.5),
+			0.9 - depth * 0.35
 		)
 	end
 end
@@ -309,8 +405,31 @@ function Visuals.recordCall(milliseconds: number, ok: boolean)
 	end
 end
 
+--[[
+	The resting colour, which is the connection state.
+]]
 function Visuals.setTint(color: Color3)
-	runtime.targetTint = color
+	runtime.baseTint = color
+end
+
+--[[
+	The colour and pace of the work now running.
+
+	Both are set from the same call because they describe the same thing: what
+	kind of command this is. Reads are quick and cool, writes are slower and
+	warm, so the strip's colour and its rate agree with each other instead of
+	moving independently.
+]]
+function Visuals.setKind(color: Color3, urgency: number)
+	runtime.activeTint = color
+	runtime.energy = math.min(1.6, math.max(runtime.energy, urgency))
+	-- Re-aimed per kind so successive commands of different types visibly
+	-- change the axis rather than continuing the same turn.
+	runtime.spin = Vector3.new(
+		0.12 + math.random() * 0.16,
+		0.18 + math.random() * 0.22,
+		0.06 + math.random() * 0.12
+	)
 end
 
 --[[
@@ -318,9 +437,26 @@ end
 	happening; this says what, and neither answers the other's question.
 ]]
 function Visuals.setCaption(title: string)
+	runtime.lastTitle = title
 	if runtime.caption then
 		runtime.caption.Text = title
 	end
+end
+
+--[[
+	Falls back to the last thing that ran once a command finishes.
+
+	The footer already reports totals, so repeating "idle" here would say the
+	same word twice on one screen. What has just happened is more useful and is
+	not shown anywhere else.
+]]
+function Visuals.setIdle()
+	if runtime.caption == nil then
+		return
+	end
+	runtime.caption.Text = if runtime.lastTitle ~= nil
+		then "last: " .. runtime.lastTitle
+		else "waiting for a command"
 end
 
 function Visuals.setVisible(visible: boolean)
@@ -363,6 +499,7 @@ function Visuals.mount(parent: Instance, palette: { [string]: Color3 })
 
 	local cell = Instance.new("Frame")
 	cell.Name = "Solid"
+	cell.Position = UDim2.fromOffset(6, (Visuals.BAND_HEIGHT - CELL) / 2)
 	cell.Size = UDim2.fromOffset(CELL, CELL)
 	cell.BackgroundTransparency = 1
 	cell.ClipsDescendants = true
@@ -382,16 +519,39 @@ function Visuals.mount(parent: Instance, palette: { [string]: Color3 })
 	-- A hairline between the solid and the trace, so the strip reads as two
 	-- instruments rather than one busy rectangle.
 	local divider = Instance.new("Frame")
-	divider.Position = UDim2.fromOffset(CELL, 8)
+	divider.Position = UDim2.fromOffset(CELL + GUTTER / 2, 8)
 	divider.Size = UDim2.new(0, 1, 1, -16)
 	divider.BackgroundColor3 = palette.dim
 	divider.BackgroundTransparency = 0.7
 	divider.BorderSizePixel = 0
 	divider.Parent = band
 
+	for index = 1, MAX_VERTICES do
+		local dot = Instance.new("Frame")
+		dot.Name = string.format("Vertex%02d", index)
+		dot.AnchorPoint = Vector2.new(0.5, 0.5)
+		dot.BorderSizePixel = 0
+		dot.Visible = false
+		dot.Parent = cell
+		local round = Instance.new("UICorner")
+		round.CornerRadius = UDim.new(1, 0)
+		round.Parent = dot
+		runtime.dots[index] = dot
+	end
+
+	for index = 1, #SHAPES[INNER_SHAPE].edges do
+		local edge = Instance.new("Frame")
+		edge.Name = string.format("Inner%02d", index)
+		edge.AnchorPoint = Vector2.new(0.5, 0.5)
+		edge.BorderSizePixel = 0
+		edge.Visible = false
+		edge.Parent = cell
+		runtime.innerEdges[index] = edge
+	end
+
 	local caption = Instance.new("TextLabel")
-	caption.Position = UDim2.new(0, CELL + 12, 0, 5)
-	caption.Size = UDim2.new(1, -CELL - 24, 0, 14)
+	caption.Position = UDim2.new(0, CELL + GUTTER, 0, 4)
+	caption.Size = UDim2.new(1, -CELL - GUTTER - 12, 0, 14)
 	caption.BackgroundTransparency = 1
 	caption.Font = Enum.Font.Code
 	caption.TextSize = 11
@@ -404,8 +564,8 @@ function Visuals.mount(parent: Instance, palette: { [string]: Color3 })
 
 	local trace = Instance.new("Frame")
 	trace.Name = "Trace"
-	trace.Position = UDim2.new(0, CELL + 12, 0, 21)
-	trace.Size = UDim2.new(1, -CELL - 24, 0, 20)
+	trace.Position = UDim2.new(0, CELL + GUTTER, 0, 21)
+	trace.Size = UDim2.new(1, -CELL - GUTTER - 12, 0, 19)
 	trace.BackgroundTransparency = 1
 	trace.ClipsDescendants = true
 	trace.Parent = band

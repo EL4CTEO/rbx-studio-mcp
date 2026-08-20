@@ -117,6 +117,17 @@ export function registerExecTools(context: ToolContext): void {
         "what you just built or changed — it shows the user the result, and puts " +
         "the instance under Studio's own move and scale handles. `studio_status` " +
         "reports the current selection; this sets it.\n\n" +
+        "`focus` aims the Studio camera at an instance and frames it so the " +
+        "whole thing is on screen. This is what makes `screenshot` worth having: " +
+        "a picture of wherever the camera happened to be answers nothing, while " +
+        "a picture of the thing you just built answers 'does it look right', " +
+        "which no amount of reading properties can. Build, focus, screenshot.\n\n" +
+        "The distance is computed from the subject's size and the camera's field " +
+        "of view, so a doorway and a whole map both arrive filling a similar " +
+        "share of the frame. `from` changes the angle you view it from, and " +
+        "`padding` how tightly it is framed.\n\n" +
+        "`camera` sets or reads the camera directly, for shots framing cannot " +
+        "express — standing inside a room, or looking along a corridor.\n\n" +
         "`raycast` fires a ray through the world and reports the first thing it " +
         "hits, with position, surface normal, distance and material. This answers " +
         "'what occupies this space', which the data model alone cannot: use it to " +
@@ -124,8 +135,41 @@ export function registerExecTools(context: ToolContext): void {
         "before placing something.",
       inputSchema: {
         op: z
-          .enum(["select", "raycast"])
-          .describe("'select' changes the Studio selection; 'raycast' queries the world."),
+          .enum(["select", "raycast", "focus", "camera"])
+          .describe(
+            "'focus' points the camera at something and frames it, 'camera' sets " +
+              "it explicitly, 'select' changes the Studio selection, 'raycast' " +
+              "queries the world.",
+          ),
+        path: z
+          .string()
+          .optional()
+          .describe("focus only: the instance to look at. A model, part, or folder containing them."),
+        at: z
+          .string()
+          .optional()
+          .describe('focus only: look at this point instead of an instance, e.g. "0, 10, 0".'),
+        from: z
+          .string()
+          .optional()
+          .describe(
+            'focus only: direction to view from, e.g. "0, 1, 0" for directly above ' +
+              'or "1, 0, 0" from the side. Defaults to a raised three-quarter view.',
+          ),
+        padding: z
+          .number()
+          .min(1)
+          .max(5)
+          .default(1.5)
+          .describe("focus only: how much room to leave around the subject. 1 is tight."),
+        position: z.string().optional().describe('camera only: where to put the camera, e.g. "0, 20, 30".'),
+        lookAt: z.string().optional().describe("camera only: the point to aim at."),
+        fieldOfView: z
+          .number()
+          .min(1)
+          .max(120)
+          .optional()
+          .describe("camera only: field of view in degrees. Lower is more zoomed in."),
         paths: z
           .array(z.string())
           .optional()
@@ -157,6 +201,27 @@ export function registerExecTools(context: ToolContext): void {
       idempotent: true,
     },
     async (args): Promise<ToolResult> => {
+      if (args.op === "focus") {
+        if (!args.path && !args.at) {
+          return text("focus needs a `path` to look at, or an `at` position.");
+        }
+        const response = await bridge.call<Record<string, unknown>>(
+          "viewport.focus",
+          { path: args.path, at: args.at, from: args.from, padding: args.padding },
+          { studioId: args.studioId },
+        );
+        return json(response, "Take a `screenshot` to see it.");
+      }
+
+      if (args.op === "camera") {
+        const response = await bridge.call<Record<string, unknown>>(
+          "viewport.camera",
+          { position: args.position, lookAt: args.lookAt, fieldOfView: args.fieldOfView },
+          { studioId: args.studioId },
+        );
+        return json(response);
+      }
+
       if (args.op === "raycast") {
         if (!args.origin || !args.direction) {
           return text(
