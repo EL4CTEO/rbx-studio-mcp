@@ -1,11 +1,11 @@
 {
-  "name": "roblox-studio-mcp",
+  "name": "rbx-studio-mcp",
   "version": "0.1.0",
   "description": "Free, open-source MCP server for Roblox Studio. Push-based SSE transport, editor-safe script edits, token-lean tools.",
   "type": "module",
   "license": "MIT",
   "bin": {
-    "roblox-studio-mcp": "dist/index.js"
+    "rbx-studio-mcp": "dist/index.js"
   },
   "files": [
     "dist",

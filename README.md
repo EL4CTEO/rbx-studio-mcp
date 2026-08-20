@@ -7,7 +7,7 @@ MCP server for Roblox Studio. 29 tools over a push-based bridge. MIT.
 **1. The Studio plugin**
 
 ```bash
-npx -y roblox-studio-mcp --install-plugin
+npx -y rbx-studio-mcp --install-plugin
 ```
 
 Or download `StudioMCP.rbxmx` from [Releases](https://github.com/EL4CTEO/roblox-studio-mcp/releases) into your Studio plugins folder.
@@ -18,7 +18,7 @@ Or download `StudioMCP.rbxmx` from [Releases](https://github.com/EL4CTEO/roblox-
 <summary><b>Claude Code</b></summary>
 
 ```bash
-claude mcp add roblox-studio -- npx -y roblox-studio-mcp
+claude mcp add roblox-studio -- npx -y rbx-studio-mcp
 ```
 </details>
 
@@ -26,7 +26,7 @@ claude mcp add roblox-studio -- npx -y roblox-studio-mcp
 <summary><b>Codex CLI</b></summary>
 
 ```bash
-codex mcp add roblox-studio -- npx -y roblox-studio-mcp
+codex mcp add roblox-studio -- npx -y rbx-studio-mcp
 ```
 
 Or in `~/.codex/config.toml`:
@@ -34,7 +34,7 @@ Or in `~/.codex/config.toml`:
 ```toml
 [mcp_servers.roblox-studio]
 command = "npx"
-args = ["-y", "roblox-studio-mcp"]
+args = ["-y", "rbx-studio-mcp"]
 ```
 </details>
 
@@ -48,7 +48,7 @@ args = ["-y", "roblox-studio-mcp"]
   "mcpServers": {
     "roblox-studio": {
       "command": "npx",
-      "args": ["-y", "roblox-studio-mcp"]
+      "args": ["-y", "rbx-studio-mcp"]
     }
   }
 }
@@ -66,7 +66,7 @@ args = ["-y", "roblox-studio-mcp"]
   "mcp": {
     "roblox-studio": {
       "type": "local",
-      "command": ["npx", "-y", "roblox-studio-mcp"],
+      "command": ["npx", "-y", "rbx-studio-mcp"],
       "enabled": true
     }
   }
@@ -84,7 +84,7 @@ args = ["-y", "roblox-studio-mcp"]
   "mcpServers": {
     "roblox-studio": {
       "command": "npx",
-      "args": ["-y", "roblox-studio-mcp"]
+      "args": ["-y", "rbx-studio-mcp"]
     }
   }
 }
@@ -102,7 +102,7 @@ args = ["-y", "roblox-studio-mcp"]
     "roblox-studio": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "roblox-studio-mcp"]
+      "args": ["-y", "rbx-studio-mcp"]
     }
   }
 }
@@ -119,7 +119,7 @@ args = ["-y", "roblox-studio-mcp"]
   "mcpServers": {
     "roblox-studio": {
       "command": "npx",
-      "args": ["-y", "roblox-studio-mcp"]
+      "args": ["-y", "rbx-studio-mcp"]
     }
   }
 }
@@ -136,7 +136,7 @@ args = ["-y", "roblox-studio-mcp"]
   "mcpServers": {
     "roblox-studio": {
       "command": "npx",
-      "args": ["-y", "roblox-studio-mcp"]
+      "args": ["-y", "rbx-studio-mcp"]
     }
   }
 }
