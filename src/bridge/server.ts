@@ -32,6 +32,7 @@ export interface BridgeServer {
  *   GET  /poll     long-poll fallback for Studio builds without web streams
  *   POST /result   plugin -> server command results
  *   POST /bye      clean disconnect on plugin unload
+ *   GET  /latency  times N round trips to a connected plugin; measurement only
  */
 export function startBridgeServer(
   options: BridgeServerOptions = {},
@@ -115,6 +116,8 @@ async function handle(
         return await handlePoll(bridge, url, res);
       case "POST /result":
         return await handleResult(bridge, url, req, res);
+      case "GET /latency":
+        return await handleLatency(bridge, url, res);
       case "POST /bye":
         bridge.detach(url.searchParams.get("studioId") ?? "");
         return send(res, 200, { ok: true });
@@ -126,6 +129,73 @@ async function handle(
     if (!res.headersSent) send(res, 400, { error: message });
     else res.end();
   }
+}
+
+/**
+ * Times sequential round trips to a connected Studio and returns the spread.
+ *
+ * This exists so the project's central performance claim -- that pushing over
+ * SSE beats the long-polling every other Studio MCP server uses -- can be
+ * checked by whoever doubts it, without them having to take the number on
+ * trust. It lives on the bridge rather than only in a script because the bridge
+ * owns the port: a standalone measurement tool has to bind 44755 itself, which
+ * means shutting down the editor's own connection first, and a measurement that
+ * costs you your session is one nobody runs twice.
+ *
+ * `studio.ping` is the payload because it is the smallest command the plugin
+ * answers, so what is left is the transport. Sequential rather than concurrent
+ * on purpose: an agent waits for each answer before choosing what to ask next,
+ * so serial round trips are the figure that matters, and running them in
+ * parallel would measure throughput instead.
+ */
+async function handleLatency(
+  bridge: Bridge,
+  url: URL,
+  res: ServerResponse,
+): Promise<void> {
+  const count = Math.min(Math.max(Number(url.searchParams.get("count") ?? 50), 1), 500);
+  const requested = url.searchParams.get("studioId") ?? undefined;
+  const studios = bridge.list();
+  const target = requested
+    ? studios.find((entry) => entry.studioId === requested)
+    : studios[0];
+
+  if (target === undefined) {
+    // Reporting zero for a run that never happened would be worse than failing.
+    return send(res, 409, {
+      error:
+        studios.length === 0
+          ? "No Studio is connected. Open Studio with the plugin installed."
+          : `No connected Studio has id ${requested}.`,
+    });
+  }
+
+  // One warm-up that is not recorded: the first call after an idle period pays
+  // for stream wake-up, which is real but is not what the tenth call costs.
+  await bridge.call("studio.ping", {}, { studioId: target.studioId });
+
+  const samples: number[] = [];
+  for (let index = 0; index < count; index += 1) {
+    const started = process.hrtime.bigint();
+    await bridge.call("studio.ping", {}, { studioId: target.studioId });
+    samples.push(Number(process.hrtime.bigint() - started) / 1e6);
+  }
+
+  const sorted = [...samples].sort((a, b) => a - b);
+  const at = (fraction: number) =>
+    sorted[Math.max(0, Math.ceil(fraction * sorted.length) - 1)] ?? 0;
+  const round = (value: number) => Number(value.toFixed(2));
+
+  send(res, 200, {
+    transport: target.transport,
+    place: target.placeName,
+    samples: samples.length,
+    meanMs: round(samples.reduce((sum, value) => sum + value, 0) / samples.length),
+    medianMs: round(at(0.5)),
+    p95Ms: round(at(0.95)),
+    minMs: round(sorted[0] ?? 0),
+    maxMs: round(sorted[sorted.length - 1] ?? 0),
+  });
 }
 
 async function handleConnect(

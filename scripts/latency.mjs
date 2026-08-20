@@ -38,9 +38,53 @@ function percentile(sorted, fraction) {
   return sorted[rank];
 }
 
+/**
+ * Asks a server that is already running to do the timing.
+ *
+ * The common case is that one is: the point of measuring is to check the claim
+ * while actually using the thing, and the alternative -- shutting down the
+ * editor's own connection so this script can take the port -- is a measurement
+ * nobody runs twice. Returns null when nothing is listening, so the caller can
+ * fall back to starting its own.
+ */
+async function askRunningServer() {
+  let response;
+  try {
+    response = await fetch(`${base}/latency?count=${count}`, {
+      headers: { "x-roblox-studio-mcp": "latency" },
+    });
+  } catch {
+    return null;
+  }
+  if (response.status === 404) {
+    // Something is listening but has no /latency route, which means it is an
+    // older build of this server still in memory. Worth naming, because the
+    // 404 body says only "unknown route".
+    process.stderr.write(
+      `The server on port ${port} predates this script — it has no /latency route.\n` +
+        "Restart it (in Claude Code, /mcp and reconnect) and run this again.\n",
+    );
+    process.exit(1);
+  }
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    process.stderr.write(
+      `${body.error ?? `The server on port ${port} refused: HTTP ${response.status}.`}\n`,
+    );
+    process.exit(1);
+  }
+  return response.json();
+}
+
 async function main() {
-  // The bridge exposes no HTTP surface for tools, so this drives the same MCP
-  // server the agent does, over stdio, and times the calls it makes.
+  const live = await askRunningServer();
+  if (live !== null) {
+    process.stdout.write(`${JSON.stringify(live, null, 2)}
+`);
+    return;
+  }
+
+  // Nothing listening, so stand a bridge up and drive it directly.
   const { startBridgeServer } = await import("../dist/bridge/server.js");
   const server = await startBridgeServer({ port });
   const { bridge } = server;
