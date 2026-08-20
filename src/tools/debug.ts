@@ -3,7 +3,7 @@ import { json, text, type ToolResult } from "../lib/format.js";
 import { defineTool, type ToolContext } from "../lib/tool.js";
 
 interface SetResponse {
-  added: Array<{ path: string; line: number; pauses: boolean; result?: unknown }>;
+  added: Array<{ path: string; line: number; mode: "log" | "capture"; result?: unknown }>;
   failed: Array<{ path: string; line: number; error: string }>;
   installed: boolean;
 }
@@ -39,10 +39,17 @@ export function registerDebugTools(context: ToolContext): void {
         "`logMessage` is ALSO a Luau expression, not a template string: its value " +
         'is printed when the breakpoint is hit, so write `"index=" .. index` ' +
         "rather than `index={index}`. Prose is a syntax error and the breakpoint " +
-        "is skipped. It pauses nothing, which makes it the cheapest way to watch " +
-        "a value change in a running game — read the lines back with `console`.\n\n" +
-        "Only one breakpoint exists per line, so a log and a pause on the same " +
-        "line will not both apply.\n\n" +
+        "is skipped. The engine prints it without stopping the thread at all, " +
+        "which makes it the cheapest way to watch a value change on a hot path " +
+        "or inside a tight loop — read the lines back with `console`.\n\n" +
+        "So the two kinds cost different things: a `logMessage` breakpoint never " +
+        "stops and gives you one line you composed in advance, while one without " +
+        "it stops briefly and gives you the whole frame — every local and its " +
+        "type, without having to guess beforehand which value would matter. " +
+        "Reach for the log when you know what to watch, the capture when you do " +
+        "not.\n\n" +
+        "Only one breakpoint exists per line, so the same line cannot both log " +
+        "and capture.\n\n" +
         "Put the breakpoint on a line that does something. A `return`, an `end` " +
         "or a bare declaration can verify and then never fire — measured, not " +
         "guessed: the same breakpoint moved from `return squared, tag` to the " +
@@ -52,9 +59,10 @@ export function registerDebugTools(context: ToolContext): void {
         "Breakpoints belong to the session that holds them. Set them in the " +
         "editor session BEFORE starting a playtest, since code that already ran " +
         "cannot be caught retroactively.\n\n" +
-        "`pause: true` genuinely halts the running thread, and Studio offers " +
-        "plugins no way to resume it — the user has to press Resume or Stop " +
-        "themselves. Leave it off unless someone has asked for it.",
+        "Nothing here leaves a thread stopped waiting for you. A capture " +
+        "breakpoint stops for as long as it takes to read the frame and then " +
+        "resumes itself, so a script with one mid-loop still runs to its last " +
+        "line, and the user is never left with a frozen Studio to rescue.",
       inputSchema: {
         op: z
           .enum(["set", "clear", "snapshots", "exceptions"])
@@ -78,13 +86,6 @@ export function registerDebugTools(context: ToolContext): void {
                 .string()
                 .optional()
                 .describe("Write this to the output when hit, instead of capturing a snapshot."),
-              pause: z
-                .boolean()
-                .optional()
-                .describe(
-                  "Actually halt the thread. Nothing here can resume it — the " +
-                    "user must do that in Studio. Off by default.",
-                ),
             }),
           )
           .max(50)
@@ -149,12 +150,6 @@ export function registerDebugTools(context: ToolContext): void {
           notes.push(
             "Refused:\n" +
               response.failed.map((f) => `  ${f.path}:${f.line} — ${f.error}`).join("\n"),
-          );
-        }
-        if (response.added.some((entry) => entry.pauses)) {
-          notes.push(
-            "One or more of these halt the thread when hit. Nothing here can " +
-              "resume it; the user has to press Resume or Stop in Studio.",
           );
         }
         return json(response.added, notes.length > 0 ? notes.join("\n\n") : undefined);

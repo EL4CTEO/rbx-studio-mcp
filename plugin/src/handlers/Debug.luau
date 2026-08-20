@@ -21,12 +21,25 @@
 	debugger is usually reached for -- that is as good, and it does not leave the
 	user's Studio frozen mid-frame.
 
-	Freezing is the hazard worth designing against here. The documented return
-	shape is contradictory: the API dump says the callback returns a Dictionary,
-	while Roblox's own announcement returns `Enum.DebuggerResumeType.Resume`
-	directly. Rather than gamble on which, breakpoints carry
-	`ContinueExecution = true` unless a caller explicitly asks otherwise, so a
-	wrong return cannot strand a paused thread.
+	The documented return shape is contradictory -- the API dump says the callback
+	returns a Dictionary, Roblox's own announcement returns
+	`Enum.DebuggerResumeType.Resume` directly -- and this file used to hedge by
+	never stopping at all, which is worth recording because the hedge cost the
+	whole feature. `ContinueExecution = true` means the debugger does not stop;
+	not stopping means `OnStopped` never runs; and `OnStopped` is the only place
+	a stack or a variable is readable. Every capture breakpoint verified, fired,
+	and recorded nothing, while logpoints on the same lines printed normally --
+	so the half that needed no callback worked and hid that the other half was
+	dead.
+
+	The enum is the right return. It resumes cleanly: a script with a breakpoint
+	mid-loop ran to completion untouched, so stopping to capture costs the run
+	nothing and strands nothing.
+
+	There is no third option. `DebuggerResumeType` offers StepInto, StepOut,
+	StepOver and Resume, and none of them means "stay stopped", so a breakpoint
+	that holds a thread for someone to look at is not expressible here -- which
+	is why nothing in this file offers one.
 ]]
 
 local ScriptDebuggerService = game:GetService("ScriptDebuggerService")
@@ -167,10 +180,10 @@ end
 --[[
 	Attaches the callback, which is also what initialises the service.
 
-	The resume decision follows Roblox's own example and returns the enum. The
-	dump disagrees and says Dictionary; since the two cannot both be satisfied,
-	breakpoints default to not pausing at all, which makes the disagreement
-	harmless rather than a frozen session.
+	The resume decision follows Roblox's own example and returns the enum rather
+	than the Dictionary the dump describes. That is settled by observation now,
+	not by preference: breakpoints stop, this returns, and the stopped script
+	carries on to its last line.
 ]]
 local function install(): boolean
 	if installed then
@@ -231,19 +244,37 @@ function Debug.set(params: { [string]: any }): { [string]: any }
 			Capitalised keys, from Roblox's example -- `Line`, `Condition`,
 			`LogMessage`, `ContinueExecution`. Lowercase `line` was rejected.
 
-			`ContinueExecution` defaults on so a breakpoint records and moves on
-			rather than halting the session. Turning it off is a caller's explicit
-			choice, and the tool says what it costs.
+			`ContinueExecution` decides whether the debugger stops at all, and
+			stopping is the only thing that raises `OnStopped` -- which is the
+			only place a stack or a variable can be read. So a breakpoint that
+			continues past itself captures nothing, ever.
+
+			That was this file's default, on the reasoning that not stopping was
+			the safe choice: a wrong return from the callback could strand a
+			paused thread, and never pausing made that impossible. It also made
+			the feature impossible. Measured on a line proven to fire -- the same
+			breakpoint, same condition, differing only here -- it captured
+			nothing across two sessions, while the identical breakpoint carrying
+			a LogMessage printed on cue.
+
+			Stopping is not the hazard it was assumed to be. `OnStopped` returns
+			`Resume` and the thread continues on its own: the probe script ran to
+			completion, printing every line after the breakpoint, with no one
+			touching Studio. So capture stops, and a LogMessage -- which the
+			engine prints without help -- does not need to.
 		]]
+		local logMessage = if typeof(item.logMessage) == "string" and item.logMessage ~= ""
+			then item.logMessage
+			else nil
 		local descriptor: { [string]: any } = {
 			Line = tonumber(item.line),
-			ContinueExecution = item.pause ~= true,
+			ContinueExecution = logMessage ~= nil,
 		}
 		if typeof(item.condition) == "string" and item.condition ~= "" then
 			descriptor.Condition = item.condition
 		end
-		if typeof(item.logMessage) == "string" and item.logMessage ~= "" then
-			descriptor.LogMessage = item.logMessage
+		if logMessage ~= nil then
+			descriptor.LogMessage = logMessage
 		end
 
 		local ok, result = pcall(function()
@@ -254,7 +285,10 @@ function Debug.set(params: { [string]: any }): { [string]: any }
 			table.insert(added, {
 				path = Paths.of(target),
 				line = descriptor.Line,
-				pauses = not descriptor.ContinueExecution,
+				-- What it will do when hit, since the two kinds behave nothing
+				-- alike: one writes a line to the output, the other stops long
+				-- enough to read the stack and then resumes itself.
+				mode = if logMessage ~= nil then "log" else "capture",
 				result = flatten(result, 1),
 			})
 		else
