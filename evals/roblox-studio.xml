@@ -1,0 +1,51 @@
+<evaluation>
+  <!--
+    Every answer below was produced by solving the question with these tools
+    against a live Studio session, not by reading it off the fixture source.
+    That distinction is the whole point: a suite whose answers come from the
+    generator tests the generator, and would pass just as happily against a
+    server that returned nothing at all.
+
+    Run `evals/fixture.luau` first. See evals/README.md.
+  -->
+  <qa_pair>
+    <question>A folder of hazards in this place tags each of its parts with a CollectionService tag and gives each one a Damage attribute. Considering only the hazards that are anchored, what do their Damage attributes add up to?</question>
+    <answer>210</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Among the anchored hazard parts tagged EvalHazard, find the one with the highest Damage attribute. What material is it made of? Answer with the material name only.</question>
+    <answer>Slate</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>The eval fixture contains several room models, each holding a floor and some lamps. Which room has the most parts named Lamp inside it?</question>
+    <answer>Gallery</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>A ModuleScript in the eval fixture defines a function that works out effective health from a level. Using the constants in that script, what value does it return for level 7?</question>
+    <answer>200</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>A disabled Script in the eval fixture defines a patrol route function using a waypoint count constant. What number does that function return when called with index 25?</question>
+    <answer>2</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Counting every room model in the eval fixture together, how many parts named Lamp are there in total?</question>
+    <answer>11</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Considering only the hazard parts tagged EvalHazard that are NOT anchored, what do their Damage attributes add up to?</question>
+    <answer>30</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Exactly one script in the eval fixture requires another module. What is the name of the script that does the requiring?</question>
+    <answer>EvalPatrol</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>The eval fixture has a disabled Script with a damage-handling function, and a ModuleScript holding a base health constant. What does that damage function return when given the base health as the current value and 200 as the amount?</question>
+    <answer>0</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>How many BasePart instances are there in total anywhere inside the eval fixture folder, counting hazards and rooms together?</question>
+    <answer>21</answer>
+  </qa_pair>
+</evaluation>

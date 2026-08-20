@@ -198,6 +198,20 @@ npm run install:plugin # build + copy into the Studio plugins folder
 
 `plugin/default.project.json` is there for Rojo users; the bundled builder means you do not need a Luau toolchain to produce an installable plugin.
 
+`build:plugin` compiles every Luau file before packing and refuses to pack if
+one fails, because nothing else in the build ever read the Luau — a syntax error
+used to ship, install, and surface only when Studio next loaded the plugin. Put
+`luau-compile` and `luau-analyze` from
+[the Luau releases](https://github.com/luau-lang/luau/releases) on `PATH` or in
+`tools/`.
+
+### Evaluations
+
+`evals/` holds ten questions that can only be answered by driving a real Studio
+session through these tools, plus the fixture that makes their answers stable —
+this server has no fixed dataset of its own, since it drives whatever place you
+have open. See [evals/README.md](evals/README.md).
+
 ## Licence
 
 MIT.
