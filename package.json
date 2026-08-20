@@ -1,5 +1,5 @@
 {
-  "name": "rbx-studio-mcp",
+  "name": "@el4cteo/rbx-studio-mcp",
   "version": "0.1.0",
   "description": "Free, open-source MCP server for Roblox Studio. Push-based SSE transport, editor-safe script edits, token-lean tools.",
   "type": "module",
@@ -55,5 +55,8 @@
   "homepage": "https://github.com/EL4CTEO/roblox-studio-mcp#readme",
   "bugs": {
     "url": "https://github.com/EL4CTEO/roblox-studio-mcp/issues"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
