@@ -108,10 +108,14 @@ export function registerWorldTools(context: ToolContext): void {
         "mesh: `subtract` a door out of a wall, `union` several parts into one " +
         "solid, `intersect` to keep only the overlap, `fragment` to shatter " +
         "something into debris.\n\n" +
-        "`subtract` and `intersect` need the parts to actually overlap in space " +
-        "— if they do not, the operation legitimately produces nothing, and " +
-        "that comes back as an error rather than a silent no-op. Check " +
-        "positions with `inspect` first if unsure.\n\n" +
+        "`subtract` and `intersect` need the parts to actually overlap, and they " +
+        "fail differently when they do not. `intersect` returns nothing, which " +
+        "comes back as an error rather than a silent no-op. `subtract` returns " +
+        "the subject UNCHANGED — a full-size copy of it, reported as a created " +
+        "part — because cutting nothing out of something legitimately leaves it " +
+        "whole. So a subtract that succeeds is not proof that anything was cut: " +
+        "check the positions overlap with `inspect` first, or compare the " +
+        "result's size against the original.\n\n" +
         "Results keep the original's material, colour and anchoring. Roblox " +
         "returns bare grey MeshParts, so a brick wall with a hole cut in it " +
         "would otherwise come back as a grey slab — correct geometry that looks " +

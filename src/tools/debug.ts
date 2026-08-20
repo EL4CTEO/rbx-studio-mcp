@@ -15,6 +15,114 @@ interface SnapshotResponse {
   installed: boolean;
 }
 
+/**
+ * Locals the debugger reports in every frame regardless of the code.
+ *
+ * `_G`, `shared` and `script` are in scope everywhere and `...` is the empty
+ * varargs tuple; none of them is ever the value someone set a breakpoint to see.
+ * Left in, they were four of the six rows in each frame -- so on a loop with two
+ * locals, two thirds of a capture was boilerplate repeated once per hit.
+ */
+const AMBIENT_LOCALS = new Set(["_G", "shared", "script", "..."]);
+
+interface RawVariable {
+  Name?: string;
+  Value?: string;
+  Type?: string;
+  Scope?: string;
+}
+
+interface RawFrame {
+  Id?: number;
+  Line?: number;
+  Name?: string;
+  ScriptPath?: string;
+}
+
+/** Trims a debugger value string to something readable in a list. */
+function briefly(value: string): string {
+  const single = value.replace(/\s+/g, " ").trim();
+  return single.length > 160 ? `${single.slice(0, 159)}…` : single;
+}
+
+function frameLabel(frame: RawFrame | undefined): string {
+  if (!frame) {
+    return "(unknown)";
+  }
+  const where = `${frame.ScriptPath ?? "?"}:${frame.Line ?? "?"}`;
+  return frame.Name ? `${where} in ${frame.Name}` : where;
+}
+
+/**
+ * Renders captured frames as a readable outline rather than raw JSON.
+ *
+ * The raw payload is Roblox's, and it is shaped for a debugger UI: variables are
+ * a numbered map rather than a list, the call stack is repeated both inside each
+ * frame and again alongside it, and every variable carries a reference id the
+ * caller has no way to follow. Passed straight through, nine hits of a two-line
+ * loop came back as roughly eight thousand tokens. This keeps what a person
+ * reading the capture is actually after -- where it stopped, and what the values
+ * were -- and drops the rest.
+ */
+function renderSnapshots(items: Array<Record<string, unknown>>): string {
+  const blocks: string[] = [];
+  let droppedAmbient = false;
+
+  items.forEach((item, index) => {
+    const frames = (item.frames ?? []) as Array<{
+      variables?: Record<string, RawVariable>;
+      frame?: RawFrame;
+    }>;
+    const stack = item.stack as { TotalFrames?: number; Frames?: Record<string, RawFrame> } | undefined;
+    const reason = (item.stopped as { Reason?: string } | undefined)?.Reason;
+
+    const lines: string[] = [];
+    const head = frameLabel(frames[0]?.frame);
+    const depth = stack?.TotalFrames ?? frames.length;
+    lines.push(
+      `#${index + 1}  ${head}${depth > 1 ? `  (${depth} frames)` : ""}` +
+        (reason && !reason.endsWith("Breakpoint") ? `  [${reason}]` : ""),
+    );
+
+    for (const entry of frames) {
+      if (frames.length > 1) {
+        lines.push(`  ${frameLabel(entry.frame)}`);
+      }
+      const variables = Object.values(entry.variables ?? {});
+      const shown = variables.filter((variable) => {
+        if (variable.Name !== undefined && AMBIENT_LOCALS.has(variable.Name)) {
+          droppedAmbient = true;
+          return false;
+        }
+        return true;
+      });
+      if (shown.length === 0) {
+        lines.push("    (no locals in scope)");
+        continue;
+      }
+      for (const variable of shown) {
+        const type = variable.Type ? ` : ${variable.Type}` : "";
+        lines.push(`    ${variable.Name ?? "?"} = ${briefly(variable.Value ?? "nil")}${type}`);
+      }
+    }
+
+    // Frames below the top one, when the capture only carried the stack for them.
+    if (stack?.Frames && frames.length <= 1 && (stack.TotalFrames ?? 0) > 1) {
+      const rest = Object.values(stack.Frames).slice(1);
+      for (const frame of rest) {
+        lines.push(`  called from ${frameLabel(frame)}`);
+      }
+    }
+
+    blocks.push(lines.join("\n"));
+  });
+
+  if (droppedAmbient) {
+    blocks.push("(_G, shared, script and ... are omitted -- they are in scope everywhere.)");
+  }
+  return blocks.join("\n\n");
+}
+
 export function registerDebugTools(context: ToolContext): void {
   const { bridge } = context;
 
@@ -133,7 +241,14 @@ export function registerDebugTools(context: ToolContext): void {
               "before starting it and read them back from that playtest's studioId.",
           );
         }
-        return json(response, response.overflow ? `${response.overflow} older snapshots were dropped.` : undefined);
+        const shown = response.items.length;
+        const footer = [
+          `${shown} of ${response.total} captured`,
+          response.overflow ? `${response.overflow} older snapshots were dropped` : undefined,
+        ]
+          .filter(Boolean)
+          .join(", ");
+        return text(`${renderSnapshots(response.items)}\n\n[${footer}]`);
       }
 
       if (args.op === "set") {

@@ -238,7 +238,8 @@ function Instances.modify(params: { [string]: any }): { [string]: any }
 						target.instance:GetFullName()
 					),
 					table.concat(failures, "; ")
-						.. " Nothing was changed: the whole batch was rolled back."
+						.. "
+Nothing was changed: the whole batch was rolled back."
 				)
 			end
 

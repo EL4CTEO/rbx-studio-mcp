@@ -318,7 +318,7 @@ function Character.act(params: { [string]: any }): { [string]: any }
 		return { action = action, tool = equipped.Name }
 	elseif action == "unequip" then
 		humanoid:UnequipTools()
-		return { action = action, holding = model:FindFirstChildOfClass("Tool") == nil }
+		return { action = action, holding = model:FindFirstChildOfClass("Tool") ~= nil }
 	elseif action == "teleport" then
 		local target = parseVector(params.to, "`to`")
 		model:PivotTo(CFrame.new(target))

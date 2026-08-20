@@ -71,7 +71,19 @@ local function canConnect(): (boolean, string?)
 	if RunService:IsEdit() or RunService:IsServer() then
 		return true, nil
 	end
-	return false, "client sessions cannot make HTTP requests -- the server session handles this place"
+	--[[
+		The wording names the fix, because the symptom is indistinguishable
+		from a broken server: a user watching this window during a playtest
+		sees a console that logs nothing while tools plainly work, and has no
+		way to guess that the activity is in a different view of the same
+		Studio. Reported once here and again as the strip's caption, since
+		one line scrolled off the top is easy to miss.
+	]]
+	return false,
+		"client view of a playtest -- Studio forbids client sessions from making HTTP "
+			.. "requests. The playtest's server session is connected and handling this "
+			.. "place; switch Studio to the Server view (Test tab, Current: Server) to "
+			.. "watch it work."
 end
 
 -- First thing, before any handler or the transport can log: the buffer only
@@ -223,8 +235,9 @@ function connect()
 		Console.log("dim", "standby", reason)
 		Console.setStatus(
 			"standby",
-			string.format("%s  build %s", "client session", Config.BUILD_ID)
+			string.format("%s  build %s", "client view", Config.BUILD_ID)
 		)
+		Console.setCaption("switch to the Server view to watch this playtest")
 		return
 	end
 	Transport.start(studioId(), { onCommand = onCommand, onStatus = onStatus })

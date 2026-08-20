@@ -74,6 +74,29 @@ interface ProfileResponse {
   raw?: string;
 }
 
+type ProfileFrame = NonNullable<NonNullable<ProfileResponse["data"]>["Functions"]>[number];
+
+/**
+ * Whether a profiler frame belongs to a Studio plugin rather than to the place.
+ *
+ * `IsPlugin` looks like the answer and is not enough on its own: the engine sets
+ * it only on a plugin's nameless root frame, never on the frames underneath that
+ * carry the actual `Source` and the actual time. Filtering on it alone therefore
+ * strips one zero-cost row per plugin and lets every line of plugin work through
+ * -- measured, and the result was this server's own console animation sitting at
+ * the top of a profile of somebody else's game.
+ *
+ * The source prefix is the reliable signal. Plugins load from the Creator Store
+ * as `cloud_<assetId>.`, from a local file as `user_<file>.rbxmx.`, and ship with
+ * Studio as `builtin_`; a place's own scripts are named by their data model path.
+ */
+function isPluginFrame(entry: ProfileFrame): boolean {
+  if (entry.IsPlugin === true) {
+    return true;
+  }
+  return /^(cloud_|user_|builtin_)/.test(entry.Source ?? "");
+}
+
 export function registerPerfTools(context: ToolContext): void {
   const { bridge } = context;
 
@@ -292,6 +315,18 @@ export function registerPerfTools(context: ToolContext): void {
         const unmeasured = response.scripts.filter((entry) => entry.notMeasurable);
 
         const sections = [summary];
+        // An empty `enable` clears what future sessions instrument; it cannot
+        // un-instrument this one, because Luau binds coverage at first compile.
+        // Without saying so, the call looks like it did nothing at all -- it
+        // returns the same table it returned before being asked to stop.
+        if (args.enable !== undefined && args.enable.length === 0) {
+          sections.push(
+            "Coverage will not be switched on for this place again. The figures " +
+              "above are from scripts this session already instrumented, which " +
+              "keep reporting until it ends — instrumentation is fixed at first " +
+              "compile and cannot be removed.",
+          );
+        }
         if (misses.length > 0) sections.push(`Lines never executed:\n${misses.join("\n")}`);
         if (unmeasured.length > 0) {
           sections.push(
@@ -326,15 +361,19 @@ export function registerPerfTools(context: ToolContext): void {
 
         const ranked = [...functions]
           .sort((a, b) => (b.TotalDuration ?? 0) - (a.TotalDuration ?? 0))
-          .filter((entry) => (args.includePlugins ? true : entry.IsPlugin !== true))
+          // A frame with no Source is a root entry -- one per script, carrying
+          // that script's total and duplicating the sourced frame directly under
+          // it. Dropping them removes the duplicate rows, and with them the only
+          // frames the engine bothers to mark IsPlugin.
+          .filter((entry) => entry.Source !== undefined)
+          .filter((entry) => (args.includePlugins ? true : !isPluginFrame(entry)))
           .slice(0, 25)
           .map((entry) => ({
-            // A frame with no Source is a C function or a plugin's root entry.
             source: entry.Source ?? "(engine)",
             name: entry.Name ?? "",
             line: entry.Line || "",
             ms: Math.round((entry.TotalDuration ?? 0) * 1000 * 1000) / 1000,
-            plugin: entry.IsPlugin === true ? "yes" : "",
+            plugin: isPluginFrame(entry) ? "yes" : "",
           }));
 
         if (ranked.length === 0) {

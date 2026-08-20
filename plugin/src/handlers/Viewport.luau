@@ -13,6 +13,7 @@
 	to know what occupies a piece of space.
 ]]
 
+local RunService = game:GetService("RunService")
 local Selection = game:GetService("Selection")
 local Workspace = game:GetService("Workspace")
 
@@ -24,6 +25,20 @@ local MAX_SELECTION = 200
 local DEFAULT_RAY_LENGTH = 1000
 
 local Viewport = {}
+
+--[[
+	Whether moving the camera in this session would change what anyone sees.
+
+	A playtest server has a `CurrentCamera` and accepts every write to it, and
+	renders nothing -- the picture on screen comes from the playtest's client. So
+	framing a subject here succeeds, reports a plausible camera position, and
+	moves no camera the user has. Measured: `focus` against a playtest server
+	returned a full result for a shot nobody could ever see.
+]]
+local function rendersToScreen(): boolean
+	return not (RunService:IsRunning() and RunService:IsServer())
+end
+
 
 local function toVector(value: any, label: string): Vector3
 	local ok, parsed = Serialize.parse(value, "Vector3")
@@ -171,9 +186,17 @@ end
 	a similar share of the frame.
 ]]
 function Viewport.focus(params: { [string]: any }): { [string]: any }
+	if not rendersToScreen() then
+		Dispatch.fail(
+			"NOT_RENDERED",
+			"This is the playtest's server session, which draws nothing -- moving its "
+				.. "camera would change no picture anybody sees.",
+			"Address the editor session (see `list_studios`), or stop the playtest first."
+		)
+	end
 	local camera = Workspace.CurrentCamera
 	if camera == nil then
-		Dispatch.fail("NO_CAMERA", "This session has no camera (a playtest server has none).")
+		Dispatch.fail("NO_CAMERA", "This session has no camera.")
 	end
 
 	local centre: Vector3
@@ -233,6 +256,14 @@ end
 	standing inside a room, or matching a specific shot.
 ]]
 function Viewport.camera(params: { [string]: any }): { [string]: any }
+	if not rendersToScreen() then
+		Dispatch.fail(
+			"NOT_RENDERED",
+			"This is the playtest's server session, which draws nothing -- moving its "
+				.. "camera would change no picture anybody sees.",
+			"Address the editor session (see `list_studios`), or stop the playtest first."
+		)
+	end
 	local camera = Workspace.CurrentCamera
 	if camera == nil then
 		Dispatch.fail("NO_CAMERA", "This session has no camera.")

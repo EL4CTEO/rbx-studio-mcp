@@ -265,6 +265,18 @@ function Console.recordCall(ok: boolean, milliseconds: number)
 	Visuals.recordCall(milliseconds, ok)
 end
 
+--[[
+	Pins a line of text beside the activity strip.
+
+	Unlike the caption a running command sets, this survives until something
+	else replaces it, which is what a session that will never run a command
+	needs: the standby client view has nothing to report and no reason to say
+	"waiting for a command" forever when it is not waiting for one.
+]]
+function Console.setCaption(message: string)
+	Visuals.setCaption(message)
+end
+
 function Console.clear()
 	table.clear(state.lines)
 	state.calls = 0

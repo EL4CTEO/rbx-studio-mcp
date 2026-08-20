@@ -30,12 +30,16 @@ export function registerScreenshotTools(context: ToolContext): void {
         "GUI. Take a screenshot after building something visual, and before " +
         "reporting that it worked.\n\n" +
         "It captures the viewport as the user currently sees it, so it shows " +
-        "their camera angle, not a framing of your choosing. If the subject is " +
-        "not in view, move the camera first — `execute_luau` can set " +
-        "`workspace.CurrentCamera.CFrame` — or select the instance with " +
-        "`viewport` so the user can see what you mean.\n\n" +
-        "During a playtest this shows the running game, which is how to check " +
-        "what a player actually sees.",
+        "their camera angle, not a framing of your choosing. Frame the subject " +
+        "with `viewport op=\"focus\"` first — that is what makes this tool " +
+        "worth calling.\n\n" +
+        "NOT AVAILABLE WHILE A PLAYTEST IS RUNNING. Studio only lets a client " +
+        "session capture the screen, and it forbids client sessions from making " +
+        "HTTP requests, so no session that can be reached is allowed to take the " +
+        "picture: the playtest server refuses outright and the editor session " +
+        "times out, because the window is no longer rendering its data model. " +
+        "Stop the playtest and screenshot in edit mode, or read the running game " +
+        "through `character`, `console` and `find` instead.",
       inputSchema: {
         width: z
           .number()
