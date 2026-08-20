@@ -22,24 +22,12 @@
  * Usage: node scripts/check-plugin.mjs
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { readdirSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { locateLuau, missingLuau } from "./locate-luau.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-
-/** First of `names` that runs, preferring an explicit env var, then ./tools. */
-function locate(envVar, names) {
-  const fromEnv = process.env[envVar];
-  if (fromEnv) return fromEnv;
-  for (const name of names) {
-    const local = join(root, "tools", name);
-    if (existsSync(local)) return local;
-    const probe = spawnSync(name, ["--help"], { encoding: "utf8" });
-    if (!probe.error) return name;
-  }
-  return null;
-}
 
 function luauFiles(directory) {
   const found = [];
@@ -51,7 +39,7 @@ function luauFiles(directory) {
   return found;
 }
 
-const compiler = locate("LUAU_COMPILE", ["luau-compile.exe", "luau-compile"]);
+const compiler = locateLuau("LUAU_COMPILE", ["luau-compile.exe", "luau-compile"]);
 if (compiler === null) {
   process.stderr.write(
     "No luau-compile found. Put it on PATH or in ./tools, or set LUAU_COMPILE.\n" +
@@ -84,7 +72,7 @@ for (const file of files) {
  * filtering to this one diagnostic gets the signal without needing a
  * definitions file that would then have to be kept current with the engine.
  */
-const analyser = locate("LUAU_ANALYZE", ["luau-analyze.exe", "luau-analyze"]);
+const analyser = locateLuau("LUAU_ANALYZE", ["luau-analyze.exe", "luau-analyze"]);
 const shadowed = [];
 if (analyser !== null) {
   for (const file of files) {

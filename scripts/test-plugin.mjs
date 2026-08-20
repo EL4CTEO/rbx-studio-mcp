@@ -7,7 +7,7 @@
  * through the standalone Luau interpreter, so the tests exercise the shipped
  * code rather than a copy of it.
  *
- * Needs the `luau` binary on PATH, or its path in the LUAU environment variable.
+ * Needs the `luau` binary on PATH, in ./tools, or named by the LUAU variable.
  * Get one from https://github.com/luau-lang/luau/releases.
  *
  * Usage: node scripts/test-plugin.mjs
@@ -17,9 +17,14 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { locateLuau, missingLuau } from "./locate-luau.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const luau = process.env["LUAU"] ?? "luau";
+const luau = locateLuau("LUAU", ["luau.exe", "luau"]);
+if (luau === null) {
+  process.stderr.write(missingLuau("luau", "LUAU"));
+  process.exit(1);
+}
 
 /** Modules under test, paired with the test file that exercises each. */
 const suites = [{ module: "plugin/src/TextEdit.luau", test: "tests/textedit.luau" }];
