@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import { execFileSync } from "node:child_process";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { DEFAULT_PORT, startBridgeServer } from "./bridge/server.js";
@@ -32,7 +35,33 @@ function parsePort(argv: string[]): number {
   return port;
 }
 
+/**
+ * Builds the Studio plugin and copies it into the local plugins folder.
+ *
+ * Without this the npm package is only half of what someone needs: the server
+ * installs with `npx` and the plugin is only reachable by cloning the repo,
+ * which is a strange thing to ask of someone who just installed a package.
+ *
+ * The work is delegated to `scripts/install-plugin.mjs` rather than reimplemented
+ * here, because Studio's plugins directory differs per platform and two copies of
+ * that knowledge is one too many. That script is shipped in the package.
+ */
+function installPlugin(): void {
+  const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  execFileSync(process.execPath, [join(root, "scripts", "install-plugin.mjs")], {
+    stdio: "inherit",
+  });
+  process.stderr.write(
+    "Studio plugin installed. Open Studio and look for the Studio MCP button.\n",
+  );
+}
+
 async function main(): Promise<void> {
+  if (process.argv.includes("--install-plugin")) {
+    installPlugin();
+    return;
+  }
+
   const bridgeServer = await startBridgeServer({ port: parsePort(process.argv) });
 
   const server = new McpServer(

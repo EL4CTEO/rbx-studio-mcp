@@ -1,0 +1,40 @@
+name: Release
+
+# Tag a version to cut a release: `git tag v0.1.0 && git push --tags`.
+# The plugin is attached to it as a file, because the alternative is telling
+# people to clone a repository and run a build to get one .rbxmx.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.15"
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+
+      - name: Fetch Luau
+        run: |
+          version=$(curl -sSf https://api.github.com/repos/luau-lang/luau/releases/latest | jq -r .tag_name)
+          curl -sSfL -o luau.zip "https://github.com/luau-lang/luau/releases/download/${version}/luau-ubuntu.zip"
+          mkdir -p tools && unzip -o -q luau.zip -d tools
+          chmod +x tools/luau tools/luau-compile tools/luau-analyze
+
+      - run: npm test
+      - run: npm run build:plugin
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: build/StudioMCP.rbxmx
+          generate_release_notes: true

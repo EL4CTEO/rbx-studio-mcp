@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.15"
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build the server
+        run: npm run build
+
+      # The Luau toolchain is not on the runner and is not an npm package, so it
+      # is fetched here. Without it `check:plugin` exits 1 and every plugin
+      # syntax error reaches Studio instead of the build -- which is the whole
+      # reason that check exists.
+      - name: Fetch Luau
+        run: |
+          version=$(curl -sSf https://api.github.com/repos/luau-lang/luau/releases/latest | jq -r .tag_name)
+          curl -sSfL -o luau.zip "https://github.com/luau-lang/luau/releases/download/${version}/luau-ubuntu.zip"
+          mkdir -p tools && unzip -o -q luau.zip -d tools
+          chmod +x tools/luau tools/luau-compile tools/luau-analyze
+
+      - name: Compile every plugin source file
+        run: npm run check:plugin
+
+      - name: Luau unit tests
+        run: npm test
+
+      - name: Pack the plugin
+        run: npm run build:plugin
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: StudioMCP.rbxmx
+          path: build/StudioMCP.rbxmx

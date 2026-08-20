@@ -10,6 +10,7 @@
   "files": [
     "dist",
     "plugin",
+    "scripts",
     "README.md",
     "LICENSE"
   ],
@@ -26,7 +27,8 @@
     "test": "node scripts/test-plugin.mjs",
     "build:all": "npm run build && npm run build:plugin",
     "install:plugin": "node scripts/install-plugin.mjs",
-    "check:plugin": "node scripts/check-plugin.mjs"
+    "check:plugin": "node scripts/check-plugin.mjs",
+    "prepack": "npm run build"
   },
   "keywords": [
     "mcp",
@@ -44,5 +46,14 @@
   "devDependencies": {
     "@types/node": "^26.2.0",
     "typescript": "^7.0.2"
+  },
+  "author": "EL4CTEO",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/EL4CTEO/roblox-studio-mcp.git"
+  },
+  "homepage": "https://github.com/EL4CTEO/roblox-studio-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/EL4CTEO/roblox-studio-mcp/issues"
   }
 }
