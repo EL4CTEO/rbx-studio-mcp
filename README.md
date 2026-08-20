@@ -49,9 +49,13 @@ recording rolls back a script edit has not tested it — we did, and it does not
 
 ## 3. It stays cheap in context
 
-Competing servers ship 43–51 thin wrappers around individual API calls. That is 15–20k tokens of tool schemas loaded before the agent does anything, and more tools to pick wrong from.
+Competing servers ship 43–51 thin wrappers around individual API calls — more tools to pick wrong from, each one a restatement of an API method the agent then has to assemble into something useful.
 
-This one ships 14 workflow-shaped tools today. `find` alone replaces six competitor tools. Every list is cursor-paged, every response is capped at 25k characters with an explicit marker when something was left out, and every tool takes `detail: concise | standard | full` so the agent chooses what it pays for.
+This one ships **26 workflow-shaped tools**, whose schemas measure ~14k tokens (`tools/list`, 56.6k characters). Fewer tools, and each covers a job rather than a call: `find` alone replaces six competitor tools by taking name, class, property and tag filters together.
+
+Be clear about what that does and does not buy. The tool *count* is roughly half, but the token cost is not, because these descriptions are long on purpose — they carry what was measured rather than what the API reference says, so the agent is told that a breakpoint set to continue never captures, that a non-overlapping `subtract` returns the original whole, and that screenshots are unavailable mid-playtest. Paying a few hundred tokens once to stop an agent burning a dozen calls learning that the hard way is the trade being made, and it is a trade, not a free win.
+
+Every list is cursor-paged, every response is capped at 25k characters with an explicit marker when something was left out, and every tool takes `detail: concise | standard | full` so the agent chooses what it pays for.
 
 Property handling comes from the **live Roblox API dump**, refreshed daily, not a hardcoded table — so new engine properties work the day they ship, and a typo gets a suggestion (`Anchorred` → `Anchored`) instead of a dead end.
 
@@ -104,7 +108,7 @@ Server and plugin default to **44755**. Change it with `--port` (or `ROBLOX_STUD
 
 | | tools | transport | editor-safe writes | undo recording | live API dump | licence |
 |---|---|---|---|---|---|---|
-| **this** | 20 | **SSE push** | **yes** | **yes, cancel on failure** | **yes** | MIT |
+| **this** | 26 | **SSE push** | **yes** | **yes, cancel on failure** | **yes** | MIT |
 | [Roblox built-in](https://create.roblox.com/docs/studio/mcp) | ~27 | stdio from Studio | partial | — | n/a | closed source |
 | [Chrrxs](https://github.com/Chrrxs/robloxstudio-mcp) | ~40 | HTTP poll | no | partial | no | MIT |
 | [drgost1](https://github.com/drgost1/robloxstudio-mcp) | 51 | HTTP poll 500 ms | no | yes | no | MIT |
@@ -113,7 +117,22 @@ Server and plugin default to **44755**. Change it with `--port` (or `ROBLOX_STUD
 
 Roblox's built-in server is the one to beat: it is first-party, free, and has AI mesh and material generation. It is also closed source, caps results at 10–50, and has no bulk instance or property operations and no undo integration.
 
-**Not yet built here:** terrain, Creator Store insertion, screenshots, and the AI mesh and material generation. If you need those today, keep the built-in server alongside this one. The goal is to replace it; that is not true yet.
+**Not built here:** terrain, and AI mesh and material generation.
+
+Generation is the one worth explaining, because it is half-open rather than shut.
+`GenerationService:GenerateModelAsync` **does** work from a plugin — called with a
+text prompt it returns a real `Model` after about 40 seconds, wheels and body as
+separate `MeshPart`s, no `RobloxScriptSecurity` loader involved. What it will not
+do is generate anything you ask for: the schema must be one of exactly two
+values, `Car5` or `Body1`, so it makes cars and avatar bodies and nothing else.
+`GenerateMeshAsync` is present but refuses every input shape tried with "Unable
+to cast value to Object", and the `LoadModelFromGlbAsync` / `LoadModelFromUrlAsync`
+pair that would fetch a generated asset does require `RobloxScriptSecurity` and
+is closed to plugins. So arbitrary text-to-mesh remains the built-in server's,
+and a `generate` tool here would honestly be called `generate_car`.
+
+If you need terrain or general generation today, keep the built-in server
+alongside this one. The goal is to replace it; that is not true yet.
 
 ### Debugging and playtests
 
@@ -139,9 +158,13 @@ call returns `{Line = 5, Verified = true}`.
 
 Two behaviours worth knowing, both measured:
 
-- Breakpoints record and continue by default rather than halting. Studio gives
-  plugins `Pause()` and no way to resume, so a halting breakpoint can only be
-  released by the user. `pause: true` opts in and says so.
+- A breakpoint either stops or logs, and it cannot do both. `ContinueExecution`
+  reads like a convenience and is not: stopping is the only thing that raises
+  `OnStopped`, so a breakpoint set to continue never captures anything at all.
+  It verified, it fired, and it reported nothing — which looked exactly like a
+  condition that never matched. So a breakpoint with `logMessage` continues and
+  prints the one value you named in advance, and a breakpoint without one stops
+  briefly and hands back the whole frame.
 - Put a breakpoint on a line that *does* something. A `return` or an `end` can
   report `Verified` and then never fire, which reads like a broken condition.
 
