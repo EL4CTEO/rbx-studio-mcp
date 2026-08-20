@@ -136,8 +136,21 @@ local TRACE = 40
 -- rest of the trace into invisibility.
 local SLOW_MS = 400
 
+-- Pixels from one bar to the next. Also the width of a bar's hit target and of
+-- the hover highlight, so pointing between two bars still selects one of them
+-- rather than falling into a dead gap.
+local BAR_STRIDE = 5
+
 type Bar = {
 	frame: Frame,
+	--[[
+		An invisible column over the bar, full height of the trace, wide enough to
+		hit. The bar itself is three pixels wide and usually one pixel tall -- a
+		fast call is a stub on the baseline -- so hovering the bar is not something
+		a person can reliably do. The hit target is the whole column above it, so
+		pointing anywhere near a bar selects it.
+	]]
+	hit: TextButton,
 	milliseconds: number,
 	ok: boolean,
 }
@@ -146,6 +159,8 @@ type Runtime = {
 	band: Frame?,
 	cell: Frame?,
 	trace: Frame?,
+	highlight: Frame?,
+	readout: TextLabel?,
 	caption: TextLabel?,
 	edges: { Frame },
 	innerEdges: { Frame },
@@ -172,6 +187,8 @@ local runtime: Runtime = {
 	band = nil,
 	cell = nil,
 	trace = nil,
+	highlight = nil,
+	readout = nil,
 	caption = nil,
 	edges = {},
 	innerEdges = {},
@@ -360,6 +377,43 @@ local function step(delta: number)
 end
 
 --[[
+	Puts the highlight behind one bar and prints its timing.
+
+	The trace is only legible if you already know what it plots, and nothing on
+	screen said so. Hovering answers it directly: the column lights up, and the
+	number that made that bar its height appears in words. One reading at a time,
+	so a single highlight and a single label are moved around rather than one of
+	each being built per bar.
+]]
+local function showReading(entry: Bar)
+	local highlight = runtime.highlight
+	local readout = runtime.readout
+	if highlight == nil or readout == nil then
+		return
+	end
+
+	highlight.Position = UDim2.new(entry.hit.Position.X.Scale, entry.hit.Position.X.Offset, 0, 0)
+	highlight.Visible = true
+
+	readout.Text = if entry.ok
+		then string.format("%d ms", math.round(entry.milliseconds))
+		else string.format("failed after %d ms", math.round(entry.milliseconds))
+	readout.TextColor3 = if entry.ok
+		then runtime.palette.text or Color3.fromRGB(226, 232, 240)
+		else runtime.palette.red or Color3.fromRGB(251, 113, 133)
+	readout.Visible = true
+end
+
+local function clearReading()
+	if runtime.highlight then
+		runtime.highlight.Visible = false
+	end
+	if runtime.readout then
+		runtime.readout.Visible = false
+	end
+end
+
+--[[
 	Records one finished call as a bar on the trace.
 
 	Height is duration and colour is outcome, so a slow call and a failed one are
@@ -383,26 +437,56 @@ function Visuals.recordCall(milliseconds: number, ok: boolean)
 	bar.AnchorPoint = Vector2.new(0, 1)
 	bar.BorderSizePixel = 0
 	bar.Parent = trace
-	table.insert(runtime.bars, { frame = bar, milliseconds = milliseconds, ok = ok })
+
+	-- A TextButton rather than a Frame: buttons take mouse events reliably in a
+	-- plugin widget, and with no text and no background it is purely a target.
+	local hit = Instance.new("TextButton")
+	hit.AnchorPoint = Vector2.new(0.5, 1)
+	hit.BackgroundTransparency = 1
+	hit.Text = ""
+	hit.AutoButtonColor = false
+	hit.BorderSizePixel = 0
+	hit.Size = UDim2.new(0, BAR_STRIDE, 1, 0)
+	hit.Parent = trace
+
+	local entry: Bar = { frame = bar, hit = hit, milliseconds = milliseconds, ok = ok }
+	table.insert(runtime.bars, entry)
+
+	hit.MouseEnter:Connect(function()
+		showReading(entry)
+	end)
+	hit.MouseLeave:Connect(function()
+		clearReading()
+	end)
 
 	while #runtime.bars > TRACE do
-		runtime.bars[1].frame:Destroy()
+		local oldest = runtime.bars[1]
+		oldest.frame:Destroy()
+		oldest.hit:Destroy()
 		table.remove(runtime.bars, 1)
 	end
 
 	-- Laid out right to left so the newest bar is always at the same edge and
 	-- the trace reads as scrolling rather than reshuffling.
 	local total = #runtime.bars
-	for index, entry in runtime.bars do
+	for index, item in runtime.bars do
 		local fromRight = total - index
-		local height = math.clamp(entry.milliseconds / SLOW_MS, 0.06, 1)
-		entry.frame.Position = UDim2.new(1, -(fromRight + 1) * 5, 1, 0)
-		entry.frame.Size = UDim2.new(0, 3, height, 0)
-		entry.frame.BackgroundColor3 = if entry.ok
+		local height = math.clamp(item.milliseconds / SLOW_MS, 0.06, 1)
+		local offset = -(fromRight + 1) * BAR_STRIDE
+		item.frame.Position = UDim2.new(1, offset, 1, 0)
+		item.frame.Size = UDim2.new(0, 3, height, 0)
+		item.frame.BackgroundColor3 = if item.ok
 			then runtime.palette.violet or runtime.tint
 			else runtime.palette.red or Color3.fromRGB(251, 113, 133)
-		entry.frame.BackgroundTransparency = 0.15 + (fromRight / TRACE) * 0.6
+		item.frame.BackgroundTransparency = 0.15 + (fromRight / TRACE) * 0.6
+		-- Centred on the bar, so the column a person points at is the one they get.
+		item.hit.Position = UDim2.new(1, offset + 1, 1, 0)
 	end
+
+	-- The bars have all moved, so a reading still on screen now names the wrong
+	-- one. Cheaper and more honest to drop it than to work out which bar the
+	-- pointer has ended up over.
+	clearReading()
 end
 
 --[[
@@ -581,6 +665,46 @@ function Visuals.mount(parent: Instance, palette: { [string]: Color3 })
 	baseline.BackgroundTransparency = 0.75
 	baseline.BorderSizePixel = 0
 	baseline.Parent = trace
+
+	--[[
+		Built once and moved, and created BEFORE the bars exist so it sits under
+		them in draw order -- a highlight drawn over a one-pixel bar would hide the
+		very thing it is pointing at.
+	]]
+	local highlight = Instance.new("Frame")
+	highlight.Name = "Highlight"
+	highlight.AnchorPoint = Vector2.new(0.5, 1)
+	highlight.Position = UDim2.new(1, 0, 1, 0)
+	highlight.Size = UDim2.new(0, BAR_STRIDE, 1, 0)
+	highlight.BackgroundColor3 = palette.text or Color3.fromRGB(226, 232, 240)
+	highlight.BackgroundTransparency = 0.85
+	highlight.BorderSizePixel = 0
+	highlight.Visible = false
+	highlight.Parent = trace
+	runtime.highlight = highlight
+
+	--[[
+		The reading sits at the left end of the trace rather than beside the bar it
+		describes. Following the pointer would put it off the right edge for the
+		newest bars, which are the ones most often asked about, and the left end is
+		empty until forty calls have accumulated.
+	]]
+	local readout = Instance.new("TextLabel")
+	readout.Name = "Readout"
+	readout.AnchorPoint = Vector2.new(0, 0.5)
+	readout.Position = UDim2.new(0, 0, 0.5, 0)
+	readout.Size = UDim2.new(0, 110, 0, 14)
+	readout.BackgroundColor3 = palette.background or Color3.fromRGB(11, 12, 20)
+	readout.BackgroundTransparency = 0.15
+	readout.BorderSizePixel = 0
+	readout.Font = Enum.Font.Code
+	readout.TextSize = 11
+	readout.TextXAlignment = Enum.TextXAlignment.Left
+	readout.Text = ""
+	readout.Visible = false
+	readout.ZIndex = 3
+	readout.Parent = trace
+	runtime.readout = readout
 end
 
 return Visuals
