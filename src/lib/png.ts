@@ -20,7 +20,11 @@ const CRC_TABLE = (() => {
   for (let index = 0; index < 256; index += 1) {
     let value = index;
     for (let bit = 0; bit < 8; bit += 1) {
-      value = value & 1 ? 0xed88_8320 ^ (value >>> 1) : value >>> 1;
+      // 0xEDB88320: the reversed CRC-32 polynomial. Worth writing out, because
+      // a single wrong digit here (0xED888320) still produces a table, still
+      // produces a checksum, and still produces a PNG that every decoder
+      // rejects — with nothing in the file to say which byte was wrong.
+      value = value & 1 ? 0xedb8_8320 ^ (value >>> 1) : value >>> 1;
     }
     table[index] = value;
   }

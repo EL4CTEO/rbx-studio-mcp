@@ -390,34 +390,62 @@ export function registerPerfTools(context: ToolContext): void {
         );
 
         const blocks: string[] = [];
-        for (const [name, section] of Object.entries(response)) {
+        // Fixed order. Object key order comes back however the JSON happened to
+        // serialise, which put "unparented — 0" above the composition breakdown
+        // and made the report read differently between identical calls.
+        const ORDER = [
+          "composition",
+          "triangles",
+          "scriptMemory",
+          "animationMemory",
+          "audioMemory",
+          "unparented",
+        ];
+        const ordered = Object.entries(response).sort(
+          ([a], [b]) => ORDER.indexOf(a) - ORDER.indexOf(b),
+        );
+
+        for (const [name, section] of ordered) {
           if (section.error !== undefined) {
             blocks.push(`${name}: unavailable (${section.error})`);
             continue;
           }
+          const count = (value: number, unit: string) =>
+            `${value} ${value === 1 ? unit.replace(/s$/, "") : unit}`;
           const heading =
             section.totals !== undefined
               ? `${name} — ${Object.entries(section.totals)
-                  .map(([key, value]) => `${value} ${key.toLowerCase()}`)
+                  .map(([key, value]) => count(value, key.toLowerCase()))
                   .join(", ")}`
-              : `${name} — ${section.total ?? 0} ${section.unit}`;
+              : `${name} — ${count(section.total ?? 0, section.unit)}`;
 
           if (section.entries.length === 0) {
-            // Worth stating rather than printing an empty heading: zero
-            // unparented instances is a clean bill of health, not missing data.
-            blocks.push(`${heading}\n  (nothing)`);
+            // A total with no breakdown is not the same as nothing at all, and
+            // saying "(nothing)" under "90006 bytes" contradicts the line above
+            // it. Script memory does this: the engine reports the total without
+            // attributing it to named assets the way animation memory does.
+            blocks.push(
+              `${heading}\n  ${
+                (section.total ?? 0) > 0
+                  ? "(counted, but the engine did not break it down)"
+                  : "(nothing)"
+              }`,
+            );
             continue;
           }
 
-          const shown = section.entries.slice(0, 40);
+          // 120, not 40. These entries are a two-level tree of categories, not a
+          // ranked list, so cutting it drops whole categories rather than the
+          // least interesting tail — the first version hid twelve of them.
+          const shown = section.entries.slice(0, 120);
           const rows = shown
             .map((entry) => {
               const indent = "  ".repeat(entry.depth);
               const size =
                 entry.size !== undefined
-                  ? ` — ${entry.size} ${section.unit}`
+                  ? ` — ${count(entry.size, section.unit)}`
                   : entry.triangles !== undefined
-                    ? ` — ${entry.triangles} triangles, ${entry.drawcalls ?? 0} draw calls`
+                    ? ` — ${count(entry.triangles, "triangles")}, ${count(entry.drawcalls ?? 0, "draw calls")}`
                     : "";
               // Owners are what turn a number into something actionable: the
               // asset's size says how much, the owners say who to go and look at.

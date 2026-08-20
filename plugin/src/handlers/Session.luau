@@ -8,6 +8,7 @@
 local MarketplaceService = game:GetService("MarketplaceService")
 local RunService = game:GetService("RunService")
 local Selection = game:GetService("Selection")
+local StudioDeviceSimulatorService = game:GetService("StudioDeviceSimulatorService")
 
 local Dispatch = require(script.Parent.Parent.Dispatch)
 local Context = require(script.Parent.Parent.Context)
@@ -29,6 +30,41 @@ local COUNT_CACHE_SECONDS = 5
 
 local cachedCounts: { descendants: number, scripts: number }? = nil
 local cachedAt = 0
+
+--[[
+	Which device Studio is pretending to be, or nil for none.
+
+	Reported here because nothing else says it. Device emulation resizes the
+	viewport and stays on until it is switched off, so every screenshot after it
+	comes back the wrong shape with no indication why -- and a caller who did not
+	set it, or who set it twenty calls ago, has no way to find out. `status` is
+	the call agents are told to make first, which makes it the right place for a
+	piece of session state that silently changes what everything else returns.
+]]
+local function emulatedDevice(): { [string]: any }?
+	local ok, id = pcall(function()
+		return (StudioDeviceSimulatorService :: any):GetDeviceAsync()
+	end)
+	if not ok or id == nil or tostring(id) == "default" then
+		return nil
+	end
+
+	local device: { [string]: any } = { id = tostring(id) }
+	local okSize, size = pcall(function()
+		return (StudioDeviceSimulatorService :: any):GetResolutionAsync()
+	end)
+	if okSize and typeof(size) == "Vector2" then
+		device.resolution = string.format("%dx%d", (size :: Vector2).X, (size :: Vector2).Y)
+	end
+	local okOrient, orientation = pcall(function()
+		return (StudioDeviceSimulatorService :: any):GetOrientationAsync()
+	end)
+	if okOrient then
+		device.orientation = tostring(orientation):gsub("Enum%.ScreenOrientation%.", "")
+	end
+	device.note = "The viewport is emulating this device. `device op=\"stop\"` returns it to normal."
+	return device
+end
 
 local function counts(): { descendants: number, scripts: number }
 	local now = os.clock()
@@ -133,6 +169,7 @@ function Session.status(): { [string]: any }
 		descendantCount = totals.descendants,
 		scriptCount = totals.scripts,
 		studioVersion = studioVersion(),
+		emulatedDevice = emulatedDevice(),
 	}
 end
 

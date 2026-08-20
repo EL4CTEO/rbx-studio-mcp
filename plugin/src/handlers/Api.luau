@@ -35,17 +35,71 @@ local function nameOf(entry: any): string
 end
 
 --[[
-	Sorts members by name so two calls agree, which matters more than it sounds:
-	an agent comparing a class before and after an engine update should see a
-	diff of what changed, not a reshuffle.
+	The script-facing name of a type, which is not always the engine's.
+
+	Entries carry `{ EngineType, ScriptType }` and they differ where it matters:
+	an int64 is a `number` to Luau, and a caller writing code wants the second.
 ]]
-local function sortedNames(entries: { any }): { string }
-	local names: { string } = {}
-	for _, entry in entries do
-		table.insert(names, nameOf(entry))
+local function typeName(spec: any): string
+	if typeof(spec) ~= "table" then
+		return "?"
 	end
-	table.sort(names)
-	return names
+	return tostring((spec :: any).ScriptType or (spec :: any).EngineType or "?")
+end
+
+--[[
+	Renders a member as something that can be typed, not just recognised.
+
+	A bare name says a method exists; a signature says how to call it, which is
+	the actual question. `Humanoid.AddAccessory` is a guess until you know it
+	takes one Instance.
+]]
+local function signature(entry: any): string
+	local name = nameOf(entry)
+	local parameters = (entry :: any).Parameters
+	if typeof(parameters) ~= "table" then
+		-- A property. Its type is the useful half.
+		local kind = (entry :: any).Type
+		return if kind ~= nil then string.format("%s: %s", name, typeName(kind)) else name
+	end
+
+	local rendered: { string } = {}
+	for _, parameter in parameters :: { any } do
+		table.insert(rendered, string.format("%s: %s", tostring(parameter.Name), typeName(parameter.Type)))
+	end
+
+	local returns = (entry :: any).ReturnType
+	local suffix = if returns ~= nil and typeName(returns) ~= "Void"
+		then " -> " .. typeName(returns)
+		else ""
+	return string.format("%s(%s)%s", name, table.concat(rendered, ", "), suffix)
+end
+
+--[[
+	Splits a class's own members from the ones it inherits.
+
+	Every entry names its `Owner`, and without using it the answer is unusable:
+	ProximityPrompt has 2 methods of its own and 42 from Instance and Object, so
+	a flat alphabetical list buries `InputHoldBegin` among `findFirstChild` and
+	thirty other pieces of boilerplate the caller already knows about. The
+	inherited ones are still counted, because "it has no such method" and "it has
+	it, from Instance" are different answers.
+
+	Sorted so two calls agree: an agent comparing a class across engine versions
+	should see what changed, not a reshuffle.
+]]
+local function split(entries: { any }, className: string): ({ string }, number)
+	local own: { string } = {}
+	local inherited = 0
+	for _, entry in entries do
+		if typeof(entry) == "table" and tostring((entry :: any).Owner) ~= className then
+			inherited += 1
+		else
+			table.insert(own, signature(entry))
+		end
+	end
+	table.sort(own)
+	return own, inherited
 end
 
 function Api.describe(params: { [string]: any }): { [string]: any }
@@ -81,23 +135,42 @@ function Api.describe(params: { [string]: any }): { [string]: any }
 		return false
 	end
 
-	if asked("properties") then
-		local ok, properties = pcall(function()
-			return (ReflectionService :: any):GetPropertiesOfClass(className, {})
+	-- Asked for explicitly, because the filter argument these calls accept is
+	-- ignored: passing Inherited = false, IncludeInherited = false and
+	-- Deprecated = false each returned exactly the same 26 properties as {}.
+	-- The Owner field is the only thing that actually separates them.
+	local exact = tostring(result.className)
+	local wantInherited = params.inherited == true
+
+	local sources = {
+		{ key = "properties", method = "GetPropertiesOfClass" },
+		{ key = "methods", method = "GetMethodsOfClass" },
+		{ key = "events", method = "GetEventsOfClass" },
+	}
+	for _, source in sources do
+		if not asked(source.key) then
+			continue
+		end
+		local ok, entries = pcall(function()
+			return (ReflectionService :: any)[source.method](ReflectionService, className, {})
 		end)
-		result.properties = if ok then sortedNames(properties) else nil
-	end
-	if asked("methods") then
-		local ok, methods = pcall(function()
-			return (ReflectionService :: any):GetMethodsOfClass(className, {})
-		end)
-		result.methods = if ok then sortedNames(methods) else nil
-	end
-	if asked("events") then
-		local ok, events = pcall(function()
-			return (ReflectionService :: any):GetEventsOfClass(className, {})
-		end)
-		result.events = if ok then sortedNames(events) else nil
+		if not ok then
+			continue
+		end
+		local own, inherited = split(entries :: { any }, exact)
+		if wantInherited then
+			local everything: { string } = {}
+			for _, entry in entries :: { any } do
+				table.insert(everything, signature(entry))
+			end
+			table.sort(everything)
+			result[source.key] = everything
+		else
+			result[source.key] = own
+			if inherited > 0 then
+				result[source.key .. "Inherited"] = inherited
+			end
+		end
 	end
 
 	return result

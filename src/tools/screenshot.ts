@@ -15,6 +15,8 @@ interface ScreenshotResponse {
   rawBytes?: number;
   bytes: number;
   context: string;
+  /** Set when Studio is emulating a device, which is why the shape is unusual. */
+  device?: string;
 }
 
 /**
@@ -89,10 +91,17 @@ export function registerScreenshotTools(context: ToolContext): void {
 
       const png = toPngBase64(response);
 
+      // The device is named in the caption rather than left to be inferred: an
+      // emulated phone makes every screenshot tall and narrow until it is
+      // switched off, and a caller who did not set it has no way to know why.
+      const emulating = response.device
+        ? ` Emulating ${response.device} — call \`device op="stop"\` for the normal viewport.`
+        : "";
+
       return image(
         png,
         `Studio viewport (${response.context}), ${response.width}x${response.height}` +
-          ` scaled from ${response.sourceWidth}x${response.sourceHeight}.`,
+          ` scaled from ${response.sourceWidth}x${response.sourceHeight}.${emulating}`,
       );
     },
   );
