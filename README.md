@@ -10,7 +10,7 @@ MCP server for Roblox Studio. 29 tools over a push-based bridge. MIT.
 npx -y @el4cteo/rbx-studio-mcp --install-plugin
 ```
 
-Or download `StudioMCP.rbxmx` from [Releases](https://github.com/EL4CTEO/roblox-studio-mcp/releases) into your Studio plugins folder.
+Or download `StudioMCP.rbxmx` from [Releases](https://github.com/EL4CTEO/rbx-studio-mcp/releases) into your Studio plugins folder.
 
 **2. The server**, in whichever client you use:
 

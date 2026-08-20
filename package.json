@@ -50,11 +50,11 @@
   "author": "EL4CTEO",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/EL4CTEO/roblox-studio-mcp.git"
+    "url": "git+https://github.com/EL4CTEO/rbx-studio-mcp.git"
   },
-  "homepage": "https://github.com/EL4CTEO/roblox-studio-mcp#readme",
+  "homepage": "https://github.com/EL4CTEO/rbx-studio-mcp#readme",
   "bugs": {
-    "url": "https://github.com/EL4CTEO/roblox-studio-mcp/issues"
+    "url": "https://github.com/EL4CTEO/rbx-studio-mcp/issues"
   },
   "publishConfig": {
     "access": "public"
