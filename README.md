@@ -51,7 +51,7 @@ recording rolls back a script edit has not tested it — we did, and it does not
 
 Competing servers ship 43–51 thin wrappers around individual API calls — more tools to pick wrong from, each one a restatement of an API method the agent then has to assemble into something useful.
 
-This one ships **26 workflow-shaped tools**, whose schemas measure ~14k tokens (`tools/list`, 56.6k characters). Fewer tools, and each covers a job rather than a call: `find` alone replaces six competitor tools by taking name, class, property and tag filters together.
+This one ships **29 workflow-shaped tools**, whose schemas measure ~16k tokens (`tools/list`, 65.4k characters). Fewer tools, and each covers a job rather than a call: `find` alone replaces six competitor tools by taking name, class, property and tag filters together.
 
 Be clear about what that does and does not buy. The tool *count* is roughly half, but the token cost is not, because these descriptions are long on purpose — they carry what was measured rather than what the API reference says, so the agent is told that a breakpoint set to continue never captures, that a non-overlapping `subtract` returns the original whole, and that screenshots are unavailable mid-playtest. Paying a few hundred tokens once to stop an agent burning a dozen calls learning that the hard way is the trade being made, and it is a trade, not a free win.
 
@@ -108,7 +108,7 @@ Server and plugin default to **44755**. Change it with `--port` (or `ROBLOX_STUD
 
 | | tools | transport | editor-safe writes | undo recording | live API dump | licence |
 |---|---|---|---|---|---|---|
-| **this** | 26 | **SSE push** | **yes** | **yes, cancel on failure** | **yes** | MIT |
+| **this** | 29 | **SSE push** | **yes** | **yes, cancel on failure** | **yes** | MIT |
 | [Roblox built-in](https://create.roblox.com/docs/studio/mcp) | ~27 | stdio from Studio | partial | — | n/a | closed source |
 | [Chrrxs](https://github.com/Chrrxs/robloxstudio-mcp) | ~40 | HTTP poll | no | partial | no | MIT |
 | [drgost1](https://github.com/drgost1/robloxstudio-mcp) | 51 | HTTP poll 500 ms | no | yes | no | MIT |
@@ -168,13 +168,77 @@ Two behaviours worth knowing, both measured:
 - Put a breakpoint on a line that *does* something. A `return` or an `end` can
   report `Verified` and then never fire, which reads like a broken condition.
 
+### Real keyboard and mouse input
+
+`input` sends actual key presses and mouse clicks to a running playtest — the
+same events a person at the keyboard would produce. That covers what driving the
+Humanoid cannot: whether pressing E opens the door, whether the sprint key is
+bound, whether Escape closes the menu.
+
+This one is worth explaining, because it was written here twice as something a
+plugin could not do. The two documented routes are both shut — `VirtualInputManager`
+requires `RobloxScriptSecurity` and `VirtualUser` requires `LocalUserSecurity`.
+There is a third door: `UserInputService:CreateVirtualInput()` carries no
+security tag at all, and the `VirtualInput` object it returns has `SendKey`,
+`SendMouseButton`, `SendMousePosition`, `SendMouseDelta` and `SendTextInput`,
+none of them gated either.
+
+The catch is the part that will surprise you, and it cost a working-but-inert
+implementation to find: **input belongs to the DataModel that creates it**, and
+the character is driven by the *client*. Called from the playtest server every
+one of those methods succeeds, reports nothing wrong, and moves nothing at all.
+So the tool parents a short relay script into the player's `PlayerGui`, which
+runs on their client, and waits for it to confirm delivery over a `RemoteEvent`.
+Nothing is reported as sent until the client says so; if the acknowledgement
+never arrives you get an error rather than a false success.
+
+Measured, not asserted: `W` held for 1.5 s at the default `WalkSpeed` of 16 moved
+the character 24.8 studs.
+
+### Devices, reflection and scene weight
+
+Three smaller tools, all built on services with no documented return shapes, so
+what they report was read off a live session.
+
+`device` resizes the viewport to a real phone, tablet or console — 42 of them,
+`iphone_16` through `meta_quest_3`. Most Roblox players are on a phone and most
+UI is authored on a desktop monitor, and the gap between those is where
+interfaces break: a button under the notch, a menu off the bottom of a
+393-pixel-tall screen. None of that is visible in the data model, because every
+one of those instances has perfectly correct properties. Set a device, take a
+`screenshot`, look. Two things it gets right that the underlying service does
+not: emulation persists until switched off, so the screenshot caption and
+`studio_status` both say when one is active, and `GetResolutionAsync` reports the
+panel's native size without rotating it, so a portrait phone is reported 393x852
+rather than the 852x393 the engine hands back.
+
+`api` lists the properties, methods and events of any class, read from the binary
+that is running rather than from a published dump — it cannot go stale and it
+cannot fail to download. Members come back as signatures, not bare names, since
+`AddAccessory` is a guess until you know it takes one `Instance`. Inherited
+members are counted rather than listed, because `ProximityPrompt` has 2 methods
+of its own and 42 from `Instance`. Deprecated ones are counted too and never
+listed: `Instance` carries eight, and they still *run*, so picking `clone` off a
+list gives you working code and a deprecation warning in the user's output.
+
+`performance op="scene"` reports what the place actually weighs — triangles, draw
+calls, texture and mesh memory, broken down by instance — through
+`SceneAnalysisService`.
+
 ### Not reached yet, and why
 
 Neither of these is settled. Both were first written here as things a plugin
 could not do, which is the same word this project has already been wrong with
-twice — `RunService:Run` looked like proof that playtests were out of reach, and
-`DebuggerManager` looked like proof that debugging was. Both were the wrong API,
-not a closed door.
+three times: `RunService:Run` looked like proof that playtests were out of
+reach, `DebuggerManager` looked like proof that debugging was, and
+`VirtualInputManager` looked like proof that synthetic input was. Each time it
+was the wrong API rather than a closed door, and the right one carried no
+security tag at all.
+
+Note also what the third one cost. `CreateVirtualInput` was found, called, and
+reported success for a while before anyone noticed the character had not moved —
+so "the API is reachable" and "the thing happened" are separate claims, and only
+the second is worth making.
 
 | | where it stands |
 |---|---|

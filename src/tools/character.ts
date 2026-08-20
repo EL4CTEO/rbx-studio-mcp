@@ -38,14 +38,12 @@ export function registerCharacterTools(context: ToolContext): void {
         "along the route do not fire — walk if you are testing those.\n\n" +
         "`state` reports position, health, walk speed and what the humanoid is " +
         "doing. Call it before and after anything else here.\n\n" +
-        "This drives the Humanoid directly rather than simulating keystrokes. " +
-        "Studio blocks plugins from synthetic input entirely — " +
-        "`VirtualInputManager` requires the RobloxScript capability and " +
-        "`VirtualUser` requires LocalUser — so key and mouse injection is not " +
-        "available to any third-party server, including this one. Driving the " +
-        "Humanoid answers the questions that actually matter (can it reach the " +
-        "door, does the trap fire, does the checkpoint save) more directly " +
-        "anyway.\n\n" +
+        "This drives the Humanoid directly rather than simulating keystrokes, " +
+        "which is the right tool for going places: pathfinding around a wall is " +
+        "one call here and a sequence of guessed key presses otherwise. For " +
+        "anything bound to a control rather than to movement — does E open the " +
+        "door, does the sprint key work, does Escape close the menu — use " +
+        "`input`, which sends real key and mouse events.\n\n" +
         "REQUIRES A RUNNING PLAYTEST, and the character lives in the playtest's " +
         "data model — address these to the playtest's studioId from " +
         "`list_studios`, not the editor's. Run mode has no character at all; " +
