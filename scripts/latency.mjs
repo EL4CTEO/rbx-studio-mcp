@@ -14,10 +14,12 @@
  * what to ask next, so serial round trips are the number that matters, and
  * running them in parallel would measure throughput instead.
  *
- * To compare transports, run it once while the plugin is streaming and once
- * while it has fallen back to polling. `list_studios` reports which is in use.
+ * `--compare` measures both transports in one run: it times whichever is in
+ * use, switches the plugin to the other, times that, and puts it back. Doing it
+ * in one run matters -- the two numbers are only comparable if the same machine
+ * measured them minutes apart rather than the favourable one being kept.
  *
- * Usage: node scripts/latency.mjs [--port 44755] [--count 50]
+ * Usage: node scripts/latency.mjs [--port 44755] [--count 50] [--compare]
  */
 
 const args = process.argv.slice(2);
@@ -29,7 +31,9 @@ function flag(name, fallback) {
 
 const port = Number.parseInt(flag("port", "44755"), 10);
 const count = Number.parseInt(flag("count", "50"), 10);
+const compare = args.includes("--compare");
 const base = `http://127.0.0.1:${port}`;
+const HEADERS = { "x-roblox-studio-mcp": "latency" };
 
 /** Percentile from a sorted array, nearest-rank. */
 function percentile(sorted, fraction) {
@@ -50,9 +54,7 @@ function percentile(sorted, fraction) {
 async function askRunningServer() {
   let response;
   try {
-    response = await fetch(`${base}/latency?count=${count}`, {
-      headers: { "x-roblox-studio-mcp": "latency" },
-    });
+    response = await fetch(`${base}/latency?count=${count}`, { headers: HEADERS });
   } catch {
     return null;
   }
@@ -76,11 +78,63 @@ async function askRunningServer() {
   return response.json();
 }
 
+/**
+ * Moves the plugin to a transport and waits for it to actually get there.
+ *
+ * The switch is asynchronous by necessity -- the plugin answers first and then
+ * tears its connection down, because replying over a stream it is about to
+ * close would strand the answer. So this polls until a round trip succeeds on
+ * the new transport rather than assuming a fixed delay is long enough.
+ */
+async function switchTransport(mode) {
+  const response = await fetch(`${base}/transport?mode=${mode}`, {
+    method: "POST",
+    headers: HEADERS,
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.error ?? `switching to ${mode} failed: HTTP ${response.status}`);
+  }
+
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const probe = await fetch(`${base}/latency?count=1`, { headers: HEADERS });
+    if (probe.ok) {
+      const reading = await probe.json();
+      if (reading.transport === mode) return;
+    }
+  }
+  throw new Error(`the plugin did not reach ${mode} within 30s`);
+}
+
 async function main() {
+  if (compare) {
+    const first = await askRunningServer();
+    if (first === null) {
+      process.stderr.write(
+        "--compare needs a server already running, since it drives the plugin " +
+          "between transports.\n",
+      );
+      process.exit(1);
+    }
+
+    const other = first.transport === "sse" ? "poll" : "sse";
+    await switchTransport(other);
+    const second = await askRunningServer();
+    // Put it back the way it was found. Leaving someone's editor on the slow
+    // path as a side effect of measuring is not a trade this script gets to
+    // make for them.
+    await switchTransport(first.transport);
+
+    const readings = { [first.transport]: first, [other]: second };
+    process.stdout.write(`${JSON.stringify(readings, null, 2)}\n`);
+    return;
+  }
+
   const live = await askRunningServer();
   if (live !== null) {
-    process.stdout.write(`${JSON.stringify(live, null, 2)}
-`);
+    process.stdout.write(`${JSON.stringify(live, null, 2)}\n`);
     return;
   }
 

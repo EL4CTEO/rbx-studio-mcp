@@ -33,6 +33,7 @@ local Session = require(script.handlers.Session)
 
 local SETTING_PORT = "port"
 local SETTING_AUTOCONNECT = "autoConnect"
+local SETTING_FORCE_POLL = "forcePoll"
 
 --[[
 	A fresh id per plugin load, which in practice means one per Studio window.
@@ -96,6 +97,8 @@ local storedPort = plugin:GetSetting(SETTING_PORT)
 if typeof(storedPort) == "number" then
 	Config.setPort(storedPort)
 end
+
+Transport.setForcePoll(plugin:GetSetting(SETTING_FORCE_POLL) == true)
 
 Session.register()
 Discover.register()
@@ -251,6 +254,52 @@ end)
 plugin.Unloading:Connect(function()
 	Transport.stop()
 end)
+
+--[[
+	Switches this session between the push and long-poll transports.
+
+	Registered here rather than in a handler module because it is the only
+	command that has to reach back into the plugin object and the connection
+	loop, both of which live in this file -- and registered THIS far down the
+	file on purpose: `connect` is a forward-declared local, so a closure written
+	above its declaration captures the global of that name instead, which is nil.
+	That cost a session. The plugin loaded and connected perfectly, and then died
+	the first time somebody asked it to switch transport.
+
+	The reply is sent before the reconnect, and the reconnect is deferred:
+	tearing the stream down inside the handler would strand the answer to the
+	very call that asked for the switch, which is a confusing way to succeed.
+]]
+Dispatch.registerAll("studio", {
+	transport = function(params: { [string]: any }): { [string]: any }
+		local requested = params.mode
+		if requested ~= nil and requested ~= "sse" and requested ~= "poll" then
+			Dispatch.fail("BAD_PARAMS", 'transport mode must be "sse" or "poll".')
+		end
+		if requested == nil then
+			return { mode = Transport.getMode(), forcePoll = Transport.getForcePoll(), changed = false }
+		end
+
+		local wantPoll = requested == "poll"
+		if Transport.getMode() == requested and Transport.getForcePoll() == wantPoll then
+			return { mode = Transport.getMode(), forcePoll = wantPoll, changed = false }
+		end
+
+		Transport.setForcePoll(wantPoll)
+		plugin:SetSetting(SETTING_FORCE_POLL, wantPoll)
+		task.defer(function()
+			Transport.stop()
+			task.wait(0.1)
+			connect()
+		end)
+		return {
+			mode = requested,
+			forcePoll = wantPoll,
+			changed = true,
+			note = "Reconnecting on the new transport; the next call will use it.",
+		}
+	end,
+})
 
 refreshMeta()
 

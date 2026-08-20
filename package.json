@@ -21,11 +21,12 @@
     "watch": "tsc --watch",
     "typecheck": "tsc --noEmit",
     "start": "node dist/index.js",
-    "build:plugin": "node scripts/build-plugin.mjs",
+    "build:plugin": "node scripts/check-plugin.mjs && node scripts/build-plugin.mjs",
     "sourcemap": "node scripts/sourcemap.mjs",
     "test": "node scripts/test-plugin.mjs",
     "build:all": "npm run build && npm run build:plugin",
-    "install:plugin": "node scripts/install-plugin.mjs"
+    "install:plugin": "node scripts/install-plugin.mjs",
+    "check:plugin": "node scripts/check-plugin.mjs"
   },
   "keywords": [
     "mcp",

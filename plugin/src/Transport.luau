@@ -36,6 +36,21 @@ local activeStream: any = nil
 local mode: "sse" | "poll" = "sse"
 
 --[[
+	Forces the long-poll path even where streaming is available.
+
+	Two reasons it is worth being able to ask for the slower transport. Studio
+	caps SSE at four concurrent connections for the whole process, shared with
+	every other plugin the user has installed, so a session can find itself
+	unable to open a stream through no fault of its own -- and being able to say
+	"just poll" beats discovering that as an intermittent failure to connect.
+
+	The other is honesty: this project's headline claim is that pushing beats
+	polling, and a claim like that should be checkable by whoever doubts it, on
+	their own machine, without patching the source to see the other number.
+]]
+local forcePoll = false
+
+--[[
 	True when this Studio build exposes web streams. Guarded rather than assumed:
 	the API shipped in August 2025 and users on older builds must still work.
 ]]
@@ -232,6 +247,19 @@ function Transport.getMode(): string
 	return mode
 end
 
+function Transport.getForcePoll(): boolean
+	return forcePoll
+end
+
+--[[
+	Takes effect on the next connection, not this one: the change has to happen
+	between commands, and tearing the stream down from inside a handler would
+	strand the reply to the very call that asked for it.
+]]
+function Transport.setForcePoll(value: boolean)
+	forcePoll = value
+end
+
 function Transport.isRunning(): boolean
 	return running
 end
@@ -252,7 +280,7 @@ function Transport.start(id: string, callbacks: Callbacks)
 		while running do
 			callbacks.onStatus("connecting")
 
-			local streamed = supportsWebStream() and runStream(callbacks)
+			local streamed = not forcePoll and supportsWebStream() and runStream(callbacks)
 			local upgrading = false
 			if running and not streamed then
 				upgrading = runPolling(callbacks)

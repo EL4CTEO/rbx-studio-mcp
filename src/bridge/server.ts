@@ -118,6 +118,8 @@ async function handle(
         return await handleResult(bridge, url, req, res);
       case "GET /latency":
         return await handleLatency(bridge, url, res);
+      case "POST /transport":
+        return await handleTransport(bridge, url, res);
       case "POST /bye":
         bridge.detach(url.searchParams.get("studioId") ?? "");
         return send(res, 200, { ok: true });
@@ -196,6 +198,33 @@ async function handleLatency(
     minMs: round(sorted[0] ?? 0),
     maxMs: round(sorted[sorted.length - 1] ?? 0),
   });
+}
+
+/**
+ * Moves a connected plugin between the push and long-poll transports.
+ *
+ * Paired with /latency so one command can measure both sides of the comparison
+ * the README rests on, rather than only the side this project prefers.
+ */
+async function handleTransport(
+  bridge: Bridge,
+  url: URL,
+  res: ServerResponse,
+): Promise<void> {
+  const mode = url.searchParams.get("mode");
+  if (mode !== "sse" && mode !== "poll") {
+    return send(res, 400, { error: 'mode must be "sse" or "poll"' });
+  }
+  const requested = url.searchParams.get("studioId") ?? undefined;
+  const target = requested
+    ? bridge.list().find((entry) => entry.studioId === requested)
+    : bridge.list()[0];
+  if (target === undefined) {
+    return send(res, 409, { error: "No Studio is connected." });
+  }
+
+  const result = await bridge.call("studio.transport", { mode }, { studioId: target.studioId });
+  send(res, 200, result as Record<string, unknown>);
 }
 
 async function handleConnect(
