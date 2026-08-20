@@ -14,6 +14,7 @@ local Config = require(script.Config)
 local Console = require(script.Console)
 local Dispatch = require(script.Dispatch)
 local LogBuffer = require(script.LogBuffer)
+local Phrase = require(script.Phrase)
 local Transport = require(script.Transport)
 local Debug = require(script.handlers.Debug)
 local Capture = require(script.handlers.Capture)
@@ -172,7 +173,15 @@ end
 local function onCommand(id: string, op: string, params: { [string]: any }?)
 	task.spawn(function()
 		local startedAt = os.clock()
-		Console.log("call", "-> " .. op)
+		--[[
+			Named for what it does, not for how it travels. `script.edit` on
+			ServerScriptService.Systems.KillBrick reads as "Edit KillBrick",
+			which is the thing someone watching actually wants to know; the wire
+			name is kept alongside so the log still maps onto the protocol when
+			something needs debugging.
+		]]
+		local title = Phrase.of(op, params)
+		Console.beginCall(title, op)
 
 		local result = Dispatch.invoke(id, op, params)
 		local elapsed = string.format("%.0fms", (os.clock() - startedAt) * 1000)
@@ -180,12 +189,12 @@ local function onCommand(id: string, op: string, params: { [string]: any }?)
 		Console.recordCall(result.ok, (os.clock() - startedAt) * 1000)
 
 		if result.ok then
-			Console.log("reply", "<- " .. op, elapsed)
+			Console.log("reply", title, elapsed)
 		else
 			local err = result.error
 			Console.log(
 				"error",
-				string.format("<- %s failed: %s", op, if err then err.code else "unknown"),
+				string.format("%s failed: %s", title, if err then err.code else "unknown"),
 				elapsed
 			)
 			if err and err.message then

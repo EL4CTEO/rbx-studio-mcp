@@ -18,6 +18,8 @@
 	Instances, and colour spans do the same job in a fraction of the code.
 ]]
 
+local Visuals = require(script.Parent.Visuals)
+
 local Console = {}
 
 -- Ring buffer bound. Long enough to cover a working session, short enough that
@@ -170,6 +172,19 @@ function Console.log(level: Level, message: string, detail: string?)
 end
 
 --[[
+	Announces a command as it starts, in words rather than in wire names.
+
+	Both halves of the panel are told: the log keeps the permanent record, the
+	visual canvas shows it as motion. They are fed from one call so the two can
+	never disagree about what is running.
+]]
+function Console.beginCall(title: string, detail: string?)
+	Console.log("call", title, detail)
+	Visuals.setCaption(title, detail)
+	Visuals.pulse(PALETTE.cyan, 0.35)
+end
+
+--[[
 	Records one completed command for the session counters. Kept separate from
 	`log` so callers can log freely without skewing the statistics.
 ]]
@@ -180,6 +195,14 @@ function Console.recordCall(ok: boolean, milliseconds: number)
 		state.errors += 1
 	end
 	refreshCounters()
+
+	-- A reply pulses back in its outcome's colour, and a failure also knocks the
+	-- solid off its axis: the one motion in the panel that is meant to look
+	-- wrong, so a failure registers even when nobody is reading the text.
+	Visuals.pulse(if ok then PALETTE.violet else PALETTE.red, if ok then 0.3 else 0.8)
+	if not ok then
+		Visuals.jolt()
+	end
 end
 
 function Console.clear()
@@ -216,6 +239,13 @@ function Console.setStatus(status: string, meta: string)
 	text.Text = string.upper(status)
 	text.TextColor3 = color
 	metaLabel.Text = meta
+
+	-- The wireframe takes the same colour as the status light, so the panel
+	-- reads as disconnected at a glance even with the header off screen.
+	Visuals.setTint(color)
+	if status ~= "connected" then
+		Visuals.setCaption(string.lower(status), meta)
+	end
 end
 
 local function makeButton(parent: Instance, text: string, order: number): TextButton
@@ -314,14 +344,14 @@ function Console.mount(parent: Instance, handlers: Handlers)
 	meta.TextTruncate = Enum.TextTruncate.AtEnd
 	meta.BackgroundTransparency = 1
 	meta.Position = UDim2.new(0, 132, 0, 0)
-	meta.Size = UDim2.new(1, -310, 1, 0)
+	meta.Size = UDim2.new(1, -394, 1, 0)
 	meta.Parent = header
 	state.metaText = meta
 
 	local buttons = Instance.new("Frame")
 	buttons.AnchorPoint = Vector2.new(1, 0.5)
 	buttons.Position = UDim2.new(1, 0, 0.5, 0)
-	buttons.Size = UDim2.new(0, 160, 0, 20)
+	buttons.Size = UDim2.new(0, 244, 0, 20)
 	buttons.BackgroundTransparency = 1
 	buttons.Parent = header
 
@@ -333,8 +363,9 @@ function Console.mount(parent: Instance, handlers: Handlers)
 	buttonLayout.SortOrder = Enum.SortOrder.LayoutOrder
 	buttonLayout.Parent = buttons
 
-	makeButton(buttons, "reconnect", 1).MouseButton1Click:Connect(handlers.onReconnect)
-	makeButton(buttons, "clear", 2).MouseButton1Click:Connect(handlers.onClear)
+	local visualsButton = makeButton(buttons, "visuals", 1)
+	makeButton(buttons, "reconnect", 2).MouseButton1Click:Connect(handlers.onReconnect)
+	makeButton(buttons, "clear", 3).MouseButton1Click:Connect(handlers.onClear)
 
 	-- Accent rule under the header. One hairline in the signature violet is what
 	-- separates this from every other grey dock in Studio.
@@ -446,6 +477,34 @@ function Console.mount(parent: Instance, handlers: Handlers)
 		while cursor.Parent do
 			cursor.TextTransparency = if cursor.TextTransparency > 0.5 then 0 else 1
 			task.wait(0.6)
+		end
+	end)
+
+	--[[
+		The visual panel sits over the log rather than beside it.
+
+		Splitting the widget would give each half too little room in a dock this
+		size, and the two are not read at once anyway: the log is for reading
+		back what happened, the visuals for watching what is happening now.
+	]]
+	Visuals.mount(scroller.Parent :: Instance, {
+		background = PALETTE.background,
+		text = PALETTE.text,
+		dim = PALETTE.dim,
+	})
+	local visualsCanvas = (scroller.Parent :: Instance):FindFirstChild("Visuals") :: Frame
+	visualsCanvas.Position = UDim2.new(0, 0, 0, 33)
+	visualsCanvas.Size = UDim2.new(1, 0, 1, -55)
+
+	visualsButton.MouseButton1Click:Connect(function()
+		local nowOn = not Visuals.isVisible()
+		Visuals.setVisible(nowOn)
+		-- The button reports the state it is in, not the state it would move to.
+		-- A toggle that reads as an instruction is ambiguous the moment you look
+		-- away and back.
+		visualsButton.Text = if nowOn then "\u{25C6} visuals" else "visuals"
+		if nowOn then
+			Visuals.setCaption("watching", "waiting for the first command")
 		end
 	end)
 
