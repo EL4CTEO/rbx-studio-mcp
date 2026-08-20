@@ -181,7 +181,7 @@ local function onCommand(id: string, op: string, params: { [string]: any }?)
 			something needs debugging.
 		]]
 		local title = Phrase.of(op, params)
-		Console.beginCall(title, op)
+		Console.beginCall(title)
 
 		local result = Dispatch.invoke(id, op, params)
 		local elapsed = string.format("%.0fms", (os.clock() - startedAt) * 1000)

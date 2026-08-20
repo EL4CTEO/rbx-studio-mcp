@@ -55,9 +55,15 @@ local LEVELS: { [string]: { sigil: string, color: Color3 } } = {
 
 export type Level = "ok" | "error" | "warn" | "info" | "dim" | "call" | "reply"
 
--- Column the right-aligned detail is padded out to, in characters. Latencies
--- landing in one column is what lets you spot a slow call without reading.
-local DETAIL_COLUMN = 64
+--[[
+	Column the right-aligned detail is padded out to, in characters.
+
+	Sized for the widget's default width rather than for the longest message: at
+	12pt Code with a timestamp ahead of it, anything past this wraps, and a
+	wrapped line breaks the very column the padding exists to produce. Messages
+	are cut to fit instead.
+]]
+local DETAIL_COLUMN = 52
 
 type State = {
 	lines: { string },
@@ -72,6 +78,9 @@ type State = {
 	calls: number,
 	errors: number,
 	totalMs: number,
+	-- The command in flight, shown in the footer while it runs. One value that
+	-- is replaced, never a list that grows.
+	running: string?,
 }
 
 local state: State = {
@@ -87,6 +96,7 @@ local state: State = {
 	calls = 0,
 	errors = 0,
 	totalMs = 0,
+	running = nil,
 }
 
 local function hex(color: Color3): string
@@ -134,6 +144,14 @@ local function refreshCounters()
 	if not counters then
 		return
 	end
+	-- What is happening now outranks what has happened: while a call is in
+	-- flight the footer reports it, and falls back to the totals when idle.
+	if state.running ~= nil then
+		counters.Text = state.running
+		counters.TextColor3 = PALETTE.cyan
+		return
+	end
+	counters.TextColor3 = PALETTE.dim
 	if state.calls == 0 then
 		counters.Text = "idle"
 		return
@@ -156,11 +174,30 @@ end
 function Console.log(level: Level, message: string, detail: string?)
 	local spec = LEVELS[level] or LEVELS.info
 
-	local body = string.format("%s %s", spec.sigil, message)
+	--[[
+		Measured in characters, not bytes.
+
+		`#body` counts bytes, and every sigil in this console is a 3-byte UTF-8
+		glyph, so it over-counted each line by two and pushed the latency column
+		two places left on exactly the lines that had a latency. The column was
+		never straight, and the cause was invisible until two different sigils
+		sat next to each other.
+	]]
+	local trimmed = message
+	local budget = DETAIL_COLUMN - 3
+	if detail and (utf8.len(trimmed) or #trimmed) > budget then
+		-- Cut rather than wrap. A wrapped line destroys the alignment and
+		-- carries the detail off the end of the visible width as well.
+		local offset = utf8.offset(trimmed, budget) or budget
+		trimmed = string.sub(trimmed, 1, offset - 1) .. utf8.char(0x2026)
+	end
+
+	local body = string.format("%s %s", spec.sigil, trimmed)
+	local bodyWidth = utf8.len(body) or #body
 	local line = span(PALETTE.dim, os.date("%H:%M:%S") :: string) .. " " .. span(spec.color, body)
 
 	if detail then
-		local padding = math.max(1, DETAIL_COLUMN - #body)
+		local padding = math.max(1, DETAIL_COLUMN - bodyWidth)
 		line ..= span(PALETTE.dim, string.rep(" ", padding) .. detail)
 	end
 
@@ -172,16 +209,22 @@ function Console.log(level: Level, message: string, detail: string?)
 end
 
 --[[
-	Announces a command as it starts, in words rather than in wire names.
+	Announces a command as it starts -- everywhere except the log.
 
-	Both halves of the panel are told: the log keeps the permanent record, the
-	visual canvas shows it as motion. They are fed from one call so the two can
-	never disagree about what is running.
+	This used to append a line, and then the reply appended a second one saying
+	the same thing in a different colour. Every call cost two rows and read as
+	duplicated output, which is exactly what it was: a cyan "Edit KillBrick"
+	followed by a violet "Edit KillBrick".
+
+	The log now takes one line per call, written when it finishes and carrying
+	the latency it took. What is running *right now* belongs in a place that
+	updates rather than accumulates, so it goes to the footer and the activity
+	band -- both of which show a single current value and neither of which grows.
 ]]
-function Console.beginCall(title: string, detail: string?)
-	Console.log("call", title, detail)
-	Visuals.setCaption(title, detail)
-	Visuals.pulse(PALETTE.cyan, 0.35)
+function Console.beginCall(title: string)
+	state.running = title
+	Visuals.setCaption(title)
+	refreshCounters()
 end
 
 --[[
@@ -194,15 +237,12 @@ function Console.recordCall(ok: boolean, milliseconds: number)
 	if not ok then
 		state.errors += 1
 	end
+	state.running = nil
 	refreshCounters()
 
-	-- A reply pulses back in its outcome's colour, and a failure also knocks the
-	-- solid off its axis: the one motion in the panel that is meant to look
-	-- wrong, so a failure registers even when nobody is reading the text.
-	Visuals.pulse(if ok then PALETTE.violet else PALETTE.red, if ok then 0.3 else 0.8)
-	if not ok then
-		Visuals.jolt()
-	end
+	-- The band plots it: bar height is how long it took, colour is whether it
+	-- worked, and a failure knocks the solid off its axis as well.
+	Visuals.recordCall(milliseconds, ok)
 end
 
 function Console.clear()
@@ -243,9 +283,6 @@ function Console.setStatus(status: string, meta: string)
 	-- The wireframe takes the same colour as the status light, so the panel
 	-- reads as disconnected at a glance even with the header off screen.
 	Visuals.setTint(color)
-	if status ~= "connected" then
-		Visuals.setCaption(string.lower(status), meta)
-	end
 end
 
 local function makeButton(parent: Instance, text: string, order: number): TextButton
@@ -481,31 +518,40 @@ function Console.mount(parent: Instance, handlers: Handlers)
 	end)
 
 	--[[
-		The visual panel sits over the log rather than beside it.
+		The band sits above the log and pushes it down, rather than over it.
 
-		Splitting the widget would give each half too little room in a dock this
-		size, and the two are not read at once anyway: the log is for reading
-		back what happened, the visuals for watching what is happening now.
+		The first version covered the log and was slightly transparent, so the
+		thing you actually read was both hidden and softened. Decoration that
+		costs legibility is a bad trade however good it looks, and this is a
+		console before it is anything else.
 	]]
-	Visuals.mount(scroller.Parent :: Instance, {
+	Visuals.mount(root, {
 		background = PALETTE.background,
+		surface = PALETTE.surface,
 		text = PALETTE.text,
 		dim = PALETTE.dim,
+		violet = PALETTE.violet,
+		red = PALETTE.red,
 	})
-	local visualsCanvas = (scroller.Parent :: Instance):FindFirstChild("Visuals") :: Frame
-	visualsCanvas.Position = UDim2.new(0, 0, 0, 33)
-	visualsCanvas.Size = UDim2.new(1, 0, 1, -55)
+	local band = root:FindFirstChild("ActivityBand") :: Frame
+	band.Position = UDim2.new(0, 0, 0, 33)
+	band.Size = UDim2.new(1, 0, 0, Visuals.BAND_HEIGHT)
+
+	-- The log's top edge follows the band, so turning it on never hides a line.
+	local function layoutLog()
+		local top = 33 + (if Visuals.isVisible() then Visuals.BAND_HEIGHT else 0)
+		scroller.Position = UDim2.new(0, 0, 0, top)
+		scroller.Size = UDim2.new(1, 0, 1, -(top + 22))
+	end
+	layoutLog()
 
 	visualsButton.MouseButton1Click:Connect(function()
-		local nowOn = not Visuals.isVisible()
-		Visuals.setVisible(nowOn)
+		Visuals.setVisible(not Visuals.isVisible())
+		layoutLog()
 		-- The button reports the state it is in, not the state it would move to.
 		-- A toggle that reads as an instruction is ambiguous the moment you look
 		-- away and back.
-		visualsButton.Text = if nowOn then "\u{25C6} visuals" else "visuals"
-		if nowOn then
-			Visuals.setCaption("watching", "waiting for the first command")
-		end
+		visualsButton.Text = if Visuals.isVisible() then "\u{25C6} visuals" else "visuals"
 	end)
 
 	-- Treat "scrolled away from the bottom" as the user reading history, and

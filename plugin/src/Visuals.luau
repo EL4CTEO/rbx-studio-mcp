@@ -1,34 +1,36 @@
 --!strict
 --[[
-	The console's visual mode: a wireframe solid, turning, that reacts to traffic.
+	The console's activity band: a turning wireframe beside a live latency trace.
 
-	Watching an agent work is mostly waiting. The log answers "what is it doing"
-	precisely and answers "is it still alive" badly -- a stalled session and a
-	thinking one produce the same still screen. This gives the panel a pulse:
-	something always moving, and moving *differently* when something happens.
+	Watching an agent work is mostly waiting, and the log answers "what is it
+	doing" precisely while answering "is it still alive" badly -- a stalled
+	session and a thinking one produce the same still screen.
 
-	It is a real renderer, not a looping animation. Vertices are rotated in three
-	dimensions and projected through a perspective divide every frame, so the
-	depth is genuine -- near edges are brighter and thicker than far ones because
-	they are actually nearer, and the solid reads as solid.
+	This began as a full-panel overlay and that was wrong. It sat on top of the
+	log, so the thing you actually read was covered and, being slightly
+	transparent, softened underneath. Decoration that costs legibility is a bad
+	trade however good it looks. So it is a band now: a fixed strip above the
+	log, which keeps every line at full contrast and never moves under the
+	reader. The log shrinks by the band's height and nothing overlaps.
 
-	Drawing uses one Frame per edge, rotated about its midpoint. Roblox has no
-	line primitive and no immediate-mode canvas, so a segment is a thin rectangle
-	turned to the right angle. Frames are pooled to the largest shape's edge
-	count and reused across shape changes, because allocating Instances inside a
-	per-frame loop is how a decorative panel becomes a performance complaint.
+	The strip earns its space twice over. The wireframe on the left says the
+	session is live; the trace beside it is the last forty calls, each a bar as
+	tall as it was slow and coloured by whether it worked. That turns "is it
+	alive" and "is it healthy" into one glance, which is more than the log gives
+	and more than an animation alone would.
 
-	Everything it does is driven by what the session is doing: the palette
-	follows connection state, each command lands as a pulse, and an error throws
-	the solid off its axis. Idle is calm and slow on purpose -- motion that never
-	varies stops being information and becomes wallpaper.
+	The solid is a real projection, not a canned loop: vertices rotate in three
+	dimensions and pass through a perspective divide every frame, so near edges
+	are brighter and thicker because they genuinely are nearer. Roblox has no
+	line primitive, so each edge is a thin Frame turned about its midpoint, and
+	the frames are pooled -- allocating Instances inside a per-frame loop is how
+	a decorative strip becomes a performance complaint.
 ]]
 
 local RunService = game:GetService("RunService")
 
 local Visuals = {}
 
--- Golden ratio, for the icosahedron's vertices.
 local PHI = (1 + math.sqrt(5)) / 2
 
 type Shape = {
@@ -38,10 +40,9 @@ type Shape = {
 }
 
 --[[
-	Four Platonic-ish solids, ordered by how busy they look. The session moves up
-	this list as it does more work, so the panel's complexity tracks the
-	session's -- an idle plugin shows a tetrahedron, a working one an
-	icosahedron.
+	Ordered by how busy they look. The session climbs this list as it works, so
+	the shape itself reports load: an idle plugin shows a tetrahedron, a busy one
+	an icosahedron.
 ]]
 local SHAPES: { Shape } = {
 	{
@@ -73,14 +74,10 @@ local SHAPES: { Shape } = {
 	{
 		name = "cube",
 		vertices = {
-			Vector3.new(-1, -1, -1),
-			Vector3.new(1, -1, -1),
-			Vector3.new(1, 1, -1),
-			Vector3.new(-1, 1, -1),
-			Vector3.new(-1, -1, 1),
-			Vector3.new(1, -1, 1),
-			Vector3.new(1, 1, 1),
-			Vector3.new(-1, 1, 1),
+			Vector3.new(-1, -1, -1), Vector3.new(1, -1, -1),
+			Vector3.new(1, 1, -1), Vector3.new(-1, 1, -1),
+			Vector3.new(-1, -1, 1), Vector3.new(1, -1, 1),
+			Vector3.new(1, 1, 1), Vector3.new(-1, 1, 1),
 		},
 		edges = {
 			{ 1, 2 }, { 2, 3 }, { 3, 4 }, { 4, 1 },
@@ -113,56 +110,65 @@ local SHAPES: { Shape } = {
 }
 
 local MAX_EDGES = 30
-
--- Perspective strength. Large enough that the far side stays legible, small
--- enough that turning reads as depth rather than as a flat spin.
 local FOCAL = 3.4
 
-type Pulse = {
+-- The strip's height, and the width reserved for the solid at its left end.
+Visuals.BAND_HEIGHT = 46
+local CELL = 46
+
+-- How many calls the trace remembers. Forty is about a screen's width of bars
+-- at two pixels each, and about as far back as anyone reads a trend.
+local TRACE = 40
+
+-- Bars are scaled against this, so a normal call is a low bar and a slow one is
+-- obvious. Anything past it clamps to full height rather than flattening the
+-- rest of the trace into invisibility.
+local SLOW_MS = 400
+
+type Bar = {
 	frame: Frame,
-	age: number,
-	life: number,
-	color: Color3,
+	milliseconds: number,
+	ok: boolean,
 }
 
 type Runtime = {
-	canvas: Frame?,
+	band: Frame?,
+	cell: Frame?,
+	trace: Frame?,
 	caption: TextLabel?,
-	subcaption: TextLabel?,
 	edges: { Frame },
-	pulses: { Pulse },
+	bars: { Bar },
 	connection: RBXScriptConnection?,
 
 	spin: Vector3,
 	angle: Vector3,
 	shapeIndex: number,
-	morph: number,
 
-	-- Eased toward on activity and decaying back, so a burst of calls swells the
-	-- solid and it settles afterwards instead of snapping.
 	energy: number,
 	shake: number,
 	tint: Color3,
 	targetTint: Color3,
 	activity: number,
+	palette: { [string]: Color3 },
 }
 
 local runtime: Runtime = {
-	canvas = nil,
+	band = nil,
+	cell = nil,
+	trace = nil,
 	caption = nil,
-	subcaption = nil,
 	edges = {},
-	pulses = {},
+	bars = {},
 	connection = nil,
 	spin = Vector3.new(0.18, 0.27, 0.11),
 	angle = Vector3.zero,
 	shapeIndex = 1,
-	morph = 1,
 	energy = 0,
 	shake = 0,
 	tint = Color3.fromRGB(167, 139, 250),
 	targetTint = Color3.fromRGB(167, 139, 250),
 	activity = 0,
+	palette = {},
 }
 
 local function rotate(point: Vector3, angle: Vector3): Vector3
@@ -181,11 +187,8 @@ local function rotate(point: Vector3, angle: Vector3): Vector3
 end
 
 --[[
-	Draws one edge as a rectangle turned about its midpoint.
-
-	`Rotation` on a GuiObject pivots around its centre, which is exactly what a
-	line segment needs: place the frame at the midpoint, make it as long as the
-	distance, and turn it to the bearing.
+	One edge as a rectangle turned about its midpoint. `Rotation` pivots a
+	GuiObject around its centre, which is exactly what a segment needs.
 ]]
 local function drawEdge(frame: Frame, a: Vector2, b: Vector2, thickness: number, color: Color3, transparency: number)
 	local delta = b - a
@@ -203,34 +206,26 @@ local function drawEdge(frame: Frame, a: Vector2, b: Vector2, thickness: number,
 end
 
 local function step(delta: number)
-	local canvas = runtime.canvas
-	if canvas == nil or not canvas.Visible then
+	local band = runtime.band
+	if band == nil or not band.Visible then
 		return
 	end
 
-	local size = canvas.AbsoluteSize
-	if size.X < 8 or size.Y < 8 then
-		return
-	end
-
-	-- Decay first, so a burst that arrived this frame is still at full strength
-	-- when it is drawn.
 	runtime.energy = math.max(0, runtime.energy - delta * 0.9)
 	runtime.shake = math.max(0, runtime.shake - delta * 2.4)
 	runtime.activity = math.max(0, runtime.activity - delta * 0.35)
 	runtime.tint = runtime.tint:Lerp(runtime.targetTint, math.min(1, delta * 4))
 
-	-- Faster while busy: the rate itself carries information, so a glance says
+	-- Turning faster while busy makes the rate itself readable: a glance says
 	-- whether anything is happening without reading a word.
-	local rate = 1 + runtime.energy * 2.2
-	runtime.angle += runtime.spin * delta * rate
+	runtime.angle += runtime.spin * delta * (1 + runtime.energy * 2.2)
 
 	local shape = SHAPES[runtime.shapeIndex]
-	local centre = Vector2.new(size.X / 2, size.Y / 2)
-	local radius = math.min(size.X, size.Y) * (0.3 + runtime.energy * 0.05)
+	local centre = Vector2.new(CELL / 2, CELL / 2)
+	local radius = CELL * (0.3 + runtime.energy * 0.04)
 
-	-- A wobble on the axis rather than on the whole panel. Shaking the canvas
-	-- would read as a glitch; tilting the object reads as it being knocked.
+	-- Wobble the axis rather than the panel: shaking the strip would read as a
+	-- glitch, tilting the solid reads as it being knocked.
 	local wobble = if runtime.shake > 0
 		then Vector3.new(
 			math.sin(os.clock() * 37) * runtime.shake * 0.12,
@@ -255,86 +250,63 @@ local function step(delta: number)
 			frame.Visible = false
 			continue
 		end
-
 		local a, b = edge[1], edge[2]
-		-- Depth runs about -1.9..1.9 for these solids; normalising it to 0..1
-		-- gives the near/far weighting.
 		local depth = math.clamp(((depths[a] + depths[b]) / 2 + 2) / 4, 0, 1)
-		local thickness = math.max(1, math.floor(1 + depth * 2 + runtime.energy))
-		local transparency = 0.82 - depth * 0.72
-
-		local color = runtime.tint:Lerp(Color3.new(1, 1, 1), depth * 0.35)
-		drawEdge(frame, projected[a], projected[b], thickness, color, transparency)
-	end
-
-	-- Pulses: rings that expand and fade, one per command.
-	for index = #runtime.pulses, 1, -1 do
-		local pulse = runtime.pulses[index]
-		pulse.age += delta
-		local progress = pulse.age / pulse.life
-		if progress >= 1 then
-			pulse.frame:Destroy()
-			table.remove(runtime.pulses, index)
-			continue
-		end
-		-- Eased out, so it leaves quickly and lingers wide rather than crawling
-		-- outward at a constant rate.
-		local eased = 1 - (1 - progress) * (1 - progress)
-		local span = radius * (0.5 + eased * 2.6)
-		pulse.frame.Size = UDim2.fromOffset(span * 2, span * 2)
-		pulse.frame.Position = UDim2.fromOffset(centre.X, centre.Y)
-		local stroke = pulse.frame:FindFirstChildWhichIsA("UIStroke")
-		if stroke then
-			stroke.Transparency = 0.25 + eased * 0.75
-			stroke.Color = pulse.color
-		end
+		drawEdge(
+			frame,
+			projected[a],
+			projected[b],
+			math.max(1, math.floor(1 + depth * 1.6)),
+			runtime.tint:Lerp(Color3.new(1, 1, 1), depth * 0.35),
+			0.84 - depth * 0.74
+		)
 	end
 end
 
 --[[
-	A ring leaving the centre. Colour carries the outcome, so a failure is
-	visible from across the room without reading the log.
+	Records one finished call as a bar on the trace.
+
+	Height is duration and colour is outcome, so a slow call and a failed one are
+	distinguishable at a glance -- which is the pair of questions that actually
+	get asked of a log this size.
 ]]
-function Visuals.pulse(color: Color3, strength: number)
-	local canvas = runtime.canvas
-	if canvas == nil or not canvas.Visible then
+function Visuals.recordCall(milliseconds: number, ok: boolean)
+	runtime.energy = math.min(1.6, runtime.energy + (if ok then 0.3 else 0.8))
+	runtime.activity = math.min(1, runtime.activity + 0.25)
+	runtime.shapeIndex = math.clamp(1 + math.floor(runtime.activity * (#SHAPES - 0.001)), 1, #SHAPES)
+	if not ok then
+		runtime.shake = 1
+	end
+
+	local trace = runtime.trace
+	if trace == nil then
 		return
 	end
 
-	runtime.energy = math.min(1.6, runtime.energy + strength)
-	runtime.activity = math.min(1, runtime.activity + 0.25)
+	local bar = Instance.new("Frame")
+	bar.AnchorPoint = Vector2.new(0, 1)
+	bar.BorderSizePixel = 0
+	bar.Parent = trace
+	table.insert(runtime.bars, { frame = bar, milliseconds = milliseconds, ok = ok })
 
-	-- Complexity follows how much the session is doing.
-	local target = 1 + math.floor(runtime.activity * (#SHAPES - 0.001))
-	runtime.shapeIndex = math.clamp(target, 1, #SHAPES)
+	while #runtime.bars > TRACE do
+		runtime.bars[1].frame:Destroy()
+		table.remove(runtime.bars, 1)
+	end
 
-	local ring = Instance.new("Frame")
-	ring.AnchorPoint = Vector2.new(0.5, 0.5)
-	ring.BackgroundTransparency = 1
-	ring.BorderSizePixel = 0
-	ring.Size = UDim2.fromOffset(4, 4)
-	ring.ZIndex = 0
-	ring.Parent = canvas
-
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(1, 0)
-	corner.Parent = ring
-
-	local stroke = Instance.new("UIStroke")
-	stroke.Color = color
-	stroke.Thickness = 1
-	stroke.Transparency = 0.25
-	stroke.Parent = ring
-
-	table.insert(runtime.pulses, { frame = ring, age = 0, life = 1.1, color = color })
-end
-
---[[
-	Knocks the solid off its axis. Reserved for failures: it is the one motion
-	that looks wrong on purpose.
-]]
-function Visuals.jolt()
-	runtime.shake = 1
+	-- Laid out right to left so the newest bar is always at the same edge and
+	-- the trace reads as scrolling rather than reshuffling.
+	local total = #runtime.bars
+	for index, entry in runtime.bars do
+		local fromRight = total - index
+		local height = math.clamp(entry.milliseconds / SLOW_MS, 0.06, 1)
+		entry.frame.Position = UDim2.new(1, -(fromRight + 1) * 5, 1, 0)
+		entry.frame.Size = UDim2.new(0, 3, height, 0)
+		entry.frame.BackgroundColor3 = if entry.ok
+			then runtime.palette.violet or runtime.tint
+			else runtime.palette.red or Color3.fromRGB(251, 113, 133)
+		entry.frame.BackgroundTransparency = 0.15 + (fromRight / TRACE) * 0.6
+	end
 end
 
 function Visuals.setTint(color: Color3)
@@ -342,64 +314,60 @@ function Visuals.setTint(color: Color3)
 end
 
 --[[
-	What the panel is doing right now, in words, under the solid.
-
-	The animation says something is happening; this says what. Together they
-	cover the two questions someone watching actually has, and neither answers
-	the other's.
+	What is running, in the same words the log uses. The motion says something is
+	happening; this says what, and neither answers the other's question.
 ]]
-function Visuals.setCaption(title: string, detail: string?)
+function Visuals.setCaption(title: string)
 	if runtime.caption then
 		runtime.caption.Text = title
-	end
-	if runtime.subcaption then
-		runtime.subcaption.Text = detail or ""
 	end
 end
 
 function Visuals.setVisible(visible: boolean)
-	local canvas = runtime.canvas
-	if canvas == nil then
+	local band = runtime.band
+	if band == nil then
 		return
 	end
-	canvas.Visible = visible
+	band.Visible = visible
 
-	-- The render loop is only connected while the panel is on screen. A hidden
-	-- widget that keeps projecting geometry every frame is a battery complaint
-	-- waiting to happen.
+	-- Connected only while on screen: a hidden strip that keeps projecting
+	-- geometry every frame is a battery complaint waiting to happen.
 	if visible and runtime.connection == nil then
 		runtime.connection = RunService.Heartbeat:Connect(step)
 	elseif not visible and runtime.connection ~= nil then
 		runtime.connection:Disconnect()
 		runtime.connection = nil
-		for _, pulse in runtime.pulses do
-			pulse.frame:Destroy()
-		end
-		table.clear(runtime.pulses)
 	end
 end
 
 function Visuals.isVisible(): boolean
-	local canvas = runtime.canvas
-	return canvas ~= nil and canvas.Visible
+	local band = runtime.band
+	return band ~= nil and band.Visible
 end
 
 --[[
-	Builds the canvas. Edge frames are all created here and never again, which is
-	what keeps the per-frame path free of allocation.
+	Builds the strip. Every edge frame is created here and never again, which is
+	what keeps the per-frame path allocation-free.
 ]]
 function Visuals.mount(parent: Instance, palette: { [string]: Color3 })
-	local canvas = Instance.new("Frame")
-	canvas.Name = "Visuals"
-	canvas.Size = UDim2.fromScale(1, 1)
-	canvas.BackgroundColor3 = palette.background
-	canvas.BackgroundTransparency = 0.08
-	canvas.BorderSizePixel = 0
-	canvas.Visible = false
-	canvas.ClipsDescendants = true
-	canvas.ZIndex = 5
-	canvas.Parent = parent
-	runtime.canvas = canvas
+	runtime.palette = palette
+
+	local band = Instance.new("Frame")
+	band.Name = "ActivityBand"
+	band.BackgroundColor3 = palette.surface
+	band.BorderSizePixel = 0
+	band.Visible = false
+	band.ClipsDescendants = true
+	band.Parent = parent
+	runtime.band = band
+
+	local cell = Instance.new("Frame")
+	cell.Name = "Solid"
+	cell.Size = UDim2.fromOffset(CELL, CELL)
+	cell.BackgroundTransparency = 1
+	cell.ClipsDescendants = true
+	cell.Parent = band
+	runtime.cell = cell
 
 	for index = 1, MAX_EDGES do
 		local edge = Instance.new("Frame")
@@ -407,38 +375,52 @@ function Visuals.mount(parent: Instance, palette: { [string]: Color3 })
 		edge.AnchorPoint = Vector2.new(0.5, 0.5)
 		edge.BorderSizePixel = 0
 		edge.Visible = false
-		edge.ZIndex = 6
-		edge.Parent = canvas
+		edge.Parent = cell
 		runtime.edges[index] = edge
 	end
 
+	-- A hairline between the solid and the trace, so the strip reads as two
+	-- instruments rather than one busy rectangle.
+	local divider = Instance.new("Frame")
+	divider.Position = UDim2.fromOffset(CELL, 8)
+	divider.Size = UDim2.new(0, 1, 1, -16)
+	divider.BackgroundColor3 = palette.dim
+	divider.BackgroundTransparency = 0.7
+	divider.BorderSizePixel = 0
+	divider.Parent = band
+
 	local caption = Instance.new("TextLabel")
-	caption.AnchorPoint = Vector2.new(0.5, 1)
-	caption.Position = UDim2.new(0.5, 0, 1, -26)
-	caption.Size = UDim2.new(1, -24, 0, 16)
+	caption.Position = UDim2.new(0, CELL + 12, 0, 5)
+	caption.Size = UDim2.new(1, -CELL - 24, 0, 14)
 	caption.BackgroundTransparency = 1
 	caption.Font = Enum.Font.Code
-	caption.TextSize = 12
+	caption.TextSize = 11
 	caption.TextColor3 = palette.text
+	caption.TextXAlignment = Enum.TextXAlignment.Left
 	caption.TextTruncate = Enum.TextTruncate.AtEnd
 	caption.Text = "idle"
-	caption.ZIndex = 7
-	caption.Parent = canvas
+	caption.Parent = band
 	runtime.caption = caption
 
-	local subcaption = Instance.new("TextLabel")
-	subcaption.AnchorPoint = Vector2.new(0.5, 1)
-	subcaption.Position = UDim2.new(0.5, 0, 1, -10)
-	subcaption.Size = UDim2.new(1, -24, 0, 14)
-	subcaption.BackgroundTransparency = 1
-	subcaption.Font = Enum.Font.Code
-	subcaption.TextSize = 11
-	subcaption.TextColor3 = palette.dim
-	subcaption.TextTruncate = Enum.TextTruncate.AtEnd
-	subcaption.Text = ""
-	subcaption.ZIndex = 7
-	subcaption.Parent = canvas
-	runtime.subcaption = subcaption
+	local trace = Instance.new("Frame")
+	trace.Name = "Trace"
+	trace.Position = UDim2.new(0, CELL + 12, 0, 21)
+	trace.Size = UDim2.new(1, -CELL - 24, 0, 20)
+	trace.BackgroundTransparency = 1
+	trace.ClipsDescendants = true
+	trace.Parent = band
+	runtime.trace = trace
+
+	-- A baseline under the bars, so an empty trace still reads as an instrument
+	-- waiting for data rather than as a blank gap.
+	local baseline = Instance.new("Frame")
+	baseline.AnchorPoint = Vector2.new(0, 1)
+	baseline.Position = UDim2.fromScale(0, 1)
+	baseline.Size = UDim2.new(1, 0, 0, 1)
+	baseline.BackgroundColor3 = palette.dim
+	baseline.BackgroundTransparency = 0.75
+	baseline.BorderSizePixel = 0
+	baseline.Parent = trace
 end
 
 return Visuals
