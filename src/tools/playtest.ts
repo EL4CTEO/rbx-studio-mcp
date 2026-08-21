@@ -27,7 +27,7 @@ interface PlaytestResponse {
  * and its context is exactly what the caller needs.
  */
 async function findPlaytestSession(bridge: ToolContext["bridge"]): Promise<string | null> {
-  const sessions = bridge.list();
+  const sessions = (await bridge.sessions()).list;
   const cached = sessions.find((session) => session.context?.includes("playtest"));
   if (cached) return cached.studioId;
 
@@ -40,7 +40,7 @@ async function findPlaytestSession(bridge: ToolContext["bridge"]): Promise<strin
           {},
           { studioId: session.studioId, timeoutMs: 3_000 },
         );
-        bridge.notePlaceName(session.studioId, status.placeName, status.context);
+        await bridge.notePlaceName(session.studioId, status.placeName, status.context);
         return status.context?.includes("playtest") ? session.studioId : null;
       } catch {
         return null;
@@ -138,7 +138,9 @@ export function registerPlaytestTools(context: ToolContext): void {
             })
             .catch(() => null);
 
-          const survivor = bridge.list().find((session) => session.studioId !== playtest);
+          const survivor = (await bridge.sessions()).list.find(
+            (session) => session.studioId !== playtest,
+          );
           if (survivor) {
             //[[
             // Waited for, not sampled. The teardown is deliberately deferred so

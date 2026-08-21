@@ -71,12 +71,13 @@ export function registerSessionTools(context: ToolContext): void {
     async ({ studioId }): Promise<ToolResult> => {
       const status = await bridge.call<StudioStatus>("studio.status", {}, { studioId });
 
-      const targetId = studioId ?? bridge.activeId;
-      if (targetId) bridge.notePlaceName(targetId, status.placeName, status.context);
+      const view = await bridge.sessions();
+      const targetId = studioId ?? view.activeId;
+      if (targetId) await bridge.notePlaceName(targetId, status.placeName, status.context);
 
       // A stale plugin answers with older handlers and no other symptom, so the
       // warning rides along with the one call agents are told to make first.
-      const session = bridge.list().find((entry) => entry.studioId === targetId);
+      const session = view.list.find((entry) => entry.studioId === targetId);
       const warning = pluginStalenessWarning(session?.buildId);
       return json(status, warning ? `WARNING: ${warning}` : undefined);
     },
@@ -111,7 +112,8 @@ export function registerSessionTools(context: ToolContext): void {
       readOnly: true,
     },
     async (): Promise<ToolResult> => {
-      const sessions = bridge.list();
+      const view = await bridge.sessions();
+      const sessions = view.list;
       if (sessions.length === 0) {
         return text(
           "No Studio instances are connected.\n" +
@@ -122,7 +124,7 @@ export function registerSessionTools(context: ToolContext): void {
       // A defaulted target is not reported as active: tools refuse to use it
       // while several are connected, so showing it as active would explain
       // neither the AMBIGUOUS_STUDIO that follows nor how to clear it.
-      const active = bridge.activeIsChosen || sessions.length === 1 ? bridge.activeId : null;
+      const active = view.activeIsChosen || sessions.length === 1 ? view.activeId : null;
 
       // The identity captured at connect only knows the data model's name. Each
       // Studio is asked live for the name the user would actually recognise,
@@ -137,7 +139,7 @@ export function registerSessionTools(context: ToolContext): void {
               {},
               { studioId: session.studioId, timeoutMs: 3_000 },
             );
-            bridge.notePlaceName(session.studioId, status.placeName, status.context);
+            await bridge.notePlaceName(session.studioId, status.placeName, status.context);
             return {
               placeName: status.placeName,
               context: status.context,
@@ -195,8 +197,8 @@ export function registerSessionTools(context: ToolContext): void {
       idempotent: true,
     },
     async ({ studioId }): Promise<ToolResult> => {
-      bridge.setActive(studioId);
-      const session = bridge.list().find((s) => s.studioId === studioId);
+      await bridge.setActive(studioId);
+      const session = (await bridge.sessions()).list.find((s) => s.studioId === studioId);
 
       // Confirmed with the session's context because two entries can share a
       // place name, and picking the playtest one means work that disappears

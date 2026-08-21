@@ -1,13 +1,13 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z, type ZodRawShape } from "zod";
-import type { Bridge } from "../bridge/rpc.js";
+import type { StudioBridge } from "../bridge/api.js";
 import { toToolError } from "./errors.js";
 import { errorText, type ToolResult } from "./format.js";
 
 /** Everything a tool module needs, passed once at registration. */
 export interface ToolContext {
   server: McpServer;
-  bridge: Bridge;
+  bridge: StudioBridge;
 }
 
 export interface ToolSpec<Shape extends ZodRawShape> {

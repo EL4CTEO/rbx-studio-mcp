@@ -1,7 +1,10 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { CLIENT_HEADER, PROTOCOL_VERSION } from "../lib/protocol.js";
+import { toToolError } from "../lib/errors.js";
 import type { CommandResult, StudioIdentity } from "../lib/protocol.js";
 import { Bridge } from "./rpc.js";
+import { LocalBridge, type StudioBridge } from "./api.js";
+import { probeOwner, RemoteBridge } from "./remote.js";
 
 /** Default loopback port. Deliberately not 58741 — that is drgost1's server. */
 export const DEFAULT_PORT = 44755;
@@ -18,9 +21,11 @@ export interface BridgeServerOptions {
 }
 
 export interface BridgeServer {
-  bridge: Bridge;
+  bridge: StudioBridge;
   port: number;
   close: () => Promise<void>;
+  /** False when another instance owns the port and this one proxies to it. */
+  owner: boolean;
 }
 
 /**
@@ -60,13 +65,29 @@ export function startBridgeServer(
       // fight over the plugin's connection, so say so plainly instead of
       // surfacing a bare EADDRINUSE.
       if (cause.code === "EADDRINUSE") {
-        reject(
-          new Error(
-            `Port ${port} is already in use — another roblox-studio-mcp is probably ` +
-              `running. Stop it, or start this one with --port <other> and set the ` +
-              `matching port in the Studio plugin widget.`,
-          ),
-        );
+        // Almost always another copy of this server, which is not a failure:
+        // the plugin can only connect to one port, so the right answer is to
+        // share that one connection rather than fight for it. Any number of MCP
+        // clients can then drive one Studio.
+        void probeOwner(port).then((existing) => {
+          if (existing) {
+            clearInterval(reaper);
+            resolve({
+              bridge: new RemoteBridge(port, existing),
+              port,
+              owner: false,
+              close: async () => clearInterval(reaper),
+            });
+            return;
+          }
+          reject(
+            new Error(
+              `Port ${port} is in use by something that is not roblox-studio-mcp. ` +
+                `Stop it, or start this one with --port <other> and set the matching ` +
+                `port in the Studio plugin widget.`,
+            ),
+          );
+        });
         return;
       }
       reject(cause);
@@ -75,8 +96,9 @@ export function startBridgeServer(
     server.listen(port, "127.0.0.1", () => {
       server.removeListener("error", reject);
       resolve({
-        bridge,
+        bridge: new LocalBridge(bridge),
         port,
+        owner: true,
         close: () => closeServer(server, reaper),
       });
     });
@@ -120,6 +142,26 @@ async function handle(
         return await handleLatency(bridge, url, res);
       case "POST /transport":
         return await handleTransport(bridge, url, res);
+      case "GET /identity":
+        // Answered so a second instance can tell us apart from whatever else
+        // might be squatting on the port. See probeOwner.
+        return send(res, 200, {
+          server: "roblox-studio-mcp",
+          protocolVersion: PROTOCOL_VERSION,
+          pid: process.pid,
+        });
+      case "POST /call":
+        return await handlePeerCall(bridge, req, res);
+      case "GET /sessions":
+        return send(res, 200, {
+          list: bridge.list(),
+          activeId: bridge.activeId,
+          activeIsChosen: bridge.activeIsChosen,
+        });
+      case "POST /active":
+        return await handlePeerActive(bridge, req, res);
+      case "POST /place-name":
+        return await handlePeerPlaceName(bridge, req, res);
       case "POST /bye":
         bridge.detach(url.searchParams.get("studioId") ?? "");
         return send(res, 200, { ok: true });
@@ -353,4 +395,66 @@ function send(res: ServerResponse, status: number, body: unknown): void {
     "Content-Length": Buffer.byteLength(payload),
   });
   res.end(payload);
+}
+
+/**
+ * Runs a command on behalf of another instance of this server.
+ *
+ * The failure is returned as a body rather than an HTTP status, because the
+ * code and hint are the useful part and a 500 would throw them away — the peer
+ * rebuilds a ToolError from this and the agent sees the same text it would have
+ * seen had this process been the one it was talking to.
+ */
+async function handlePeerCall(
+  bridge: Bridge,
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
+  const body = JSON.parse(await readBody(req)) as {
+    op?: string;
+    params?: Record<string, unknown>;
+    studioId?: string;
+    timeoutMs?: number;
+  };
+  if (typeof body.op !== "string") return send(res, 400, { ok: false, error: { code: "BAD_PEER_CALL", message: "no op" } });
+
+  try {
+    const data = await bridge.call(body.op, body.params ?? {}, {
+      studioId: body.studioId,
+      timeoutMs: body.timeoutMs,
+    });
+    return send(res, 200, { ok: true, data });
+  } catch (cause) {
+    const error = toToolError(cause);
+    return send(res, 200, { ok: false, error: { code: error.code, message: error.message } });
+  }
+}
+
+async function handlePeerActive(
+  bridge: Bridge,
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
+  const body = JSON.parse(await readBody(req)) as { studioId?: string };
+  try {
+    bridge.setActive(String(body.studioId ?? ""));
+    return send(res, 200, { ok: true });
+  } catch (cause) {
+    const error = toToolError(cause);
+    return send(res, 200, { ok: false, error: { code: error.code, message: error.message } });
+  }
+}
+
+async function handlePeerPlaceName(
+  bridge: Bridge,
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
+  const body = JSON.parse(await readBody(req)) as {
+    studioId?: string;
+    placeName?: string;
+    context?: string;
+  };
+  bridge.notePlaceName(String(body.studioId ?? ""), String(body.placeName ?? ""), body.context);
+  return send(res, 200, { ok: true });
 }

@@ -149,6 +149,8 @@ args = ["-y", "@el4cteo/rbx-studio-mcp"]
 
 Port defaults to **44755** — `--port` or `ROBLOX_STUDIO_MCP_PORT`, matched in the plugin widget. Loopback only.
 
+**Several agents at once work.** Register this in as many clients as you like — two Claude sessions, Claude plus Cursor, whatever. The plugin connects out to one port, so the first server to start owns it and the rest proxy through it automatically. Nothing to configure, and no second connection to Studio.
+
 ## Tools
 
 | | |
