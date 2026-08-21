@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { CLIENT_HEADER, PROTOCOL_VERSION } from "../lib/protocol.js";
+import { PEER_HEADER } from "./remote.js";
 import { toToolError } from "../lib/errors.js";
 import type { CommandResult, StudioIdentity } from "../lib/protocol.js";
 import { Bridge } from "./rpc.js";
@@ -14,6 +15,11 @@ const HEARTBEAT_MS = 15_000;
 
 /** Largest body we accept from the plugin (script sources and screenshots are big). */
 const MAX_BODY_BYTES = 32 * 1024 * 1024;
+
+// The bridge's own diagnostic calls. They always name a studioId outright, so
+// this never resolves anything -- it exists so they cannot inherit, or become,
+// some agent's chosen target.
+const INTERNAL_CLIENT = "bridge-internal";
 
 export interface BridgeServerOptions {
   port?: number;
@@ -152,12 +158,14 @@ async function handle(
         });
       case "POST /call":
         return await handlePeerCall(bridge, req, res);
-      case "GET /sessions":
+      case "GET /sessions": {
+        const clientId = peerId(req);
         return send(res, 200, {
           list: bridge.list(),
-          activeId: bridge.activeId,
-          activeIsChosen: bridge.activeIsChosen,
+          activeId: bridge.activeId(clientId),
+          activeIsChosen: bridge.activeIsChosen(clientId),
         });
+      }
       case "POST /active":
         return await handlePeerActive(bridge, req, res);
       case "POST /place-name":
@@ -216,12 +224,12 @@ async function handleLatency(
 
   // One warm-up that is not recorded: the first call after an idle period pays
   // for stream wake-up, which is real but is not what the tenth call costs.
-  await bridge.call("studio.ping", {}, { studioId: target.studioId });
+  await bridge.call("studio.ping", {}, { clientId: INTERNAL_CLIENT, studioId: target.studioId });
 
   const samples: number[] = [];
   for (let index = 0; index < count; index += 1) {
     const started = process.hrtime.bigint();
-    await bridge.call("studio.ping", {}, { studioId: target.studioId });
+    await bridge.call("studio.ping", {}, { clientId: INTERNAL_CLIENT, studioId: target.studioId });
     samples.push(Number(process.hrtime.bigint() - started) / 1e6);
   }
 
@@ -265,7 +273,7 @@ async function handleTransport(
     return send(res, 409, { error: "No Studio is connected." });
   }
 
-  const result = await bridge.call("studio.transport", { mode }, { studioId: target.studioId });
+  const result = await bridge.call("studio.transport", { mode }, { clientId: INTERNAL_CLIENT, studioId: target.studioId });
   send(res, 200, result as Record<string, unknown>);
 }
 
@@ -405,6 +413,19 @@ function send(res: ServerResponse, status: number, body: unknown): void {
  * rebuilds a ToolError from this and the agent sees the same text it would have
  * seen had this process been the one it was talking to.
  */
+/**
+ * Which peer is asking, so its chosen Studio does not become everyone's.
+ *
+ * A peer that sends no id is treated as one anonymous client rather than
+ * rejected: an older instance proxying to a newer one still works, it simply
+ * shares a target with any other peer that also predates the header.
+ */
+function peerId(req: IncomingMessage): string {
+  const sent = req.headers[PEER_HEADER];
+  const value = Array.isArray(sent) ? sent[0] : sent;
+  return value && value.length > 0 ? value : "anonymous-peer";
+}
+
 async function handlePeerCall(
   bridge: Bridge,
   req: IncomingMessage,
@@ -420,6 +441,7 @@ async function handlePeerCall(
 
   try {
     const data = await bridge.call(body.op, body.params ?? {}, {
+      clientId: peerId(req),
       studioId: body.studioId,
       timeoutMs: body.timeoutMs,
     });
@@ -437,7 +459,7 @@ async function handlePeerActive(
 ): Promise<void> {
   const body = JSON.parse(await readBody(req)) as { studioId?: string };
   try {
-    bridge.setActive(String(body.studioId ?? ""));
+    bridge.setActive(peerId(req), String(body.studioId ?? ""));
     return send(res, 200, { ok: true });
   } catch (cause) {
     const error = toToolError(cause);

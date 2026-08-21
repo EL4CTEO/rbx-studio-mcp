@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { StudioSession } from "../lib/protocol.js";
 import type { Bridge } from "./rpc.js";
 
@@ -40,9 +41,17 @@ export interface SessionsView {
   activeIsChosen: boolean;
 }
 
-/** The bridge as seen from the process that actually holds the port. */
+/**
+ * The bridge as seen from the process that actually holds the port.
+ *
+ * Carries a client id like any other, rather than being privileged as "the"
+ * client. The process holding the port is still just one agent among however
+ * many are connected, and its chosen Studio has no more right to leak into
+ * everyone else's calls than a proxying peer's would.
+ */
 export class LocalBridge implements StudioBridge {
   readonly isOwner = true;
+  private readonly clientId = randomUUID();
 
   constructor(private readonly inner: Bridge) {}
 
@@ -51,19 +60,19 @@ export class LocalBridge implements StudioBridge {
     params: Record<string, unknown> = {},
     options: { studioId?: string; timeoutMs?: number } = {},
   ): Promise<T> {
-    return this.inner.call<T>(op, params, options);
+    return this.inner.call<T>(op, params, { ...options, clientId: this.clientId });
   }
 
   async sessions(): Promise<SessionsView> {
     return {
       list: this.inner.list(),
-      activeId: this.inner.activeId,
-      activeIsChosen: this.inner.activeIsChosen,
+      activeId: this.inner.activeId(this.clientId),
+      activeIsChosen: this.inner.activeIsChosen(this.clientId),
     };
   }
 
   async setActive(studioId: string): Promise<void> {
-    this.inner.setActive(studioId);
+    this.inner.setActive(this.clientId, studioId);
   }
 
   async notePlaceName(studioId: string, placeName: string, context?: string): Promise<void> {

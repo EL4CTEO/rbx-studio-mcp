@@ -185,7 +185,10 @@ export function registerSessionTools(context: ToolContext): void {
         "again whenever the user says to switch to another place.\n\n" +
         "The choice persists until it is changed or that Studio disconnects. " +
         "While several Studios are connected and none has been chosen, tools " +
-        "refuse with AMBIGUOUS_STUDIO rather than guessing.",
+        "refuse with AMBIGUOUS_STUDIO rather than guessing.\n\n" +
+        "The choice belongs to this client alone. Several agents can share one " +
+        "Studio connection, and each keeps its own target, so calling this never " +
+        "moves anyone else's — two agents can work on two places at once.",
       inputSchema: {
         studioId: z
           .string()

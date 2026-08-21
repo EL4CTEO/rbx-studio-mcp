@@ -1,6 +1,6 @@
 {
   "name": "@el4cteo/rbx-studio-mcp",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Free, open-source MCP server for Roblox Studio. Push-based SSE transport, editor-safe script edits, token-lean tools.",
   "type": "module",
   "license": "MIT",
@@ -24,7 +24,7 @@
     "start": "node dist/index.js",
     "build:plugin": "node scripts/check-plugin.mjs && node scripts/build-plugin.mjs",
     "sourcemap": "node scripts/sourcemap.mjs",
-    "test": "node scripts/test-plugin.mjs",
+    "test": "node scripts/test-plugin.mjs && node scripts/test-bridge.mjs",
     "build:all": "npm run build && npm run build:plugin",
     "install:plugin": "node scripts/install-plugin.mjs",
     "check:plugin": "node scripts/check-plugin.mjs",

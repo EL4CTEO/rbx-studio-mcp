@@ -155,6 +155,8 @@ Port defaults to **44755** — `--port` or `ROBLOX_STUDIO_MCP_PORT`, matched in 
 
 **Several agents at once work.** Register this in as many clients as you like — two Claude sessions, Claude plus Cursor, whatever. The plugin connects out to one port, so the first server to start owns it and the rest proxy through it automatically. Nothing to configure, and no second connection to Studio.
 
+Each agent keeps its **own** target: `set_active_studio` binds per client, so two agents can work on two open places at once and neither can retarget the other. Pass `studioId` on a single call to reach elsewhere without changing your default.
+
 ## Tools
 
 | | |

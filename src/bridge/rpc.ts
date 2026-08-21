@@ -54,17 +54,25 @@ interface Session {
  */
 export class Bridge {
   private readonly sessions = new Map<string, Session>();
-  private activeStudioId: string | null = null;
+
   /**
-   * Whether `activeStudioId` was picked by the user via set_active_studio, as
-   * opposed to being the only session that happened to connect first.
+   * Which Studio each connected client chose, keyed by client.
    *
-   * The distinction decides what happens when a second Studio appears. A
-   * defaulted target silently becomes ambiguous — editing whichever place
-   * connected first is not a reasonable guess — while a chosen one stays put,
-   * because the user said which place they meant.
+   * Per client, not per process, and that is the whole point. Any number of
+   * agents share this bridge — the first server to start owns the port and the
+   * rest proxy through it — so a single chosen target would be shared mutable
+   * state between agents that cannot see each other: one calling
+   * set_active_studio would silently retarget the next un-addressed call of
+   * every other. Editing the wrong place is not a failure that announces
+   * itself, so the answer is isolation rather than a warning.
+   *
+   * Presence in the map is what "chosen" means. That distinction decides what
+   * happens when a second Studio appears: a client that never chose goes
+   * ambiguous, because editing whichever place connected first is not a
+   * reasonable guess, while one that did stays put, because it said what it
+   * meant.
    */
-  private activeWasChosen = false;
+  private readonly chosen = new Map<string, string>();
 
   // --- session lifecycle -------------------------------------------------
 
@@ -90,7 +98,6 @@ export class Bridge {
       waiter: null,
       pending: new Map(),
     });
-    this.activeStudioId ??= identity.studioId;
     return identity.studioId;
   }
 
@@ -105,11 +112,13 @@ export class Bridge {
     session.waiter?.(null);
     session.stream?.end();
     this.sessions.delete(studioId);
-    if (this.activeStudioId === studioId) {
-      // The place the user chose is gone, so the replacement is a fallback, not
-      // a choice: mark it as such so a remaining pair goes ambiguous again.
-      this.activeStudioId = this.sessions.keys().next().value ?? null;
-      this.activeWasChosen = false;
+
+    // A choice that no longer exists is not a choice. Dropping it rather than
+    // substituting a survivor is deliberate: with a pair left, going ambiguous
+    // asks the question again, where quietly promoting whichever remains would
+    // point the agent at a place nobody picked.
+    for (const [clientId, chosenId] of this.chosen) {
+      if (chosenId === studioId) this.chosen.delete(clientId);
     }
   }
 
@@ -153,16 +162,26 @@ export class Bridge {
     }));
   }
 
-  get activeId(): string | null {
-    return this.activeStudioId;
+  /**
+   * What this client's calls target when they name no studioId.
+   *
+   * A lone Studio is reported as the target whether or not anyone picked it,
+   * because with one connected there is nothing else a call could mean.
+   */
+  activeId(clientId: string): string | null {
+    const picked = this.chosen.get(clientId);
+    if (picked !== undefined && this.sessions.has(picked)) return picked;
+    if (this.sessions.size === 1) return this.sessions.keys().next().value ?? null;
+    return null;
   }
 
-  /** True only once the user has actually picked a target. */
-  get activeIsChosen(): boolean {
-    return this.activeWasChosen;
+  /** True only once this client has actually picked a target. */
+  activeIsChosen(clientId: string): boolean {
+    const picked = this.chosen.get(clientId);
+    return picked !== undefined && this.sessions.has(picked);
   }
 
-  setActive(studioId: string): void {
+  setActive(clientId: string, studioId: string): void {
     if (!this.sessions.has(studioId)) {
       throw new ToolError(
         "UNKNOWN_STUDIO",
@@ -170,8 +189,12 @@ export class Bridge {
         "Call list_studios to see the connected instances and their ids.",
       );
     }
-    this.activeStudioId = studioId;
-    this.activeWasChosen = true;
+    this.chosen.set(clientId, studioId);
+  }
+
+  /** Forgets a client's choice when its server instance goes away. */
+  forgetClient(clientId: string): void {
+    this.chosen.delete(clientId);
   }
 
   // --- request/response --------------------------------------------------
@@ -184,9 +207,9 @@ export class Bridge {
   call<T = unknown>(
     op: string,
     params: Record<string, unknown> = {},
-    options: { studioId?: string; timeoutMs?: number } = {},
+    options: { clientId: string; studioId?: string; timeoutMs?: number },
   ): Promise<T> {
-    const session = this.resolveSession(options.studioId);
+    const session = this.resolveSession(options.clientId, options.studioId);
     const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const command: Command = { id: randomUUID(), op, params };
 
@@ -269,7 +292,7 @@ export class Bridge {
 
   // --- internals ---------------------------------------------------------
 
-  private resolveSession(studioId?: string): Session {
+  private resolveSession(clientId: string, studioId?: string): Session {
     if (studioId) {
       const session = this.sessions.get(studioId);
       if (!session) throw NO_STUDIO();
@@ -281,8 +304,9 @@ export class Bridge {
     const only = this.sessions.values().next().value;
     if (this.sessions.size === 1 && only) return only;
 
-    if (this.activeWasChosen && this.activeStudioId) {
-      const session = this.sessions.get(this.activeStudioId);
+    const picked = this.chosen.get(clientId);
+    if (picked !== undefined) {
+      const session = this.sessions.get(picked);
       if (session) return session;
     }
     const connected = this.list();

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { CLIENT_HEADER, PROTOCOL_VERSION } from "../lib/protocol.js";
 import { ToolError } from "../lib/errors.js";
 import type { SessionsView, StudioBridge } from "./api.js";
@@ -9,7 +10,14 @@ export interface OwnerIdentity {
   pid: number;
 }
 
-const HEADERS = { [CLIENT_HEADER]: "peer", "Content-Type": "application/json" };
+/**
+ * Names this process to the owner, so its chosen Studio stays its own.
+ *
+ * Generated once per process and sent on every request. The owner keys each
+ * client's set_active_studio choice on it; without it, agents sharing a bridge
+ * would share one target and silently retarget each other.
+ */
+export const PEER_HEADER = "x-roblox-studio-mcp-peer";
 
 /**
  * Asks whatever holds `port` whether it is another copy of this server.
@@ -45,6 +53,7 @@ export async function probeOwner(port: number): Promise<OwnerIdentity | null> {
  */
 export class RemoteBridge implements StudioBridge {
   readonly isOwner = false;
+  private readonly clientId = randomUUID();
 
   constructor(
     private readonly port: number,
@@ -55,12 +64,20 @@ export class RemoteBridge implements StudioBridge {
     return `http://127.0.0.1:${this.port}`;
   }
 
+  private get headers(): Record<string, string> {
+    return {
+      [CLIENT_HEADER]: "peer",
+      [PEER_HEADER]: this.clientId,
+      "Content-Type": "application/json",
+    };
+  }
+
   private async post<T>(path: string, body: unknown, timeoutMs: number): Promise<T> {
     let response: Response;
     try {
       response = await fetch(`${this.base}${path}`, {
         method: "POST",
-        headers: HEADERS,
+        headers: this.headers,
         body: JSON.stringify(body),
         // Padded past the command's own deadline so the owner's timeout wins and
         // its diagnosis reaches the caller, rather than being cut off by ours.
@@ -103,7 +120,7 @@ export class RemoteBridge implements StudioBridge {
   async sessions(): Promise<SessionsView> {
     try {
       const response = await fetch(`${this.base}/sessions`, {
-        headers: { [CLIENT_HEADER]: "peer" },
+        headers: this.headers,
         signal: AbortSignal.timeout(5_000),
       });
       return (await response.json()) as SessionsView;
