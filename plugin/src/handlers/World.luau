@@ -147,6 +147,25 @@ function World.collision(params: { [string]: any }): { [string]: any }
 		return { group = name, assigned = #assigned, parts = assigned, undoable = undoable }
 	end
 
+	if action == "remove" then
+		--[[
+			Registering a group is one line and nothing here undid it: create,
+			assign and collidable all had a way back through the ordinary undo
+			stack, and this did not, because nothing called it at all. Over a
+			session that experiments -- try a group, decide against it -- that
+			leaves the place permanently carrying a group nobody wants, with no
+			way to remove it short of `execute_luau`. `UnregisterCollisionGroup`
+			has existed the whole time; it was just never wired up.
+		]]
+		local ok, err = pcall(function()
+			PhysicsService:UnregisterCollisionGroup(name)
+		end)
+		if not ok then
+			Dispatch.fail("COLLISION_FAILED", string.format("Could not remove %q: %s", name, tostring(err)))
+		end
+		return { group = name, removed = true }
+	end
+
 	if action == "collidable" then
 		local other = params.with
 		if typeof(other) ~= "string" or other == "" then

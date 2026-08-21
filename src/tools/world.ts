@@ -339,12 +339,20 @@ export function registerWorldTools(context: ToolContext): void {
         "The order is: `create` a group, `assign` parts to it, then set what it " +
         "is `collidable` with. A group with nothing assigned does nothing.\n\n" +
         "Assigning a Model assigns every part inside it, which is almost always " +
-        "what is meant.",
+        "what is meant.\n\n" +
+        "Groups are not undoable and not scoped to a session: `remove` when one " +
+        "was created to try something and is no longer wanted, rather than " +
+        "leaving it registered in the place indefinitely. The built-in " +
+        "\"Default\" group cannot be removed.",
       inputSchema: {
         action: z
-          .enum(["list", "create", "assign", "collidable"])
+          .enum(["list", "create", "assign", "collidable", "remove"])
           .default("list")
-          .describe("'list' shows existing groups and changes nothing."),
+          .describe(
+            "'list' shows existing groups and changes nothing. 'remove' " +
+              "unregisters a group entirely — not the same as un-assigning " +
+              "parts from it.",
+          ),
         group: z.string().optional().describe("The group's name. Required for everything but list."),
         paths: z
           .array(z.string())

@@ -457,6 +457,8 @@ local DESCRIBERS: { [string]: Describer } = {
 			return "Create collision group " .. group
 		elseif action == "assign" then
 			return string.format("Put %s in %s", plural(count(params.paths), "instance"), group)
+		elseif action == "remove" then
+			return "Remove collision group " .. group
 		end
 		return string.format("Set %s against %s", group, tostring(params.with or "?"))
 	end,
