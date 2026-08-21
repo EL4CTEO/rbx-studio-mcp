@@ -16,12 +16,24 @@ Or download `StudioMCP.rbxmx` from [Releases](https://github.com/EL4CTEO/rbx-stu
 
 **2. The server**, in whichever client you use:
 
-```bash
-claude mcp add roblox-studio -- npx -y @el4cteo/rbx-studio-mcp   # Claude Code
-codex mcp add roblox-studio -- npx -y @el4cteo/rbx-studio-mcp    # Codex CLI
-```
+<details>
+<summary><b>Claude Code</b></summary>
 
-Same JSON block for **Cursor** (`~/.cursor/mcp.json` or `.cursor/mcp.json`), **Claude Desktop** (`claude_desktop_config.json`), **Gemini CLI** (`~/.gemini/settings.json`) and **Windsurf** (`~/.codeium/windsurf/mcp_config.json`):
+```bash
+claude mcp add roblox-studio -- npx -y @el4cteo/rbx-studio-mcp
+```
+</details>
+
+<details>
+<summary><b>Codex CLI</b></summary>
+
+```bash
+codex mcp add roblox-studio -- npx -y @el4cteo/rbx-studio-mcp
+```
+</details>
+
+<details>
+<summary><b>Cursor</b> — <code>~/.cursor/mcp.json</code> or <code>.cursor/mcp.json</code></summary>
 
 ```json
 {
@@ -33,8 +45,55 @@ Same JSON block for **Cursor** (`~/.cursor/mcp.json` or `.cursor/mcp.json`), **C
   }
 }
 ```
+</details>
 
-**VS Code / Copilot** (`.vscode/mcp.json`):
+<details>
+<summary><b>Claude Desktop</b> — <code>claude_desktop_config.json</code></summary>
+
+```json
+{
+  "mcpServers": {
+    "roblox-studio": {
+      "command": "npx",
+      "args": ["-y", "@el4cteo/rbx-studio-mcp"]
+    }
+  }
+}
+```
+</details>
+
+<details>
+<summary><b>Gemini CLI</b> — <code>~/.gemini/settings.json</code></summary>
+
+```json
+{
+  "mcpServers": {
+    "roblox-studio": {
+      "command": "npx",
+      "args": ["-y", "@el4cteo/rbx-studio-mcp"]
+    }
+  }
+}
+```
+</details>
+
+<details>
+<summary><b>Windsurf</b> — <code>~/.codeium/windsurf/mcp_config.json</code></summary>
+
+```json
+{
+  "mcpServers": {
+    "roblox-studio": {
+      "command": "npx",
+      "args": ["-y", "@el4cteo/rbx-studio-mcp"]
+    }
+  }
+}
+```
+</details>
+
+<details>
+<summary><b>VS Code / Copilot</b> — <code>.vscode/mcp.json</code></summary>
 
 ```json
 {
@@ -47,8 +106,10 @@ Same JSON block for **Cursor** (`~/.cursor/mcp.json` or `.cursor/mcp.json`), **C
   }
 }
 ```
+</details>
 
-**opencode** (`opencode.json`):
+<details>
+<summary><b>opencode</b> — <code>opencode.json</code></summary>
 
 ```json
 {
@@ -62,6 +123,7 @@ Same JSON block for **Cursor** (`~/.cursor/mcp.json` or `.cursor/mcp.json`), **C
   }
 }
 ```
+</details>
 
 **3.** Open Studio and accept the `127.0.0.1` prompt — the plugin connects automatically. Verify with `studio_status`.
 
