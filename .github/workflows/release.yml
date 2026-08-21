@@ -34,7 +34,13 @@ jobs:
       - run: npm test
       - run: npm run build:plugin
 
+      # Fails the release when CHANGELOG.md has no section for the tag, which is
+      # deliberate: a tag with an empty body is worse than a failed workflow,
+      # because nobody notices it until someone lands on the release page.
+      - name: Release notes
+        run: node scripts/release-notes.mjs "${GITHUB_REF_NAME}" release-notes.md
+
       - uses: softprops/action-gh-release@v2
         with:
           files: build/StudioMCP.rbxmx
-          generate_release_notes: true
+          body_path: release-notes.md

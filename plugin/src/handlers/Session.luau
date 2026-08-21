@@ -20,6 +20,18 @@ local Paths = require(script.Parent.Parent.Paths)
 -- session. Bound indirectly so the deprecation lint stays enabled file-wide.
 local studioVersion: () -> string = (version :: any)
 
+--[[
+	Whether the Debugger Luau API beta is on.
+
+	`ScriptDebuggerService` is registered only when it is, so asking for the
+	service is the test. Guarded because `GetService` throws on a service that
+	does not exist, and status must answer for every Studio rather than only the
+	ones where `debug` would have worked anyway.
+]]
+local function debuggerAvailable(): boolean
+	return (pcall(game.GetService, game, "ScriptDebuggerService"))
+end
+
 -- Selection can be tens of thousands of instances after a rubber-band drag.
 -- Anything past this is noise for an agent and would blow the response budget.
 local MAX_SELECTION = 50
@@ -145,6 +157,11 @@ function Session.status(): { [string]: any }
 		scriptCount = totals.scripts,
 		studioVersion = studioVersion(),
 		emulatedDevice = Emulation.summary(),
+		-- Present only when it is off, so the usual answer costs nothing. Said
+		-- here rather than left for `debug` to discover, because the fix needs
+		-- the user: it is a Studio setting behind a restart, not something an
+		-- agent can turn on mid-task.
+		debuggerBeta = if debuggerAvailable() then nil else "off",
 	}
 end
 

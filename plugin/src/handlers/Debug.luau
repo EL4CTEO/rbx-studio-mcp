@@ -42,7 +42,27 @@
 	is why nothing in this file offers one.
 ]]
 
-local ScriptDebuggerService = game:GetService("ScriptDebuggerService")
+--[[
+	Fetched defensively, because this module is required at plugin start.
+
+	`ScriptDebuggerService` exists only when the "Debugger Luau API" beta is on,
+	and `GetService` throws for a service that is not registered. This file is
+	required from init.server.luau alongside every other handler, so an
+	unguarded throw here would take down the whole plugin -- every tool, not
+	just these three -- for the majority of users, who have the beta off. The
+	failure would also be silent from the outside: no plugin, no connection, and
+	nothing to read.
+
+	Missing is therefore a value, not an error, and `requireService` turns it
+	into a message naming the beta.
+]]
+local ScriptDebuggerService: any = nil
+do
+	local ok, service = pcall(game.GetService, game, "ScriptDebuggerService")
+	if ok then
+		ScriptDebuggerService = service
+	end
+end
 
 local Dispatch = require(script.Parent.Parent.Dispatch)
 local Paths = require(script.Parent.Parent.Paths)
@@ -188,6 +208,11 @@ end
 local function install(): boolean
 	if installed then
 		return true
+	end
+
+	if ScriptDebuggerService == nil then
+		installError = "the service is not registered in this Studio"
+		return false
 	end
 
 	local ok, err = pcall(function()

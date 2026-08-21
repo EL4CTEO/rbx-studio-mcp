@@ -55,6 +55,11 @@ export function registerSessionTools(context: ToolContext): void {
         "place or asking which file they mean. Studio exposes no focused-tab API, " +
         "so with several open, prefer the one holding a selection and otherwise " +
         "ask.\n\n" +
+        "`debuggerBeta: \"off\"` appears only when the Debugger Luau API beta is " +
+        "disabled, which is the default. `debug` cannot work until the user turns " +
+        "it on in File > Beta Features and restarts Studio — tell them rather than " +
+        "retrying, because nothing an agent can do will enable it. Everything else " +
+        "works regardless.\n\n" +
         "Returns JSON. Selection is capped at 50 entries and selected text at 400 " +
         "characters; use `find` or `script_read` for more.",
       inputSchema: {
