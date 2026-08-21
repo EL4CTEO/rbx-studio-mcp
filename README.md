@@ -147,6 +147,10 @@ args = ["-y", "@el4cteo/rbx-studio-mcp"]
 
 **3.** Open Studio, accept the `127.0.0.1` prompt, check the **Studio MCP** toolbar button. Verify with `studio_status`.
 
+**4. For `debug`**, turn on **Debugger Luau API** in File → Beta Features, then restart Studio. Everything else works without it; breakpoints do not, because `ScriptDebuggerService` is not registered until this is enabled.
+
+![The Debugger Luau API beta feature toggle in Studio](docs/betatoggle.png)
+
 Port defaults to **44755** — `--port` or `ROBLOX_STUDIO_MCP_PORT`, matched in the plugin widget. Loopback only.
 
 **Several agents at once work.** Register this in as many clients as you like — two Claude sessions, Claude plus Cursor, whatever. The plugin connects out to one port, so the first server to start owns it and the rest proxy through it automatically. Nothing to configure, and no second connection to Studio.

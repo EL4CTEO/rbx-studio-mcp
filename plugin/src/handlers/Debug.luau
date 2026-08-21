@@ -215,7 +215,8 @@ local function requireService()
 				"ScriptDebuggerService is not available in this session: %s",
 				tostring(installError)
 			),
-			"It is a beta API; the Studio build may not expose it yet."
+			"Turn on \"Debugger Luau API\" in File > Beta Features and restart Studio. "
+				.. "It is off by default, and the service is not registered until it is on."
 		)
 	end
 end
