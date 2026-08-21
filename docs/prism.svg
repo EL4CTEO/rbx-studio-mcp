@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="A prism splitting a beam of white light into a spectrum">
+  <title>rbx-studio-mcp</title>
+  <defs>
+    <linearGradient id="g0" gradientUnits="userSpaceOnUse" x1="295" y1="253.6" x2="485.6" y2="258.5"><stop offset="0" stop-color="rgb(255,64,72)" stop-opacity="0.95"/><stop offset="0.55" stop-color="rgb(255,64,72)" stop-opacity="0.5"/><stop offset="1" stop-color="rgb(255,64,72)" stop-opacity="0"/></linearGradient>
+    <linearGradient id="g1" gradientUnits="userSpaceOnUse" x1="295" y1="253.6" x2="484.4" y2="275.1"><stop offset="0" stop-color="rgb(255,138,48)" stop-opacity="0.95"/><stop offset="0.55" stop-color="rgb(255,138,48)" stop-opacity="0.5"/><stop offset="1" stop-color="rgb(255,138,48)" stop-opacity="0"/></linearGradient>
+    <linearGradient id="g2" gradientUnits="userSpaceOnUse" x1="295" y1="253.6" x2="481.8" y2="291.6"><stop offset="0" stop-color="rgb(255,214,66)" stop-opacity="0.95"/><stop offset="0.55" stop-color="rgb(255,214,66)" stop-opacity="0.5"/><stop offset="1" stop-color="rgb(255,214,66)" stop-opacity="0"/></linearGradient>
+    <linearGradient id="g3" gradientUnits="userSpaceOnUse" x1="295" y1="253.6" x2="477.8" y2="307.7"><stop offset="0" stop-color="rgb(88,230,122)" stop-opacity="0.95"/><stop offset="0.55" stop-color="rgb(88,230,122)" stop-opacity="0.5"/><stop offset="1" stop-color="rgb(88,230,122)" stop-opacity="0"/></linearGradient>
+    <linearGradient id="g4" gradientUnits="userSpaceOnUse" x1="295" y1="253.6" x2="472.4" y2="323.4"><stop offset="0" stop-color="rgb(70,210,255)" stop-opacity="0.95"/><stop offset="0.55" stop-color="rgb(70,210,255)" stop-opacity="0.5"/><stop offset="1" stop-color="rgb(70,210,255)" stop-opacity="0"/></linearGradient>
+    <linearGradient id="g5" gradientUnits="userSpaceOnUse" x1="295" y1="253.6" x2="465.6" y2="338.6"><stop offset="0" stop-color="rgb(96,132,255)" stop-opacity="0.95"/><stop offset="0.55" stop-color="rgb(96,132,255)" stop-opacity="0.5"/><stop offset="1" stop-color="rgb(96,132,255)" stop-opacity="0"/></linearGradient>
+    <linearGradient id="g6" gradientUnits="userSpaceOnUse" x1="295" y1="253.6" x2="457.6" y2="353.1"><stop offset="0" stop-color="rgb(176,106,255)" stop-opacity="0.95"/><stop offset="0.55" stop-color="rgb(176,106,255)" stop-opacity="0.5"/><stop offset="1" stop-color="rgb(176,106,255)" stop-opacity="0"/></linearGradient>
+    <linearGradient id="face" gradientUnits="userSpaceOnUse" x1="238" y1="142" x2="330" y2="322">
+      <stop offset="0" stop-color="#AFC0E8" stop-opacity="0.30"/>
+      <stop offset="1" stop-color="#5C6E9E" stop-opacity="0.16"/>
+    </linearGradient>
+    <linearGradient id="side" gradientUnits="userSpaceOnUse" x1="238" y1="142" x2="370" y2="298">
+      <stop offset="0" stop-color="#8FA2D0" stop-opacity="0.26"/>
+      <stop offset="1" stop-color="#39456A" stop-opacity="0.34"/>
+    </linearGradient>
+    <radialGradient id="flare">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.85"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="soft" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="5"/>
+    </filter>
+  </defs>
+
+  <rect width="512" height="512" fill="#0A0E1A"/>
+
+  <g filter="url(#soft)" opacity="0.85">
+      <polygon points="295.4,250.6 485.6,258.5 482.4,288.4 294.7,256.6" fill="url(#g0)"/>
+      <polygon points="295.6,250.7 484.4,275.1 478.7,304.6 294.5,256.5" fill="url(#g1)"/>
+      <polygon points="295.9,250.7 481.8,291.6 473.5,320.4 294.2,256.5" fill="url(#g2)"/>
+      <polygon points="296.1,250.8 477.8,307.7 467,335.7 294,256.4" fill="url(#g3)"/>
+      <polygon points="296.4,250.9 472.4,323.4 459.2,350.4 293.7,256.3" fill="url(#g4)"/>
+      <polygon points="296.6,251 465.6,338.6 450.2,364.3 293.5,256.2" fill="url(#g5)"/>
+      <polygon points="296.8,251.2 457.6,353.1 439.9,377.4 293.3,256" fill="url(#g6)"/>
+  </g>
+  <g>
+      <polygon points="295.4,250.6 485.6,258.5 482.4,288.4 294.7,256.6" fill="url(#g0)"/>
+      <polygon points="295.6,250.7 484.4,275.1 478.7,304.6 294.5,256.5" fill="url(#g1)"/>
+      <polygon points="295.9,250.7 481.8,291.6 473.5,320.4 294.2,256.5" fill="url(#g2)"/>
+      <polygon points="296.1,250.8 477.8,307.7 467,335.7 294,256.4" fill="url(#g3)"/>
+      <polygon points="296.4,250.9 472.4,323.4 459.2,350.4 293.7,256.3" fill="url(#g4)"/>
+      <polygon points="296.6,251 465.6,338.6 450.2,364.3 293.5,256.2" fill="url(#g5)"/>
+      <polygon points="296.8,251.2 457.6,353.1 439.9,377.4 293.3,256" fill="url(#g6)"/>
+  </g>
+
+  <polygon points="25.9,189.3 188.5,237.1 186.3,244.9 22.1,202.7" fill="#FFFFFF" opacity="0.85" filter="url(#soft)"/>
+  <polygon points="25.9,189.3 188.5,237.1 186.3,244.9 22.1,202.7" fill="#FFFFFF" opacity="0.9"/>
+
+  <polygon points="238,142 330,322 370,298 278,118" fill="url(#side)"/>
+  <polygon points="238,142 146,322 330,322" fill="url(#face)"/>
+
+  <polygon points="187.9,237 295.7,247.6 294.3,259.6 186.9,245" fill="#DCEBFF" opacity="0.55"/>
+
+  <polygon points="238,142 146,322 330,322" fill="none" stroke="#DCE6FF" stroke-opacity="0.85" stroke-width="2.5" stroke-linejoin="round"/>
+  <polygon points="238,142 330,322 370,298 278,118" fill="none" stroke="#AEC0EA" stroke-opacity="0.5" stroke-width="2" stroke-linejoin="round"/>
+
+  <circle cx="187.4" cy="241" r="16" fill="url(#flare)"/>
+  <circle cx="295" cy="253.6" r="20" fill="url(#flare)"/>
+</svg>
