@@ -53,8 +53,9 @@
 	rather than the three that need a debugger, and it would do it silently: a
 	plugin that never loads never connects, leaving nothing to read anywhere.
 
-	The beta is NOT detected here, because nothing at this level can detect it.
-	See Reflection.hasDebugger for what actually works and what does not.
+	The beta is NOT detected here, because nothing detects it cheaply. See the
+	note on the wholesale-refusal branch in `Debug.set` for the two probes that
+	were tried and why neither works.
 ]]
 local ScriptDebuggerService: any = nil
 do
@@ -66,7 +67,6 @@ end
 
 local Dispatch = require(script.Parent.Parent.Dispatch)
 local Paths = require(script.Parent.Parent.Paths)
-local Reflection = require(script.Parent.Parent.Reflection)
 
 -- Snapshots are far heavier than log lines: each carries a stack and its
 -- variables. A tight cap keeps a breakpoint inside a loop from exhausting memory
@@ -324,26 +324,31 @@ function Debug.set(params: { [string]: any }): { [string]: any }
 	end
 
 	--[[
-		Every breakpoint refused is the beta, until shown otherwise.
+		A wholesale refusal names the likely cause without asserting it.
 
 		`AddBreakpoint` is where the "Debugger Luau API" beta actually bites, and
-		its message -- "Failed to execute AddBreakpoint request" -- names neither
-		the beta nor anything else actionable. Nothing earlier gives it away:
-		with the beta off and Studio restarted, GetService, FindService,
-		assigning OnStopped and Enum.DebuggerResumeType all still succeed. So a
-		wholesale refusal is reported as what it almost always is, with the fix
-		attached, rather than passing the engine's message through unhelpfully.
+		its own message -- "Failed to execute AddBreakpoint request" -- names
+		nothing anyone can act on. The beta cannot be detected from here to say
+		so with certainty, and two attempts to are worth recording so they are
+		not tried a third time: with the beta OFF, `GetService`, `FindService`,
+		assigning `OnStopped` and `Enum.DebuggerResumeType` all still succeed;
+		with the beta ON, `ReflectionService` still does not list the class. The
+		first is always available and the second never is, so neither varies with
+		the thing being measured.
+
+		The only reliable test is this call, which cannot be run speculatively on
+		a user's script just to answer a status question. So the hint says what
+		to check first and what else it could be, and does not claim to know.
 	]]
-	if #added == 0 and #failed > 0 and not Reflection.hasDebugger() then
+	if #added == 0 and #failed > 0 then
 		Dispatch.fail(
-			"NO_DEBUGGER",
-			string.format(
-				"No breakpoint could be set (%d refused). The Debugger Luau API beta is off.",
-				#failed
-			),
-			"Turn on \"Debugger Luau API\" in File > Beta Features and restart Studio. "
-				.. "Nothing an agent can do enables it, so this needs the user. Every "
-				.. "other tool works without it."
+			"NO_BREAKPOINTS_SET",
+			string.format("No breakpoint could be set; all %d were refused.", #failed),
+			"Check that \"Debugger Luau API\" is on in File > Beta Features and that "
+				.. "Studio has been restarted since -- that is the usual cause, it is "
+				.. "off by default, and only the user can change it. Otherwise the "
+				.. "line may not be one that runs: a `return`, an `end` or a bare "
+				.. "declaration is often refused, so try the statement above it."
 		)
 	end
 

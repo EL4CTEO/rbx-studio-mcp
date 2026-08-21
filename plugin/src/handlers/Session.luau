@@ -14,7 +14,6 @@ local Context = require(script.Parent.Parent.Context)
 local Editor = require(script.Parent.Parent.Editor)
 local Emulation = require(script.Parent.Parent.Emulation)
 local Paths = require(script.Parent.Parent.Paths)
-local Reflection = require(script.Parent.Parent.Reflection)
 
 -- `version()` is marked deprecated but remains the only way to read the Studio
 -- build, and the agent needs it to know which engine APIs actually exist in this
@@ -147,11 +146,6 @@ function Session.status(): { [string]: any }
 		scriptCount = totals.scripts,
 		studioVersion = studioVersion(),
 		emulatedDevice = Emulation.summary(),
-		-- Present only when it is off, so the usual answer costs nothing. Said
-		-- here rather than left for `debug` to discover, because the fix needs
-		-- the user: it is a Studio setting behind a restart, not something an
-		-- agent can turn on mid-task.
-		debuggerBeta = if Reflection.hasDebugger() then nil else "off",
 	}
 end
 

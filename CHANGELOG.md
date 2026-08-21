@@ -4,14 +4,16 @@ What changed in each release, written for people using the server rather than fo
 
 ## 0.1.5
 
-Makes the Debugger beta detection actually work. 0.1.4 shipped a version of it that could never fire.
+Corrects two things 0.1.4 got wrong about the Debugger Luau API beta.
 
 ### Fixed
-- **`studio_status` never reported the beta as off, even when it was.** The check asked whether `ScriptDebuggerService` could be fetched — but with the beta off and Studio restarted, `GetService`, `FindService`, assigning `OnStopped` and `Enum.DebuggerResumeType` all still succeed. The field was therefore always absent, which reads as "everything is fine". It now goes through `ReflectionService`, which is the only signal that is both honest and free: the beta governs whether the class is in the reflection database. Confirmed reporting `off` with the beta disabled.
-- **`debug` refused every breakpoint without saying why.** The engine's message is `Failed to execute AddBreakpoint request`, which names nothing actionable. When every breakpoint is refused and the class is absent from reflection, it now fails with `NO_DEBUGGER` naming the toggle, the restart, and the fact that only the user can do it.
+- **`debug` no longer refuses breakpoints with a message naming nothing.** The engine says only `Failed to execute AddBreakpoint request`. When every breakpoint in a call is refused, the error now points at the beta as the usual cause — it is off by default and needs a Studio restart — and at the other likely cause, a line that never runs, such as a `return` or an `end`.
+
+### Removed
+- **`studio_status` no longer reports `debuggerBeta`.** 0.1.4 added it and it never worked. Two probes were tried and measured, and neither varies with the beta: with it OFF, `GetService("ScriptDebuggerService")`, `FindService`, assigning `OnStopped` and `Enum.DebuggerResumeType` all still succeed; with it ON, `ReflectionService` still does not list the class. The only reliable test is `AddBreakpoint` itself, which cannot be run speculatively on someone's script to answer a status question. A field that always reads "fine" is worse than no field, so it is gone rather than guessed at a third time.
 
 ### Changed
-- Corrected a claim in 0.1.4. Its notes said the plugin could fail to load entirely when the beta was off, on the assumption that `GetService` throws for an unregistered service. It does not — that was written without being checked. The guard added in 0.1.4 stays as insurance on a call that runs before any tool is invoked, but it was never fixing an observed crash.
+- Corrected a claim in the 0.1.4 notes. They said the plugin could fail to load entirely when the beta was off, assuming `GetService` throws for an unregistered service. It does not — that was written without being checked. The guard added in 0.1.4 stays as insurance on a call that runs before any tool is invoked, but it fixed no observed crash.
 
 ## 0.1.4
 
