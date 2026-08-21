@@ -157,6 +157,8 @@ Port defaults to **44755** — `--port` or `ROBLOX_STUDIO_MCP_PORT`, matched in 
 
 Each agent keeps its **own** target: `set_active_studio` binds per client, so two agents can work on two open places at once and neither can retarget the other. Pass `studioId` on a single call to reach elsewhere without changing your default.
 
+Isolation is per connected client. Subagents may share their parent's connection, so give them an explicit `studioId` rather than letting them rely on the default.
+
 ## Tools
 
 | | |
@@ -221,6 +223,7 @@ calls are N round trips and N undo steps, a batch is one of each.
 - **One Ctrl+Z per action**, via `ChangeHistoryService`.
 - **29 tools, ~16k tokens of schema**, against 43–51 elsewhere. Cursor-paged, capped, with `detail: concise | standard | full`.
 - **Live API dump** for property validation, so typos get suggestions (`Anchorred` → `Anchored`).
+- **Several agents, one Studio**, each with its own target — no id needed on every call, and no agent able to retarget another. The built-in server reaches the same isolation by making `studio_id` mandatory everywhere and removing `set_active_studio`; this keeps the default, so a single open Studio needs no id at all.
 
 Not built here: terrain, AI mesh and material generation.
 
