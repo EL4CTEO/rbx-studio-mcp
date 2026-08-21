@@ -2,6 +2,15 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## Unreleased
+
+### Fixed
+- **`geometry` (union/subtract/intersect) could report a path that did not exist.** The result's path was read while the source part it was built from — same name, not yet destroyed — was still its sibling, so it came back disambiguated as `Foo[2]`; the source was then destroyed, leaving the real result addressable as plain `Foo`. The tool's own reply pointed at a path that no longer resolved. Found live: `delete` on a path this same tool call had just returned failed with `NOT_FOUND`.
+- **`debug clear` with just a `path` (no `line`) always failed, asking for a `line` regardless** — the documented "clear every breakpoint in this script" case was entirely unimplemented; only "one exact line" and "everything, session-wide" worked. The plugin now tracks which lines it has set per script and removes all of them for that one, without touching breakpoints anyone else set.
+
+### Changed
+- **`instances.create`, `instances.modify` and `instances.move` describe what actually happened, not just that something did.** Create now names the class ("Create ScreenGui" instead of whatever the caller happened to name it); modify names the properties or attributes that changed ("Set Color on Sword"); move/clone says the destination name when a rename happened in the same call, since the old text described an instance that was never created under that name.
+
 ## 0.1.8
 
 Found by actually watching the console during a live QA pass, immediately after 0.1.7 shipped: `playtest op="stop"` polls the surviving session every 400ms while the test tears down, and every one of those polls logged as "Check the playtest" — indistinguishable from an agent asking again for no reason, with no "stop" line anywhere to explain it (the real stop went to the session that is by then gone, and its console went with it).

@@ -85,6 +85,35 @@ local installed = false
 local installError: string? = nil
 
 --[[
+	Which lines currently carry a breakpoint, per script.
+
+	`ScriptDebuggerService` exposes no way to list what is set -- `AddBreakpoint`
+	and `RemoveBreakpoint` are the whole surface, one line at a time -- so
+	"clear every breakpoint in this script" needs its own record of what this
+	module put there, or it cannot be done at all without either the caller
+	naming every line back or this file falling back to `ClearBreakpoints()`,
+	which takes the whole session's breakpoints with it, including ones set by
+	someone else sharing this Studio.
+]]
+local trackedBreakpoints: { [Instance]: { [number]: boolean } } = {}
+
+local function track(target: Instance, line: number)
+	local lines = trackedBreakpoints[target]
+	if lines == nil then
+		lines = {}
+		trackedBreakpoints[target] = lines
+	end
+	lines[line] = true
+end
+
+local function untrack(target: Instance, line: number)
+	local lines = trackedBreakpoints[target]
+	if lines then
+		lines[line] = nil
+	end
+end
+
+--[[
 	Flattens whatever the service hands back.
 
 	Every one of these shapes is undocumented, so nothing is indexed by a guessed
@@ -309,6 +338,7 @@ function Debug.set(params: { [string]: any }): { [string]: any }
 		end)
 
 		if ok then
+			track(target, descriptor.Line)
 			table.insert(added, {
 				path = Paths.of(target),
 				line = descriptor.Line,
@@ -362,13 +392,39 @@ function Debug.clear(params: { [string]: any }): { [string]: any }
 	if typeof(path) == "string" and path ~= "" then
 		local target = Paths.resolve(path)
 		local line = tonumber(params.line)
-		if line == nil then
-			Dispatch.fail("BAD_PARAMS", "removing one breakpoint needs a `line`.")
+
+		if line ~= nil then
+			local ok, removed = pcall(function()
+				return service:RemoveBreakpoint(target, line)
+			end)
+			untrack(target, line)
+			return { removed = ok and removed == true, path = Paths.of(target), line = line }
 		end
-		local ok, removed = pcall(function()
-			return service:RemoveBreakpoint(target, line)
-		end)
-		return { removed = ok and removed == true, path = Paths.of(target), line = line }
+
+		--[[
+			`path` alone, no `line`: every breakpoint this module put in that
+			script. `ScriptDebuggerService` has no "list breakpoints in this
+			script" of its own -- only `AddBreakpoint`/`RemoveBreakpoint`, one
+			line at a time -- so `trackedBreakpoints` is what makes this
+			possible at all, and it is also the reason it can only remove what
+			this session set: a breakpoint another client or the user placed
+			by hand was never tracked here, and this cannot see it to touch it.
+		]]
+		local lines = trackedBreakpoints[target]
+		local removedLines: { number } = {}
+		if lines then
+			for lineNumber in lines do
+				local ok = pcall(function()
+					service:RemoveBreakpoint(target, lineNumber)
+				end)
+				if ok then
+					table.insert(removedLines, lineNumber)
+				end
+			end
+			trackedBreakpoints[target] = nil
+		end
+		table.sort(removedLines)
+		return { removed = #removedLines > 0, path = Paths.of(target), lines = removedLines }
 	end
 
 	local ok, err = pcall(function()
@@ -377,6 +433,7 @@ function Debug.clear(params: { [string]: any }): { [string]: any }
 	if not ok then
 		Dispatch.fail("REFUSED", string.format("ClearBreakpoints refused: %s", tostring(err)))
 	end
+	table.clear(trackedBreakpoints)
 	return { cleared = true }
 end
 

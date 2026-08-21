@@ -138,7 +138,6 @@ function Geometry.combine(params: { [string]: any }): { [string]: any }
 				then (if #produced == 1 then params.name else string.format("%s%d", params.name, index))
 				else subject.Name
 			part.Parent = parent
-			table.insert(created, Paths.of(part))
 		end
 
 		-- Removing the inputs is opt-in, and only once the results exist: an
@@ -149,6 +148,26 @@ function Geometry.combine(params: { [string]: any }): { [string]: any }
 				table.insert(removed, Paths.of(part))
 				part:Destroy()
 			end
+		end
+
+		--[[
+			Paths for the produced parts are read only now, after the originals
+			are gone rather than in the loop above that named and parented them.
+
+			A result keeps the subject's name by default, so for the entire
+			window before the destroy above runs, the new part and the subject
+			it was built from are two same-named siblings in the same parent --
+			and Paths.of correctly, but uselessly, disambiguates that with a
+			`[2]` suffix that stops being true the instant the destroy runs a
+			few lines later. The caller reads this path after the call returns,
+			by which point the disambiguation was already wrong. Reading it here
+			instead describes where the part actually is once nothing further
+			in this function is going to move or remove anything -- correct
+			whether or not `keepOriginals` left a real, permanent collision for
+			it to still be disambiguating.
+		]]
+		for _, part in produced do
+			table.insert(created, Paths.of(part))
 		end
 	end)
 

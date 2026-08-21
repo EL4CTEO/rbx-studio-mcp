@@ -135,16 +135,29 @@ local DESCRIBERS: { [string]: Describer } = {
 		return string.format('Search scripts for "%s"', pattern)
 	end,
 
+	--[[
+		Names the class, not just whatever the caller happened to call the
+		thing. "Create MainMenu in StarterGui" was true and useless -- a name is
+		whatever someone typed, and it says nothing about what actually landed
+		in the place. `className` is required by the tool itself, so it is
+		always there; the chosen name rides along in quotes when it was given,
+		the way script.grep already quotes a search term.
+	]]
 	["instances.create"] = function(params)
 		local instances = params.instances
 		local total = count(instances)
 		if total == 1 then
 			local one = (instances :: { any })[1]
-			local name = one.name or one.className or "instance"
+			local className = if typeof(one.className) == "string" and one.className ~= ""
+				then one.className
+				else "instance"
+			local subject = if typeof(one.name) == "string" and one.name ~= ""
+				then string.format('%s "%s"', className, one.name)
+				else className
 			local where = leaf(one.parent)
 			return if where ~= nil
-				then string.format("Create %s in %s", name, where)
-				else "Create " .. name
+				then string.format("Create %s in %s", subject, where)
+				else "Create " .. subject
 		end
 		local where = if total > 0 then leaf((instances :: { any })[1].parent) else nil
 		return if where ~= nil
@@ -157,15 +170,44 @@ local DESCRIBERS: { [string]: Describer } = {
 		-- total across them rather than the number of entries.
 		local total = 0
 		local onlyName: string? = nil
+		--[[
+			Which properties/attributes actually changed, not just how many
+			instances did. "Modify Sword" said something happened and nothing
+			about what; a caller watching for "did the color change" had no way
+			to tell this apart from a rename or an attribute flip.
+		]]
+		local fields: { string } = {}
+		local seenFields: { [string]: boolean } = {}
+		local function noteFields(bag: any)
+			if typeof(bag) ~= "table" then
+				return
+			end
+			for key in bag :: { [string]: any } do
+				if not seenFields[key] then
+					seenFields[key] = true
+					table.insert(fields, key)
+				end
+			end
+		end
 		for _, target in (targets or {}) :: { { [string]: any } } do
 			local paths = count(target.paths)
 			total += paths
 			if paths >= 1 and onlyName == nil then
 				onlyName = leaf((target.paths :: { any })[1])
 			end
+			noteFields(target.properties)
+			noteFields(target.attributes)
 		end
 		if total == 1 and onlyName ~= nil then
+			if #fields == 1 then
+				return string.format("Set %s on %s", fields[1], onlyName)
+			elseif #fields > 1 then
+				return string.format("Modify %s (%s)", onlyName, table.concat(fields, ", "))
+			end
 			return "Modify " .. onlyName
+		end
+		if #fields == 1 then
+			return string.format("Set %s on %s", fields[1], plural(total, "instance"))
 		end
 		return "Modify " .. plural(total, "instance")
 	end,
@@ -181,11 +223,18 @@ local DESCRIBERS: { [string]: Describer } = {
 			local one = (items :: { any })[1]
 			local what = leaf(one.path)
 			local where = leaf(one.to)
+			-- A rename in the same call changes what actually ends up in the
+			-- place; "Clone Sword to Backpack" while it lands as "GoldSword"
+			-- described an instance that was never created under that name.
+			local rename = if typeof(one.name) == "string" and one.name ~= "" then one.name else nil
 			if what ~= nil and where ~= nil then
-				return string.format("%s %s to %s", verb, what, where)
+				local base = string.format("%s %s to %s", verb, what, where)
+				return if rename ~= nil then base .. " as " .. rename else base
 			end
 			if what ~= nil then
-				return verb .. " " .. what
+				return if rename ~= nil
+					then string.format("%s %s as %s", verb, what, rename)
+					else verb .. " " .. what
 			end
 		end
 		return string.format("%s %s", verb, plural(total, "instance"))
