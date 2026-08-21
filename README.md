@@ -1,6 +1,6 @@
 # Roblox Studio MCP
 
-MCP server for Roblox Studio. 29 tools over a push-based bridge, every write batched and undoable in one step. MIT.
+MCP server for Roblox Studio: 29 tools over a push-based bridge, batched writes that undo as one step, editor-safe script edits. MIT.
 
 ![The Studio MCP panel, showing calls and their latency](docs/console.png)
 
@@ -16,34 +16,12 @@ Or download `StudioMCP.rbxmx` from [Releases](https://github.com/EL4CTEO/rbx-stu
 
 **2. The server**, in whichever client you use:
 
-<details>
-<summary><b>Claude Code</b></summary>
-
 ```bash
-claude mcp add roblox-studio -- npx -y @el4cteo/rbx-studio-mcp
-```
-</details>
-
-<details>
-<summary><b>Codex CLI</b></summary>
-
-```bash
-codex mcp add roblox-studio -- npx -y @el4cteo/rbx-studio-mcp
+claude mcp add roblox-studio -- npx -y @el4cteo/rbx-studio-mcp   # Claude Code
+codex mcp add roblox-studio -- npx -y @el4cteo/rbx-studio-mcp    # Codex CLI
 ```
 
-Or in `~/.codex/config.toml`:
-
-```toml
-[mcp_servers.roblox-studio]
-command = "npx"
-args = ["-y", "@el4cteo/rbx-studio-mcp"]
-```
-</details>
-
-<details>
-<summary><b>Cursor</b></summary>
-
-`~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (per project):
+Same JSON block for **Cursor** (`~/.cursor/mcp.json` or `.cursor/mcp.json`), **Claude Desktop** (`claude_desktop_config.json`), **Gemini CLI** (`~/.gemini/settings.json`) and **Windsurf** (`~/.codeium/windsurf/mcp_config.json`):
 
 ```json
 {
@@ -55,12 +33,22 @@ args = ["-y", "@el4cteo/rbx-studio-mcp"]
   }
 }
 ```
-</details>
 
-<details>
-<summary><b>opencode</b></summary>
+**VS Code / Copilot** (`.vscode/mcp.json`):
 
-`opencode.json`:
+```json
+{
+  "servers": {
+    "roblox-studio": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@el4cteo/rbx-studio-mcp"]
+    }
+  }
+}
+```
+
+**opencode** (`opencode.json`):
 
 ```json
 {
@@ -74,109 +62,40 @@ args = ["-y", "@el4cteo/rbx-studio-mcp"]
   }
 }
 ```
-</details>
 
-<details>
-<summary><b>Claude Desktop</b></summary>
+**3.** Open Studio and accept the `127.0.0.1` prompt — the plugin connects automatically. Verify with `studio_status`.
 
-`claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "roblox-studio": {
-      "command": "npx",
-      "args": ["-y", "@el4cteo/rbx-studio-mcp"]
-    }
-  }
-}
-```
-</details>
-
-<details>
-<summary><b>VS Code / Copilot</b></summary>
-
-`.vscode/mcp.json`:
-
-```json
-{
-  "servers": {
-    "roblox-studio": {
-      "type": "stdio",
-      "command": "npx",
-      "args": ["-y", "@el4cteo/rbx-studio-mcp"]
-    }
-  }
-}
-```
-</details>
-
-<details>
-<summary><b>Gemini CLI</b></summary>
-
-`~/.gemini/settings.json`:
-
-```json
-{
-  "mcpServers": {
-    "roblox-studio": {
-      "command": "npx",
-      "args": ["-y", "@el4cteo/rbx-studio-mcp"]
-    }
-  }
-}
-```
-</details>
-
-<details>
-<summary><b>Windsurf</b></summary>
-
-`~/.codeium/windsurf/mcp_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "roblox-studio": {
-      "command": "npx",
-      "args": ["-y", "@el4cteo/rbx-studio-mcp"]
-    }
-  }
-}
-```
-</details>
-
-**3.** Open Studio, accept the `127.0.0.1` prompt, check the **Studio MCP** toolbar button. Verify with `studio_status`.
-
-**4. For `debug`**, turn on **Debugger Luau API** in File → Beta Features, then restart Studio. Everything else works without it; breakpoints do not, because `ScriptDebuggerService` is not registered until this is enabled.
+**4.** `debug` additionally needs **Debugger Luau API** in File → Beta Features, plus a Studio restart. Nothing else requires it.
 
 ![The Debugger Luau API beta feature toggle in Studio](docs/betatoggle.png)
 
-Port defaults to **44755** — `--port` or `ROBLOX_STUDIO_MCP_PORT`, matched in the plugin widget. Loopback only.
+Port defaults to **44755** — change with `--port` or `ROBLOX_STUDIO_MCP_PORT`, and match it in the plugin widget. Loopback only.
 
-**Several agents at once work.** Register this in as many clients as you like — two Claude sessions, Claude plus Cursor, whatever. The plugin connects out to one port, so the first server to start owns it and the rest proxy through it automatically. Nothing to configure, and no second connection to Studio.
+## Multiple agents
 
-Each agent keeps its **own** target: `set_active_studio` binds per client, so two agents can work on two open places at once and neither can retarget the other. Pass `studioId` on a single call to reach elsewhere without changing your default.
+Register the server in as many clients as you like — the plugin connects out to one port, the first server owns it and the rest proxy through. No configuration, no second Studio connection.
 
-Isolation is per MCP connection, and **subagents share their parent's** — measured, not assumed. A subagent calling `set_active_studio` retargets its parent and its siblings, silently: later calls still succeed, just against the wrong place. Give subagents an explicit `studioId` per call instead. Nothing on the wire distinguishes a subagent from its parent, so this is guidance rather than something the server can enforce.
+Each agent keeps its own target (`set_active_studio` is per client), so two agents can work on two open places and neither can retarget the other. Pass `studioId` on a single call to reach elsewhere without changing your default.
+
+Subagents share their parent's connection and therefore its target — a subagent calling `set_active_studio` silently retargets its parent. Give subagents an explicit `studioId` per call.
 
 ## Tools
 
 | | |
 |---|---|
-| **Discover** | `studio_status` `tree` `inspect` `find` `api` |
+| **Session** | `studio_status` `list_studios` `set_active_studio` |
+| **Discover** | `tree` `inspect` `find` `api` |
 | **Scripts** | `script_read` `script_edit` `script_grep` `script_create` |
 | **Instances** | `create` `modify` `delete` `move` |
 | **World** | `geometry` `assets` `collision` `undo` |
 | **Run & debug** | `playtest` `execute_luau` `character` `input` `console` `debug` `performance` |
 | **Look** | `screenshot` `viewport` `device` |
-| **Session** | `list_studios` `set_active_studio` |
 
-Gotchas: `debug` needs **API debugger Luau** in `File → Beta Features`. `device` emulation persists until `device op="stop"`. During a playtest two sessions connect — pass `studioId` explicitly, using the edit session for anything that must persist.
+Gotchas: during a playtest two sessions connect — pass `studioId` explicitly and use the edit session for anything that must persist. `device` emulation persists until `device op="stop"`.
 
 ## Batching
 
-Every write tool takes an array. Editing ten scripts, deleting two hundred
-parts or anchoring a whole map is **one call**, not a loop.
+Every write tool takes an array — ten script edits or two hundred deletions is one call.
 
 | tool | takes | cap |
 |---|---|---|
@@ -189,23 +108,11 @@ parts or anchoring a whole map is **one call**, not a loop.
 | `inspect` | paths | 50 |
 | `input` | input steps, delivered in order | 40 |
 
-The cap on `modify` is on *entries*, not targets — one entry can anchor five
-hundred parts, so pair it with `find` and change a whole place in a single call.
+`modify` caps *entries*, not targets — one entry can anchor five hundred parts, so pair it with `find` to change a whole place in one call.
 
-What that buys beyond speed:
+Each batch is a single `ChangeHistoryService` recording: **one Ctrl+Z**. Batches are all-or-nothing — everything is transformed in memory first, so a failed match leaves the place untouched.
 
-- **One Ctrl+Z.** The batch runs inside a single `ChangeHistoryService`
-  recording named after the tool. Ten script edits undo as one step, not ten.
-- **All-or-nothing.** Everything is read and transformed in memory before
-  anything is written, so a find that matches nothing — or matches twice —
-  fails with the place untouched instead of half-edited.
-- **Nesting.** `create` takes `children`, so a whole model arrives in one call.
-  A new instance's path is not knowable until it exists, and same-named siblings
-  make guessing it unreliable.
-
-Parallel tool calls work too — responses are keyed by request id, so several
-calls in one turn run concurrently. Prefer a batch where one exists: parallel
-calls are N round trips and N undo steps, a batch is one of each.
+Parallel tool calls also work (responses are keyed by request id), but prefer a batch: N parallel calls are N round trips and N undo steps, a batch is one of each.
 
 ## Compared to what else exists
 
@@ -218,18 +125,16 @@ calls are N round trips and N undo steps, a batch is one of each.
 | [boshyxd](https://github.com/boshyxd/robloxstudio-mcp) | 43 | long-poll | no | no | no | MIT (archived) |
 | [Roblox/studio-rust-mcp-server](https://github.com/Roblox/studio-rust-mcp-server) | 2 | HTTP | no | no | no | MIT (superseded) |
 
-- **Push, not poll.** SSE stream instead of a 500 ms poll. 50 sequential round trips: **13.6 ms** mean vs 25.8 ms, **12.8 ms** median vs 29.9 ms. Reproduce with `node scripts/latency.mjs --count 50 --compare`.
-- **Safe script edits.** `ScriptEditorService:UpdateSourceAsync`, not `script.Source` — your unsaved editor buffer survives.
-- **One Ctrl+Z per action**, via `ChangeHistoryService`.
-- **29 tools, ~16k tokens of schema**, against 43–51 elsewhere. Cursor-paged, capped, with `detail: concise | standard | full`.
-- **Live API dump** for property validation, so typos get suggestions (`Anchorred` → `Anchored`).
-- **Several agents, one Studio**, each with its own target — no id needed on every call, and no agent able to retarget another. The built-in server reaches the same isolation by making `studio_id` mandatory everywhere and removing `set_active_studio`; this keeps the default, so a single open Studio needs no id at all.
+- **Push, not poll** — 50 sequential round trips: 13.6 ms mean vs 25.8 ms, 12.8 ms median vs 29.9 ms (`node scripts/latency.mjs --count 50 --compare`).
+- **Safe script edits** — `ScriptEditorService:UpdateSourceAsync`, not `script.Source`; your unsaved editor buffer survives.
+- **~16k tokens of schema** against 43–51 tools elsewhere. Cursor-paged, capped, `detail: concise | standard | full`.
+- **Live API dump** — property typos get suggestions (`Anchorred` → `Anchored`).
 
 Not built here: terrain, AI mesh and material generation.
 
 ## Security
 
-Binds `127.0.0.1`, rejects requests carrying `Origin`, and requires a header a browser cannot set cross-origin — closing the DNS-rebinding hole. Studio grants HTTP per plugin and per URL, so your experience's "Allow HTTP Requests" setting is untouched.
+Binds `127.0.0.1`, rejects `Origin`, and requires a header a browser cannot set cross-origin — closing the DNS-rebinding hole. HTTP permission is granted per plugin and per URL, so your experience's "Allow HTTP Requests" setting is untouched.
 
 ## Development
 
@@ -238,7 +143,7 @@ npm install
 npm run build          # TypeScript -> dist/
 npm run build:plugin   # plugin/src -> build/StudioMCP.rbxmx
 npm run install:plugin # build + copy into the Studio plugins folder
-npm test               # Luau unit tests
+npm test               # plugin (Luau) + bridge (Node) tests
 ```
 
 Needs `luau`, `luau-compile` and `luau-analyze` from [the Luau releases](https://github.com/luau-lang/luau/releases) on `PATH` or in `tools/`.

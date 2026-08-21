@@ -25,9 +25,11 @@ export const NO_STUDIO = (): ToolError =>
   new ToolError(
     "NO_STUDIO",
     "No Roblox Studio instance is connected to this MCP server.",
-    "Open Roblox Studio, install the companion plugin, and make sure it is enabled " +
-      "(Plugins tab -> Studio MCP -> Connect). If the plugin asks for permission to " +
-      "reach 127.0.0.1, accept it. Then retry.",
+    "Open Roblox Studio with the companion plugin installed — it connects " +
+      "automatically on load. If it asks for permission to reach 127.0.0.1, " +
+      "accept it. Check connection status under the Studio MCP toolbar button, " +
+      "and use the reconnect button in that console if it is disconnected. " +
+      "Then retry.",
   );
 
 export const AMBIGUOUS_STUDIO = (names: string[]): ToolError =>

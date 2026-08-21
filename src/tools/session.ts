@@ -117,8 +117,8 @@ export function registerSessionTools(context: ToolContext): void {
       if (sessions.length === 0) {
         return text(
           "No Studio instances are connected.\n" +
-            "Open Roblox Studio and enable the Studio MCP plugin (Plugins tab -> " +
-            "Studio MCP -> Connect), then call this again.",
+            "Open Roblox Studio with the companion plugin installed — it connects " +
+            "automatically on load — then call this again.",
         );
       }
       // A defaulted target is not reported as active: tools refuse to use it

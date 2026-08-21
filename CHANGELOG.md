@@ -2,6 +2,17 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.1.6
+
+Documentation and error-message corrections. No behaviour change.
+
+### Fixed
+- `NO_STUDIO` and `list_studios` errors pointed agents at a nonexistent "Plugins tab -> Studio MCP -> Connect" command. The plugin connects automatically on load; the messages now say so and point at the reconnect button in the console.
+- README called the beta "API debugger Luau" in one place; its real name is "Debugger Luau API".
+
+### Changed
+- README and package description rewritten shorter. The tagline no longer implies every write is undoable — `execute_luau` writes are not recorded.
+
 ## 0.1.5
 
 Corrects two things 0.1.4 got wrong about the Debugger Luau API beta.
