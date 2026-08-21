@@ -2,6 +2,13 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.1.8
+
+Found by actually watching the console during a live QA pass, immediately after 0.1.7 shipped: `playtest op="stop"` polls the surviving session every 400ms while the test tears down, and every one of those polls logged as "Check the playtest" — indistinguishable from an agent asking again for no reason, with no "stop" line anywhere to explain it (the real stop went to the session that is by then gone, and its console went with it).
+
+### Fixed
+- The teardown poll now logs as "Wait for the playtest to stop", not "Check the playtest".
+
 ## 0.1.7
 
 The Studio console is the only feedback channel the plugin has — this is about making it tell the truth.

@@ -262,6 +262,18 @@ local DESCRIBERS: { [string]: Describer } = {
 
 	["playtest.control"] = function(params)
 		local op = tostring(params.op or "state")
+		--[[
+			`stop` ends a test by polling this from the *surviving* session every
+			400ms until the teardown settles, sometimes five or six times in two
+			seconds. Labelled "Check the playtest" like an agent's own status
+			check, that read as unexplained repetition with no `stop` line anywhere
+			to explain it -- the actual stop went to the session that is by then
+			gone, and its console went with it. This name is why: waiting for the
+			teardown it just started, not asking again for no reason.
+		]]
+		if op == "state" and params.waitingForStop == true then
+			return "Wait for the playtest to stop"
+		end
 		if op == "play" then
 			return "Start a playtest"
 		elseif op == "run" then

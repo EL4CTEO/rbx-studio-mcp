@@ -154,7 +154,13 @@ export function registerPlaytestTools(context: ToolContext): void {
             for (;;) {
               after = await bridge.call<PlaytestResponse>(
                 "playtest.control",
-                { op: "state" },
+                // `waitingForStop` is inert on the plugin side -- Playtest.control
+                // reads only `op`. It rides along so the console can tell this
+                // poll apart from an agent's own `state` check: without it, five
+                // identical "Check the playtest" lines in two seconds read as
+                // unexplained noise rather than what they are, which is this
+                // call waiting for the teardown it just started.
+                { op: "state", waitingForStop: true },
                 { studioId: survivor.studioId, timeoutMs: 10_000 },
               );
               const settled = after.state.editModeActive !== false && !after.state.testPending;
