@@ -45,10 +45,32 @@ function Net.request(method: string, path: string, body: string?): Response
 	end
 
 	local response = result :: any
+	if response.Success then
+		return {
+			ok = true,
+			statusCode = response.StatusCode,
+			body = response.Body,
+		}
+	end
+
+	--[[
+		The request reached the bridge and it refused -- every `send()` on that
+		side answers with `{ error: "..." }`, and that string is the actual reason
+		(missing header, protocol mismatch, no Studio connected). Falling back to
+		a bare status code discarded it and showed "handshake failed" instead,
+		which is accurate about nothing. Decoded defensively: a body that is not
+		JSON, or JSON without an `error` field, still gets a readable fallback.
+	]]
+	local decoded = Net.decode(response.Body)
+	local reason = if typeof(decoded) == "table" and typeof((decoded :: any).error) == "string"
+		then (decoded :: any).error
+		else string.format("server responded %d", response.StatusCode)
+
 	return {
-		ok = response.Success,
+		ok = false,
 		statusCode = response.StatusCode,
 		body = response.Body,
+		error = reason,
 	}
 end
 

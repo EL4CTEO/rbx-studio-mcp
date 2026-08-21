@@ -371,6 +371,10 @@ function parseIdentity(
     placeId: raw.placeId ?? 0,
     pluginVersion: raw.pluginVersion ?? "unknown",
     buildId: raw.buildId ?? "unknown",
+    // Absent on a plugin built before this field existed. 1 is both the
+    // sentinel and the version that plugin actually speaks, so it reads as a
+    // match rather than a false warning.
+    protocolVersion: typeof raw.protocolVersion === "number" ? raw.protocolVersion : 1,
     transport: raw.transport ?? transport,
     // Optional, because a plugin older than this field still connects fine —
     // it simply lists without a context, as every session did before.

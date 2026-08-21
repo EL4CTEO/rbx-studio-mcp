@@ -2,6 +2,17 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.1.7
+
+The Studio console is the only feedback channel the plugin has — this is about making it tell the truth.
+
+### Fixed
+- **The console showed the raw wire name for ten operations instead of a description.** `input.send` — the one that fires on every keypress and click during a live playtest — read as "Input send" instead of "Press E" or "Click (320, 480)". Also fixed: `device.*`, `api.*`, `perf.scene`, `capture.playtestId`/`decode`, `studio.transport`.
+- **A rejected handshake showed a generic "handshake failed" instead of the server's actual reason.** The bridge already sends a real message on every refusal (`missing header`, `no Studio connected`, etc.); the plugin was discarding it and showing a fallback string for any HTTP response that wasn't a plain success.
+
+### Added
+- **The plugin now announces its wire-protocol version, and a mismatch is reported the same way a stale build already is** — through `studio_status` and `list_studios`, not a silent failure. Existing plugins are unaffected: the version has never moved, so nothing changes until it does.
+
 ## 0.1.6
 
 Documentation and error-message corrections. No behaviour change.

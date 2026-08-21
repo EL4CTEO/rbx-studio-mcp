@@ -39,6 +39,14 @@ export interface StudioIdentity {
   pluginVersion: string;
   /** Fingerprint of the Luau sources the plugin was built from. */
   buildId: string;
+  /**
+   * The plugin's own PROTOCOL_VERSION, compared against this server's.
+   *
+   * Defaults to 1 when absent (a plugin built before this field existed),
+   * which is also the only value PROTOCOL_VERSION has ever had — so an old
+   * plugin talking to an old server reads as a match, not a warning.
+   */
+  protocolVersion: number;
   /** "sse" when the plugin holds a live stream, "poll" for the fallback. */
   transport: "sse" | "poll";
   /**
@@ -64,6 +72,29 @@ export interface StudioSession extends StudioIdentity {
  * rather than failing with a confusing schema error later.
  */
 export const PROTOCOL_VERSION = 1;
+
+/**
+ * Human-readable warning when a connected plugin's wire protocol does not
+ * match this server's, or null when it matches.
+ *
+ * Mirrors `pluginStalenessWarning` (buildId) rather than replacing it: buildId
+ * catches a plugin still running older *behaviour*, this catches the wire
+ * *shape* changing under it. The header this rides on has always been sent —
+ * PROTOCOL_VERSION has just never moved, so this has never had anything to
+ * report. It exists so the day it does move, the plugin says so instead of
+ * failing in whatever way a shape mismatch happens to fail.
+ */
+export function protocolMismatchWarning(reported: number): string | null {
+  if (reported === PROTOCOL_VERSION) return null;
+  return reported < PROTOCOL_VERSION
+    ? `The connected Studio plugin speaks an older wire protocol (v${reported}) than ` +
+        `this server (v${PROTOCOL_VERSION}). Studio only reloads a plugin when its ` +
+        `window next takes focus — click into Studio, then retry. If that does not ` +
+        `clear it, run \`npm run install:plugin\` and restart Studio.`
+    : `The connected Studio plugin speaks a newer wire protocol (v${reported}) than ` +
+        `this server (v${PROTOCOL_VERSION}) understands. Update the server: reinstall ` +
+        `with \`npx -y @el4cteo/rbx-studio-mcp\` (npx always fetches the latest).`;
+}
 
 /**
  * Custom header every plugin request must carry. Browsers cannot set it on a

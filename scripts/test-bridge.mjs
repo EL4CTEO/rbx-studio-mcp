@@ -20,6 +20,7 @@ const identity = (studioId, placeId) => ({
   placeId,
   pluginVersion: "test",
   buildId: "test",
+  protocolVersion: 1,
   transport: "poll",
   context: "edit",
 });

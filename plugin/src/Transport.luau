@@ -71,6 +71,12 @@ local function identity(transport: string): { [string]: any }
 		placeId = game.PlaceId,
 		pluginVersion = Config.PLUGIN_VERSION,
 		buildId = Config.BUILD_ID,
+		-- Alongside buildId rather than instead of it: buildId catches a plugin
+		-- left running an older *behaviour*, this catches the wire *shape*
+		-- changing under it. Compared server-side the same way buildId is, so a
+		-- mismatch surfaces through studio_status instead of failing silently
+		-- the next time PROTOCOL_VERSION actually moves.
+		protocolVersion = Config.PROTOCOL_VERSION,
 		transport = transport,
 		-- Announced at the handshake rather than left for a later status call.
 		-- The ambiguity error that forces someone to choose between two rows

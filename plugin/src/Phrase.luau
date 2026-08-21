@@ -331,6 +331,12 @@ local DESCRIBERS: { [string]: Describer } = {
 	["capture.screenshot"] = function()
 		return "Take a screenshot"
 	end,
+	["capture.playtestId"] = function()
+		return "Capture the playtest view"
+	end,
+	["capture.decode"] = function()
+		return "Read back the capture"
+	end,
 
 	["viewport.focus"] = function(params)
 		local name = leaf(params.path)
@@ -400,6 +406,73 @@ local DESCRIBERS: { [string]: Describer } = {
 	["studio.ping"] = function()
 		return "Ping"
 	end,
+	["studio.transport"] = function(params)
+		local mode = params.mode
+		return if typeof(mode) == "string" and mode ~= ""
+			then string.format("Switch to %s transport", mode)
+			else "Check the transport"
+	end,
+
+	--[[
+		The one a person actually watches: a live playtest is the point where
+		"what is the AI doing" stops being abstract, and a console line reading
+		"Input send" says nothing a bystander could act on. One step names the
+		key or point; several collapse to a count, same as every other batch op.
+	]]
+	["input.send"] = function(params)
+		local steps = params.steps
+		local total = count(steps)
+		if total == 1 then
+			local step = (steps :: { any })[1]
+			local kind = tostring(step.kind or "key")
+			if kind == "key" then
+				local action = tostring(step.action or "tap")
+				local verb = if action == "press" then "Hold" elseif action == "release" then "Release" else "Press"
+				return string.format("%s %s", verb, tostring(step.key or "?"))
+			elseif kind == "click" then
+				return string.format("Click (%s, %s)", tostring(step.x or "?"), tostring(step.y or "?"))
+			elseif kind == "move" then
+				return "Move the pointer"
+			elseif kind == "text" then
+				return string.format('Type "%s"', tostring(step.text or ""))
+			end
+		end
+		return "Send " .. plural(total, "input step")
+	end,
+
+	["api.describe"] = function(params)
+		local className = params.className
+		return if typeof(className) == "string" and className ~= ""
+			then "Look up " .. className
+			else "Look up a class"
+	end,
+	["api.classes"] = function(params)
+		local needle = params.contains
+		return if typeof(needle) == "string" and needle ~= ""
+			then string.format('Search classes for "%s"', needle)
+			else "List classes"
+	end,
+
+	["perf.scene"] = function(params)
+		local section = params.section
+		return if typeof(section) == "string" and section ~= ""
+			then "Measure the " .. section
+			else "Measure the scene"
+	end,
+
+	["device.list"] = function()
+		return "List devices"
+	end,
+	["device.set"] = function(params)
+		local id = params.device
+		return if typeof(id) == "string" and id ~= "" then "Emulate " .. id else "Emulate a device"
+	end,
+	["device.stop"] = function()
+		return "Stop emulating a device"
+	end,
+	["device.state"] = function()
+		return "Check the emulated device"
+	end,
 }
 
 --[[
@@ -421,8 +494,13 @@ local KINDS: { [string]: string } = {
 	exec = "run",
 	playtest = "run",
 	character = "run",
+	-- Live keys and clicks into a running playtest are an action, not a read,
+	-- and belong beside character/exec rather than defaulting to "read".
+	input = "run",
 	debug = "debug",
 	perf = "debug",
+	api = "read",
+	device = "read",
 }
 
 function Phrase.kindOf(op: string): string
