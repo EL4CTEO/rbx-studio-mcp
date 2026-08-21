@@ -157,7 +157,7 @@ Port defaults to **44755** — `--port` or `ROBLOX_STUDIO_MCP_PORT`, matched in 
 
 Each agent keeps its **own** target: `set_active_studio` binds per client, so two agents can work on two open places at once and neither can retarget the other. Pass `studioId` on a single call to reach elsewhere without changing your default.
 
-Isolation is per connected client. Subagents may share their parent's connection, so give them an explicit `studioId` rather than letting them rely on the default.
+Isolation is per MCP connection, and **subagents share their parent's** — measured, not assumed. A subagent calling `set_active_studio` retargets its parent and its siblings, silently: later calls still succeed, just against the wrong place. Give subagents an explicit `studioId` per call instead. Nothing on the wire distinguishes a subagent from its parent, so this is guidance rather than something the server can enforce.
 
 ## Tools
 

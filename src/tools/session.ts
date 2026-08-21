@@ -186,9 +186,16 @@ export function registerSessionTools(context: ToolContext): void {
         "The choice persists until it is changed or that Studio disconnects. " +
         "While several Studios are connected and none has been chosen, tools " +
         "refuse with AMBIGUOUS_STUDIO rather than guessing.\n\n" +
-        "The choice belongs to this client alone. Several agents can share one " +
-        "Studio connection, and each keeps its own target, so calling this never " +
-        "moves anyone else's — two agents can work on two places at once.",
+        "The choice belongs to this MCP connection alone. Several agents can " +
+        "share one Studio, and each keeps its own target, so calling this never " +
+        "moves another client's — two editors, or two sessions, can work on two " +
+        "places at once.\n\n" +
+        "SUBAGENTS SHARE THEIR PARENT'S CONNECTION, and therefore its target. A " +
+        "subagent calling this retargets its parent and every sibling, and the " +
+        "damage is silent: later calls that name no studioId still succeed, just " +
+        "against the wrong place — and if that place is a playtest, everything " +
+        "written there is discarded when it stops. Inside a subagent, pass " +
+        "`studioId` on each call instead of calling this.",
       inputSchema: {
         studioId: z
           .string()
