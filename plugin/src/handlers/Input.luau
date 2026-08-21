@@ -28,7 +28,6 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
-local CursorImage = require(script.Parent.Parent.CursorImage)
 local Dispatch = require(script.Parent.Parent.Dispatch)
 
 local Input = {}
@@ -77,30 +76,45 @@ local performed = {}
 --[[
 	The on-screen pointer.
 
-	Pixels rather than an asset id: a LocalScript cannot decode a PNG, and
-	uploading one would put a manual step between installing this and having a
-	cursor. They arrive base64'd in a StringValue and become an EditableImage.
+	Roblox's own arrow texture, not one of ours. Shipping the pixels was tried
+	first -- base64 in a StringValue, decoded into an EditableImage -- and it
+	cannot work: writing to an EditableImage is gated on an experience-level
+	security setting that is off by default, so every place would have to opt in
+	before the cursor appeared. `WritePixelsBuffer` says so outright ("go to the
+	Security Tab in Experience Settings to enable this API") and the failure was
+	invisible, because a cursor that fails to build just does not show up.
+
+	An image id needs neither. The primary is a public Creator Store pointer;
+	`rbxasset://` content, which ships inside the client itself and can never
+	fail to resolve, is the fallback for the day that asset is moderated or
+	pulled. Both are tinted and given a halo -- the point is to show what the
+	agent is aiming at, and a pointer indistinguishable from the player's own
+	would show nothing.
 ]]
+local ARROW = "rbxassetid://15718988485"
+local ARROW_FALLBACK = "rbxasset://textures/Cursors/KeyboardMouse/ArrowCursor.png"
+local ACCENT = Color3.fromRGB(255, 162, 0)
+
+--[[
+	Where each arrow's tip sits inside its own image, as a fraction of it.
+
+	Both measured rather than guessed, and they are nothing alike -- the store
+	image is padded and the built-in one puts its tip at the exact centre of a
+	64x64 square -- so the anchor has to change with the image. Getting this
+	wrong is the quiet kind of wrong: the pointer still glides to the right
+	area and still ripples, it just lies about which pixel it hit.
+
+	The tint only works on a filled arrow. An outline-only cursor multiplies to
+	black and looks like the image failed to load.
+]]
+local HOTSPOT = Vector2.new(0.36, 0.32)
+local HOTSPOT_FALLBACK = Vector2.new(0.484, 0.5)
+
 local cursor = nil
 local cursorGui = nil
-local hotspot = Vector2.new(0.08, 0.06)
 
 local function makeCursor()
-	local holder = relay:FindFirstChild("CursorPixels")
-	if holder == nil then
-		return
-	end
-
-	local ok, image = pcall(function()
-		local EncodingService = game:GetService("EncodingService")
-		local AssetService = game:GetService("AssetService")
-		local size = Vector2.new(48, 48)
-		local pixels = EncodingService:Base64Decode(buffer.fromstring(holder.Value))
-		local editable = AssetService:CreateEditableImage({ Size = size })
-		editable:WritePixelsBuffer(Vector2.zero, size, pixels)
-		return editable
-	end)
-	if not ok then
+	if relay:GetAttribute("Cursor") ~= true then
 		return
 	end
 
@@ -114,16 +128,49 @@ local function makeCursor()
 	local label = Instance.new("ImageLabel")
 	label.Name = "Pointer"
 	label.BackgroundTransparency = 1
-	label.Size = UDim2.fromOffset(30, 30)
-	label.AnchorPoint = hotspot
+	label.Size = UDim2.fromOffset(52, 52)
+	label.AnchorPoint = HOTSPOT
 	label.Position = UDim2.fromScale(0.5, 0.5)
-	label.ImageContent = Content.fromObject(image)
+	label.Image = ARROW
+	label.ImageColor3 = ACCENT
 	label.ZIndex = 100
 	label.Parent = gui
+
+	-- Centred on the tip rather than on the image, and behind the arrow, so the
+	-- pointer stays findable against a busy scene without hiding what it targets.
+	local halo = Instance.new("Frame")
+	halo.Name = "Halo"
+	halo.AnchorPoint = Vector2.new(0.5, 0.5)
+	halo.Position = UDim2.fromScale(HOTSPOT.X, HOTSPOT.Y)
+	halo.Size = UDim2.fromOffset(32, 32)
+	halo.BackgroundColor3 = ACCENT
+	halo.BackgroundTransparency = 0.45
+	halo.BorderSizePixel = 0
+	halo.ZIndex = 99
+	local round = Instance.new("UICorner")
+	round.CornerRadius = UDim.new(1, 0)
+	round.Parent = halo
+	halo.Parent = label
 
 	gui.Parent = relay.Parent
 	cursorGui = gui
 	cursor = label
+
+	-- Swapped only if the store image really did not arrive. Checked after the
+	-- GUI is live so the pointer is on screen either way, and never blocks.
+	task.spawn(function()
+		local waited = 0
+		while not label.IsLoaded and waited < 3 do
+			task.wait(0.1)
+			waited += 0.1
+		end
+		if not label.IsLoaded then
+			label.Image = ARROW_FALLBACK
+			-- The tip moves with the image, so the anchor and the halo move too.
+			label.AnchorPoint = HOTSPOT_FALLBACK
+			halo.Position = UDim2.fromScale(HOTSPOT_FALLBACK.X, HOTSPOT_FALLBACK.Y)
+		end
+	end)
 end
 
 -- Moves the pointer there and waits, so the click is seen to be aimed.
@@ -152,7 +199,7 @@ local function pulse()
 	ring.AnchorPoint = Vector2.new(0.5, 0.5)
 	ring.Position = UDim2.new(cursor.Position.X.Scale, cursor.Position.X.Offset, cursor.Position.Y.Scale, cursor.Position.Y.Offset)
 	ring.Size = UDim2.fromOffset(8, 8)
-	ring.BackgroundColor3 = Color3.fromRGB(255, 162, 0)
+	ring.BackgroundColor3 = ACCENT
 	ring.BackgroundTransparency = 0.25
 	ring.BorderSizePixel = 0
 	ring.ZIndex = 99
@@ -188,14 +235,14 @@ for _, step in plan do
 			end
 		end
 	elseif kind == "move" then
-		moveCursor(step.x, step.y, 0.22)
+		moveCursor(step.x, step.y, 0.3)
 		virtual:SendMousePosition(Vector2.new(step.x, step.y))
 	elseif kind == "click" then
 		local button = Enum.UserInputType[step.button or "MouseButton1"]
 		local at = Vector2.new(step.x, step.y)
 		-- Travel first, then click. Teleporting the pointer onto the target at
 		-- the same instant it fires looks like nothing happened at all.
-		moveCursor(step.x, step.y, 0.22)
+		moveCursor(step.x, step.y, 0.3)
 		pulse()
 		virtual:SendMousePosition(at)
 		virtual:SendMouseButton(at, button, true, 0)
@@ -353,21 +400,8 @@ function Input.send(params: { [string]: any }): { [string]: any }
 	relay.Name = "MCPInputRelay"
 	relay.Source = RELAY_SOURCE
 	relay:SetAttribute("Plan", HttpService:JSONEncode(plan))
+	relay:SetAttribute("Cursor", params.cursor ~= false)
 	remote.Parent = relay
-
-	--[[
-		The pointer's pixels, as a child rather than an attribute.
-
-		12KB of base64 is comfortably inside what an attribute holds today, but
-		nothing about that limit is promised, and a cursor that silently stops
-		appearing when the image grows is a bad way to find out.
-	]]
-	if params.cursor ~= false then
-		local pixels = Instance.new("StringValue")
-		pixels.Name = "CursorPixels"
-		pixels.Value = CursorImage.base64
-		pixels.Parent = relay
-	end
 
 	local answer: { [string]: any }? = nil
 	local connection = remote.OnServerEvent:Connect(function(_from, payload)
