@@ -45,16 +45,16 @@
 --[[
 	Fetched defensively, because this module is required at plugin start.
 
-	`ScriptDebuggerService` exists only when the "Debugger Luau API" beta is on,
-	and `GetService` throws for a service that is not registered. This file is
-	required from init.server.luau alongside every other handler, so an
-	unguarded throw here would take down the whole plugin -- every tool, not
-	just these three -- for the majority of users, who have the beta off. The
-	failure would also be silent from the outside: no plugin, no connection, and
-	nothing to read.
+	Measured with the beta off and Studio restarted: `GetService` does NOT throw
+	here, it hands back a working service object. So this guard is not fixing an
+	observed crash -- it is insurance on the one call in this file that runs
+	before any tool is invoked. init.server.luau requires this module alongside
+	every other handler, so a throw at this line would take down all 29 tools
+	rather than the three that need a debugger, and it would do it silently: a
+	plugin that never loads never connects, leaving nothing to read anywhere.
 
-	Missing is therefore a value, not an error, and `requireService` turns it
-	into a message naming the beta.
+	The beta is NOT detected here, because nothing at this level can detect it.
+	See Reflection.hasDebugger for what actually works and what does not.
 ]]
 local ScriptDebuggerService: any = nil
 do
@@ -66,6 +66,7 @@ end
 
 local Dispatch = require(script.Parent.Parent.Dispatch)
 local Paths = require(script.Parent.Parent.Paths)
+local Reflection = require(script.Parent.Parent.Reflection)
 
 -- Snapshots are far heavier than log lines: each carries a stack and its
 -- variables. A tight cap keeps a breakpoint inside a loop from exhausting memory
@@ -320,6 +321,30 @@ function Debug.set(params: { [string]: any }): { [string]: any }
 		else
 			table.insert(failed, { path = item.path, line = descriptor.Line, error = tostring(result) })
 		end
+	end
+
+	--[[
+		Every breakpoint refused is the beta, until shown otherwise.
+
+		`AddBreakpoint` is where the "Debugger Luau API" beta actually bites, and
+		its message -- "Failed to execute AddBreakpoint request" -- names neither
+		the beta nor anything else actionable. Nothing earlier gives it away:
+		with the beta off and Studio restarted, GetService, FindService,
+		assigning OnStopped and Enum.DebuggerResumeType all still succeed. So a
+		wholesale refusal is reported as what it almost always is, with the fix
+		attached, rather than passing the engine's message through unhelpfully.
+	]]
+	if #added == 0 and #failed > 0 and not Reflection.hasDebugger() then
+		Dispatch.fail(
+			"NO_DEBUGGER",
+			string.format(
+				"No breakpoint could be set (%d refused). The Debugger Luau API beta is off.",
+				#failed
+			),
+			"Turn on \"Debugger Luau API\" in File > Beta Features and restart Studio. "
+				.. "Nothing an agent can do enables it, so this needs the user. Every "
+				.. "other tool works without it."
+		)
 	end
 
 	return { added = added, failed = failed, installed = installed }

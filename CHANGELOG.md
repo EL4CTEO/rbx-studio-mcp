@@ -2,6 +2,17 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.1.5
+
+Makes the Debugger beta detection actually work. 0.1.4 shipped a version of it that could never fire.
+
+### Fixed
+- **`studio_status` never reported the beta as off, even when it was.** The check asked whether `ScriptDebuggerService` could be fetched — but with the beta off and Studio restarted, `GetService`, `FindService`, assigning `OnStopped` and `Enum.DebuggerResumeType` all still succeed. The field was therefore always absent, which reads as "everything is fine". It now goes through `ReflectionService`, which is the only signal that is both honest and free: the beta governs whether the class is in the reflection database. Confirmed reporting `off` with the beta disabled.
+- **`debug` refused every breakpoint without saying why.** The engine's message is `Failed to execute AddBreakpoint request`, which names nothing actionable. When every breakpoint is refused and the class is absent from reflection, it now fails with `NO_DEBUGGER` naming the toggle, the restart, and the fact that only the user can do it.
+
+### Changed
+- Corrected a claim in 0.1.4. Its notes said the plugin could fail to load entirely when the beta was off, on the assumption that `GetService` throws for an unregistered service. It does not — that was written without being checked. The guard added in 0.1.4 stays as insurance on a call that runs before any tool is invoked, but it was never fixing an observed crash.
+
 ## 0.1.4
 
 Makes the Debugger Luau API beta impossible to miss, and stops it from being able to break anything else.

@@ -14,23 +14,13 @@ local Context = require(script.Parent.Parent.Context)
 local Editor = require(script.Parent.Parent.Editor)
 local Emulation = require(script.Parent.Parent.Emulation)
 local Paths = require(script.Parent.Parent.Paths)
+local Reflection = require(script.Parent.Parent.Reflection)
 
 -- `version()` is marked deprecated but remains the only way to read the Studio
 -- build, and the agent needs it to know which engine APIs actually exist in this
 -- session. Bound indirectly so the deprecation lint stays enabled file-wide.
 local studioVersion: () -> string = (version :: any)
 
---[[
-	Whether the Debugger Luau API beta is on.
-
-	`ScriptDebuggerService` is registered only when it is, so asking for the
-	service is the test. Guarded because `GetService` throws on a service that
-	does not exist, and status must answer for every Studio rather than only the
-	ones where `debug` would have worked anyway.
-]]
-local function debuggerAvailable(): boolean
-	return (pcall(game.GetService, game, "ScriptDebuggerService"))
-end
 
 -- Selection can be tens of thousands of instances after a rubber-band drag.
 -- Anything past this is noise for an agent and would blow the response budget.
@@ -161,7 +151,7 @@ function Session.status(): { [string]: any }
 		-- here rather than left for `debug` to discover, because the fix needs
 		-- the user: it is a Studio setting behind a restart, not something an
 		-- agent can turn on mid-task.
-		debuggerBeta = if debuggerAvailable() then nil else "off",
+		debuggerBeta = if Reflection.hasDebugger() then nil else "off",
 	}
 end
 
