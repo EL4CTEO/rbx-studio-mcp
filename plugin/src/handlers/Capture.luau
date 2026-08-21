@@ -40,12 +40,8 @@ local COMPRESSION_LEVEL = 3
 
 local Capture = {}
 
--- The client is a different machine as far as this plugin is concerned, so the
--- picture has to survive a round trip through a RemoteEvent. Kept smaller than
--- the edit-mode default because that payload has a ceiling and a screenshot
--- nobody can send is worse than a slightly softer one.
-local PLAYTEST_MAX_WIDTH = 1000
-local PLAYTEST_DEFAULT_WIDTH = 720
+-- Only a content id comes back over the remote, so this is the time to start a
+-- LocalScript and take one shot, not to move any pixels.
 local CLIENT_TIMEOUT = 25
 
 --[[
@@ -63,26 +59,27 @@ local CLIENT_TIMEOUT = 25
 	RemoteEvent. The client cannot make HTTP requests, but it does not need to --
 	the server session it replicates to already holds an open bridge.
 
-	Everything is done client-side before sending: capture, read, downscale,
-	compress. Raw 1080p pixels are eight megabytes and would never fit through a
-	remote; compressed and scaled they are tens of kilobytes.
+	The client only takes the shot. It cannot read it: `CaptureService` hands
+	back a temporary texture id, and `CreateEditableImageAsync` refuses those at
+	script identity -- "cannot currently create editable image from temporary
+	texture id" -- which no amount of client-side code gets around.
+
+	The id is not client-local, though. It names a texture in the Studio
+	process, and the *editor* session's plugin runs there with plugin identity,
+	where the same call opens it without complaint. So the picture is taken in
+	one session and read in the other, and the pixels never cross a RemoteEvent
+	at all -- which also removes the size ceiling that a client-side encode had
+	to stay under. See `Capture.playtestId` and `Capture.decode`; `screenshot`
+	in the MCP server drives both halves.
 ]]
 local CLIENT_SOURCE = [==[
-local AssetService = game:GetService("AssetService")
 local CaptureService = game:GetService("CaptureService")
-local EncodingService = game:GetService("EncodingService")
 
 local relay = script
 local report = relay:WaitForChild("Report", 10)
 if report == nil then
 	return
 end
-
-local function fail(reason)
-	report:FireServer({ ok = false, reason = tostring(reason) })
-end
-
-local targetWidth = relay:GetAttribute("Width") or 720
 
 local contentId = nil
 local okShot, shotErr = pcall(function()
@@ -91,7 +88,7 @@ local okShot, shotErr = pcall(function()
 	end)
 end)
 if not okShot then
-	fail(shotErr)
+	report:FireServer({ ok = false, reason = tostring(shotErr) })
 	return
 end
 
@@ -101,69 +98,11 @@ while contentId == nil and waited < 12 do
 	waited += 0.05
 end
 if contentId == nil then
-	fail("the client did not produce a screenshot within 12s")
+	report:FireServer({ ok = false, reason = "the client did not produce a screenshot within 12s" })
 	return
 end
 
-local okImage, image = pcall(function()
-	return AssetService:CreateEditableImageAsync(Content.fromUri(contentId))
-end)
-if not okImage then
-	fail(image)
-	return
-end
-
-local size = image.Size
-local sourceWidth = math.floor(size.X)
-local sourceHeight = math.floor(size.Y)
-
-local okPixels, rgba = pcall(function()
-	return image:ReadPixelsBuffer(Vector2.zero, size)
-end)
-if not okPixels then
-	fail(rgba)
-	return
-end
-
--- Nearest-neighbour, matching Png.downscaleToRgb. Averaging would look better
--- and costs a multiple of the work on the player's own frame budget.
-local scale = math.min(1, targetWidth / sourceWidth)
-local outWidth = math.max(1, math.floor(sourceWidth * scale))
-local outHeight = math.max(1, math.floor(sourceHeight * scale))
-local rgb = buffer.create(outWidth * outHeight * 3)
-
-for row = 0, outHeight - 1 do
-	local sourceRow = math.min(sourceHeight - 1, math.floor(row / scale))
-	local sourceRowBase = sourceRow * sourceWidth * 4
-	local targetRowBase = row * outWidth * 3
-	for column = 0, outWidth - 1 do
-		local sourceColumn = math.min(sourceWidth - 1, math.floor(column / scale))
-		local source = sourceRowBase + sourceColumn * 4
-		local target = targetRowBase + column * 3
-		buffer.writeu8(rgb, target, buffer.readu8(rgba, source))
-		buffer.writeu8(rgb, target + 1, buffer.readu8(rgba, source + 1))
-		buffer.writeu8(rgb, target + 2, buffer.readu8(rgba, source + 2))
-	end
-end
-
-local okPacked, packed = pcall(function()
-	local compressed = EncodingService:CompressBuffer(rgb, Enum.CompressionAlgorithm.Zstd, 3)
-	return buffer.tostring(EncodingService:Base64Encode(compressed))
-end)
-if not okPacked then
-	fail(packed)
-	return
-end
-
-report:FireServer({
-	ok = true,
-	data = packed,
-	width = outWidth,
-	height = outHeight,
-	sourceWidth = sourceWidth,
-	sourceHeight = sourceHeight,
-	rawBytes = buffer.len(rgb),
-})
+report:FireServer({ ok = true, contentId = contentId })
 ]==]
 
 --[[
@@ -211,14 +150,19 @@ local function takeScreenshot(): string
 end
 
 --[[
-	Runs the capture on the player's client and waits for the pixels to come back.
+	Half a playtest screenshot: the client takes the shot, this returns its id.
+
+	Deliberately does not try to read it. The editor session does that, because
+	only plugin identity may -- see the note on CLIENT_SOURCE.
 ]]
-local function captureViaClient(params: { [string]: any }): { [string]: any }
-	local width = math.clamp(
-		tonumber(params.width) or PLAYTEST_DEFAULT_WIDTH,
-		MIN_WIDTH,
-		PLAYTEST_MAX_WIDTH
-	)
+function Capture.playtestId(_params: { [string]: any }): { [string]: any }
+	if RunService:IsEdit() or not RunService:IsRunning() then
+		Dispatch.fail(
+			"NOT_RUNNING",
+			"This is not a running playtest session, so there is no client to capture from.",
+			"Address this at the playtest's studioId from `list_studios`."
+		)
+	end
 
 	local players = Players:GetPlayers()
 	if #players == 0 then
@@ -240,7 +184,6 @@ local function captureViaClient(params: { [string]: any }): { [string]: any }
 	local relay = Instance.new("LocalScript")
 	relay.Name = "MCPCaptureRelay"
 	relay.Source = CLIENT_SOURCE
-	relay:SetAttribute("Width", width)
 	remote.Parent = relay
 
 	local answer: { [string]: any }? = nil
@@ -265,8 +208,8 @@ local function captureViaClient(params: { [string]: any }): { [string]: any }
 	if answer == nil then
 		Dispatch.fail(
 			"CAPTURE_TIMEOUT",
-			string.format("The client did not return a screenshot within %ds.", CLIENT_TIMEOUT),
-			"A large viewport takes a moment to read and compress; try a smaller `width`."
+			string.format("The client did not answer within %ds.", CLIENT_TIMEOUT),
+			"The client may still be loading; try again once the character has spawned."
 		)
 	end
 
@@ -275,30 +218,17 @@ local function captureViaClient(params: { [string]: any }): { [string]: any }
 		Dispatch.fail("CAPTURE_REFUSED", string.format("The client could not capture: %s", tostring(result.reason)))
 	end
 
-	return {
-		encoding = "zstd-rgb",
-		data = result.data,
-		width = result.width,
-		height = result.height,
-		sourceWidth = result.sourceWidth,
-		sourceHeight = result.sourceHeight,
-		rawBytes = result.rawBytes,
-		bytes = #tostring(result.data),
-		context = "playtest client",
-		device = Emulation.deviceId(),
-	}
+	return { contentId = tostring(result.contentId), device = Emulation.deviceId() }
 end
 
-function Capture.screenshot(params: { [string]: any }): { [string]: any }
-	-- Only the client may capture during a playtest, so the work goes there.
-	if RunService:IsRunning() and not RunService:IsEdit() then
-		return captureViaClient(params)
-	end
+--[[
+	Turns a content id into pixels on the wire.
 
-	local width = math.clamp(tonumber(params.width) or DEFAULT_WIDTH, MIN_WIDTH, MAX_WIDTH)
-
-	local contentId = takeScreenshot()
-
+	Split out from `screenshot` because a playtest shot is taken in one session
+	and read in another: the id is all that travels, and this is the reading
+	half, which needs plugin identity and therefore an editor session.
+]]
+local function encode(contentId: string, width: number, context: string): { [string]: any }
 	local okImage, image = pcall(function()
 		return AssetService:CreateEditableImageAsync(Content.fromUri(contentId))
 	end)
@@ -367,7 +297,7 @@ function Capture.screenshot(params: { [string]: any }): { [string]: any }
 			sourceHeight = sourceHeight,
 			rawBytes = buffer.len(rgb),
 			bytes = #(packed :: string),
-			context = if RunService:IsEdit() then "edit" else "playtest",
+			context = context,
 			device = Emulation.deviceId(),
 		}
 	end
@@ -382,16 +312,54 @@ function Capture.screenshot(params: { [string]: any }): { [string]: any }
 		sourceWidth = sourceWidth,
 		sourceHeight = sourceHeight,
 		bytes = buffer.len(png),
-		-- Which window this came from. A screenshot carries no indication of
-		-- whether it shows the editor or a running game, and the two look alike.
-		context = if RunService:IsEdit() then "edit" else "playtest",
+		context = context,
 		device = Emulation.deviceId(),
 	}
+end
+
+function Capture.screenshot(params: { [string]: any }): { [string]: any }
+	--[[
+		Refused rather than half-done. A playtest screenshot needs two sessions
+		and only the MCP server can see both, so failing here with the reason is
+		better than returning the editor's own idle viewport, which looks like a
+		valid answer to "what does the player see".
+	]]
+	if RunService:IsRunning() and not RunService:IsEdit() then
+		Dispatch.fail(
+			"NEEDS_EDITOR_SESSION",
+			"A playtest screenshot is taken on the client and read in the editor session, "
+				.. "so it cannot be served from the playtest server alone.",
+			"Use the `screenshot` tool, which drives both halves. It needs the editor "
+				.. "session for the same place to still be connected."
+		)
+	end
+
+	local width = math.clamp(tonumber(params.width) or DEFAULT_WIDTH, MIN_WIDTH, MAX_WIDTH)
+	return encode(takeScreenshot(), width, if RunService:IsEdit() then "edit" else "playtest")
+end
+
+--[[
+	Reads a content id someone else captured.
+
+	Only the editor session can do this, and only because the temporary texture
+	is owned by the Studio process rather than by the session that made it.
+]]
+function Capture.decode(params: { [string]: any }): { [string]: any }
+	local contentId = params.contentId
+	if typeof(contentId) ~= "string" or contentId == "" then
+		Dispatch.fail("BAD_PARAMS", "decode needs a `contentId`.")
+	end
+
+	local width = math.clamp(tonumber(params.width) or DEFAULT_WIDTH, MIN_WIDTH, MAX_WIDTH)
+	local context = if typeof(params.context) == "string" then params.context else "playtest client"
+	return encode(contentId :: string, width, context)
 end
 
 function Capture.register()
 	Dispatch.registerAll("capture", {
 		screenshot = Capture.screenshot,
+		playtestId = Capture.playtestId,
+		decode = Capture.decode,
 	})
 end
 

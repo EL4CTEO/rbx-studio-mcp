@@ -46,14 +46,6 @@ local MAX_HOLD = 10
 	source, so a key called `A) print("owned") --` would run. The plan travels as
 	JSON on an attribute instead, and this script only ever indexes enums by name
 	and checks the result.
-]]
---[[
-	The relay, fixed rather than generated.
-
-	Building Luau from the request would mean pasting caller-supplied names into
-	source, so a key called `A) print("owned") --` would run. The plan travels as
-	JSON on an attribute instead, and this script only ever indexes enums by name
-	and checks the result.
 
 	It also draws the pointer. Synthetic mouse input moves nothing the eye can
 	follow -- the click lands and the only evidence is whatever it changed -- so

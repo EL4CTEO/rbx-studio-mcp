@@ -1,7 +1,10 @@
 import { zstdDecompressSync } from "node:zlib";
 import { z } from "zod";
+import type { StudioBridge } from "../bridge/api.js";
+import { ToolError } from "../lib/errors.js";
 import { image, type ToolResult } from "../lib/format.js";
 import { encodePng } from "../lib/png.js";
+import type { StudioSession } from "../lib/protocol.js";
 import { defineTool, type ToolContext } from "../lib/tool.js";
 
 interface ScreenshotResponse {
@@ -36,6 +39,60 @@ function toPngBase64(response: ScreenshotResponse): string {
   return encodePng(rgb, response.width, response.height).toString("base64");
 }
 
+const isPlaytest = (session: StudioSession): boolean =>
+  (session.context ?? "").startsWith("playtest");
+
+/** Which session this call will land on, when that can be told from here. */
+function targetOf(sessions: StudioSession[], activeId: string | null, wanted?: string) {
+  if (wanted !== undefined) return sessions.find((session) => session.studioId === wanted);
+  if (activeId !== null) return sessions.find((session) => session.studioId === activeId);
+  return sessions.length === 1 ? sessions[0] : undefined;
+}
+
+/**
+ * A playtest screenshot, which takes two sessions.
+ *
+ * The client is the only thing that can take the picture, and it cannot read
+ * it back: `CaptureService` returns a temporary texture id and
+ * `CreateEditableImageAsync` refuses those at script identity. The id names a
+ * texture in the Studio *process*, though, so the editor session's plugin —
+ * same process, plugin identity — opens it without complaint. This is the only
+ * place that can see both sessions at once, so the pairing lives here.
+ */
+async function playtestShot(
+  bridge: StudioBridge,
+  playtest: StudioSession,
+  sessions: StudioSession[],
+  width: number,
+): Promise<ScreenshotResponse> {
+  const editor = sessions.find(
+    (session) => session.placeId === playtest.placeId && !isPlaytest(session),
+  );
+  if (editor === undefined) {
+    throw new ToolError(
+      "NO_EDITOR_SESSION",
+      "The playtest is connected but its editor session is not, and reading the " +
+        "captured image needs the editor's plugin identity.",
+      "The editor window must stay connected while the playtest runs. Check " +
+        "`list_studios` — there should be two entries for this place.",
+    );
+  }
+
+  const { contentId } = await bridge.call<{ contentId: string }>(
+    "capture.playtestId",
+    {},
+    { studioId: playtest.studioId, timeoutMs: 40_000 },
+  );
+
+  // Straight on, with no await in between: the texture is temporary and there
+  // is no promise about how long Studio keeps one nobody has opened yet.
+  return bridge.call<ScreenshotResponse>(
+    "capture.decode",
+    { contentId, width, context: "playtest client" },
+    { studioId: editor.studioId, timeoutMs: 60_000 },
+  );
+}
+
 export function registerScreenshotTools(context: ToolContext): void {
   const { bridge } = context;
 
@@ -59,9 +116,10 @@ export function registerScreenshotTools(context: ToolContext): void {
         "worth calling.\n\n" +
         "Works during a playtest too — address it at the playtest's studioId and " +
         "you get the player's own view, which is the only way to check what a GUI " +
-        "actually looks like in front of the game. That capture is taken on the " +
-        "client and relayed back, so it is a little slower and caps at 1000px " +
-        "wide; the caption says `playtest client` when it came from there.",
+        "actually looks like in front of the game. That one is taken on the client " +
+        "and read back through the editor session, so it is a little slower and " +
+        "needs the editor window still connected; the caption says `playtest " +
+        "client` when it came from there.",
       inputSchema: {
         width: z
           .number()
@@ -79,13 +137,19 @@ export function registerScreenshotTools(context: ToolContext): void {
       readOnly: true,
     },
     async (args): Promise<ToolResult> => {
-      const response = await bridge.call<ScreenshotResponse>(
-        "capture.screenshot",
-        { width: args.width },
-        // Capturing, reading the pixels back and encoding a PNG in Luau all
-        // happen before the reply, and none of them is instant on a big viewport.
-        { studioId: args.studioId, timeoutMs: 60_000 },
-      );
+      const { list, activeId } = await bridge.sessions();
+      const target = targetOf(list, activeId, args.studioId);
+
+      const response =
+        target !== undefined && isPlaytest(target)
+          ? await playtestShot(bridge, target, list, args.width)
+          : await bridge.call<ScreenshotResponse>(
+              "capture.screenshot",
+              { width: args.width },
+              // Capturing, reading the pixels back and compressing them all happen
+              // before the reply, and none is instant on a big viewport.
+              { studioId: args.studioId, timeoutMs: 60_000 },
+            );
 
       const png = toPngBase64(response);
 
