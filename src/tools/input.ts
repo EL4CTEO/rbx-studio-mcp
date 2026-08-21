@@ -31,6 +31,9 @@ export function registerInputTools(context: ToolContext): void {
         "second is a different test from a tapped one.\n\n" +
         "REQUIRES A RUNNING PLAYTEST, and must be addressed to the playtest's " +
         "studioId from `list_studios`, not the editor's.\n\n" +
+        "A pointer is drawn on screen and travels to each target before the " +
+        "click, so the user can see what you are aiming at. Turn it off with " +
+        "`cursor: false`.\n\n" +
         "How it works, because it explains the one thing that will surprise " +
         "you: input belongs to the data model that creates it, and the " +
         "character is driven by the CLIENT. Sending from the playtest's server " +
@@ -98,6 +101,17 @@ export function registerInputTools(context: ToolContext): void {
           .string()
           .optional()
           .describe("Which player, by name. Omit for the only one; needed in a multiplayer test."),
+        cursor: z
+          .boolean()
+          .default(true)
+          .describe(
+            "Draw a pointer on screen that travels to each target before the " +
+              "click, with a ripple where it lands. On by default: synthetic " +
+              "input is otherwise invisible, so the user watching sees effects " +
+              "with no cause, and a click that misses looks identical to one " +
+              "that hit. Turn it off only when recording something where the " +
+              "pointer would be in the way.",
+          ),
         studioId: z
           .string()
           .optional()
@@ -109,7 +123,7 @@ export function registerInputTools(context: ToolContext): void {
     async (args): Promise<ToolResult> => {
       const response = await bridge.call<InputResponse>(
         "input.send",
-        { steps: args.steps, player: args.player },
+        { steps: args.steps, player: args.player, cursor: args.cursor },
         // The plugin waits for the client's acknowledgement, and the steps
         // themselves can hold keys for seconds, so the deadline must outlast both.
         { studioId: args.studioId, timeoutMs: 90_000 },

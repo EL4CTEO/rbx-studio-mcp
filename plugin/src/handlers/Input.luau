@@ -28,6 +28,7 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
+local CursorImage = require(script.Parent.Parent.CursorImage)
 local Dispatch = require(script.Parent.Parent.Dispatch)
 
 local Input = {}
@@ -45,6 +46,20 @@ local MAX_HOLD = 10
 	source, so a key called `A) print("owned") --` would run. The plan travels as
 	JSON on an attribute instead, and this script only ever indexes enums by name
 	and checks the result.
+]]
+--[[
+	The relay, fixed rather than generated.
+
+	Building Luau from the request would mean pasting caller-supplied names into
+	source, so a key called `A) print("owned") --` would run. The plan travels as
+	JSON on an attribute instead, and this script only ever indexes enums by name
+	and checks the result.
+
+	It also draws the pointer. Synthetic mouse input moves nothing the eye can
+	follow -- the click lands and the only evidence is whatever it changed -- so
+	anyone watching a playtest being driven sees results with no cause. The
+	cursor is a real ImageLabel tweened to each target before the click is sent,
+	which makes the agent's aim visible and, when it misses, visibly wrong.
 ]]
 local RELAY_SOURCE = [==[
 local UserInputService = game:GetService("UserInputService")
@@ -67,6 +82,106 @@ end
 local virtual = UserInputService:CreateVirtualInput()
 local performed = {}
 
+--[[
+	The on-screen pointer.
+
+	Pixels rather than an asset id: a LocalScript cannot decode a PNG, and
+	uploading one would put a manual step between installing this and having a
+	cursor. They arrive base64'd in a StringValue and become an EditableImage.
+]]
+local cursor = nil
+local cursorGui = nil
+local hotspot = Vector2.new(0.08, 0.06)
+
+local function makeCursor()
+	local holder = relay:FindFirstChild("CursorPixels")
+	if holder == nil then
+		return
+	end
+
+	local ok, image = pcall(function()
+		local EncodingService = game:GetService("EncodingService")
+		local AssetService = game:GetService("AssetService")
+		local size = Vector2.new(48, 48)
+		local pixels = EncodingService:Base64Decode(buffer.fromstring(holder.Value))
+		local editable = AssetService:CreateEditableImage({ Size = size })
+		editable:WritePixelsBuffer(Vector2.zero, size, pixels)
+		return editable
+	end)
+	if not ok then
+		return
+	end
+
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "MCPCursor"
+	gui.ResetOnSpawn = false
+	gui.IgnoreGuiInset = true
+	gui.DisplayOrder = 2147483647
+	gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
+	local label = Instance.new("ImageLabel")
+	label.Name = "Pointer"
+	label.BackgroundTransparency = 1
+	label.Size = UDim2.fromOffset(30, 30)
+	label.AnchorPoint = hotspot
+	label.Position = UDim2.fromScale(0.5, 0.5)
+	label.ImageContent = Content.fromObject(image)
+	label.ZIndex = 100
+	label.Parent = gui
+
+	gui.Parent = relay.Parent
+	cursorGui = gui
+	cursor = label
+end
+
+-- Moves the pointer there and waits, so the click is seen to be aimed.
+local function moveCursor(x, y, duration)
+	if cursor == nil then
+		return
+	end
+	local TweenService = game:GetService("TweenService")
+	local goal = UDim2.fromOffset(x, y)
+	local tween = TweenService:Create(
+		cursor,
+		TweenInfo.new(duration, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+		{ Position = goal }
+	)
+	tween:Play()
+	tween.Completed:Wait()
+end
+
+-- A ring that expands and fades where the click landed.
+local function pulse()
+	if cursor == nil then
+		return
+	end
+	local TweenService = game:GetService("TweenService")
+	local ring = Instance.new("Frame")
+	ring.AnchorPoint = Vector2.new(0.5, 0.5)
+	ring.Position = UDim2.new(cursor.Position.X.Scale, cursor.Position.X.Offset, cursor.Position.Y.Scale, cursor.Position.Y.Offset)
+	ring.Size = UDim2.fromOffset(8, 8)
+	ring.BackgroundColor3 = Color3.fromRGB(255, 162, 0)
+	ring.BackgroundTransparency = 0.25
+	ring.BorderSizePixel = 0
+	ring.ZIndex = 99
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(1, 0)
+	corner.Parent = ring
+	ring.Parent = cursorGui
+
+	local grow = TweenService:Create(
+		ring,
+		TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+		{ Size = UDim2.fromOffset(52, 52), BackgroundTransparency = 1 }
+	)
+	grow:Play()
+	grow.Completed:Connect(function()
+		ring:Destroy()
+	end)
+end
+
+makeCursor()
+
 for _, step in plan do
 	local kind = step.kind
 	if kind == "key" then
@@ -81,10 +196,15 @@ for _, step in plan do
 			end
 		end
 	elseif kind == "move" then
+		moveCursor(step.x, step.y, 0.22)
 		virtual:SendMousePosition(Vector2.new(step.x, step.y))
 	elseif kind == "click" then
 		local button = Enum.UserInputType[step.button or "MouseButton1"]
 		local at = Vector2.new(step.x, step.y)
+		-- Travel first, then click. Teleporting the pointer onto the target at
+		-- the same instant it fires looks like nothing happened at all.
+		moveCursor(step.x, step.y, 0.22)
+		pulse()
 		virtual:SendMousePosition(at)
 		virtual:SendMouseButton(at, button, true, 0)
 		if step.action ~= "press" then
@@ -98,6 +218,12 @@ for _, step in plan do
 	if step.after ~= nil and step.after > 0 then
 		task.wait(step.after)
 	end
+end
+
+-- Left up for a moment so the last action is still visible when the tool returns.
+task.wait(0.25)
+if cursorGui ~= nil then
+	cursorGui:Destroy()
 end
 
 report:FireServer({ ok = true, performed = performed })
@@ -236,6 +362,20 @@ function Input.send(params: { [string]: any }): { [string]: any }
 	relay.Source = RELAY_SOURCE
 	relay:SetAttribute("Plan", HttpService:JSONEncode(plan))
 	remote.Parent = relay
+
+	--[[
+		The pointer's pixels, as a child rather than an attribute.
+
+		12KB of base64 is comfortably inside what an attribute holds today, but
+		nothing about that limit is promised, and a cursor that silently stops
+		appearing when the image grows is a bad way to find out.
+	]]
+	if params.cursor ~= false then
+		local pixels = Instance.new("StringValue")
+		pixels.Name = "CursorPixels"
+		pixels.Value = CursorImage.base64
+		pixels.Parent = relay
+	end
 
 	local answer: { [string]: any }? = nil
 	local connection = remote.OnServerEvent:Connect(function(_from, payload)
