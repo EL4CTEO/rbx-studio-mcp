@@ -6,6 +6,7 @@ What changed in each release, written for people using the server rather than fo
 
 ### Fixed
 - **`geometry` (union/subtract/intersect) could report a path that did not exist.** The result's path was read while the source part it was built from — same name, not yet destroyed — was still its sibling, so it came back disambiguated as `Foo[2]`; the source was then destroyed, leaving the real result addressable as plain `Foo`. The tool's own reply pointed at a path that no longer resolved. Found live: `delete` on a path this same tool call had just returned failed with `NOT_FOUND`.
+- **`inspect` (the common case: no explicit `properties`, not `concise` detail) logged two identical "Inspect X" lines for one call.** It genuinely makes two plugin round trips — a cheap class probe, then the real read — and both were labelled the same, indistinguishable from asking twice by mistake. `modify` had the same problem: it probes a target's class before writing to type the values correctly, and that probe logged as a bare, unexplained "Inspect X" with no link back to the modify it was serving. Both now log as "Check the class of X".
 - **`debug clear` with just a `path` (no `line`) always failed, asking for a `line` regardless** — the documented "clear every breakpoint in this script" case was entirely unimplemented; only "one exact line" and "everything, session-wide" worked. The plugin now tracks which lines it has set per script and removes all of them for that one, without touching breakpoints anyone else set.
 
 ### Changed

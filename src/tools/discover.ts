@@ -202,7 +202,12 @@ export function registerDiscoverTools(context: ToolContext): void {
       if (!requested && args.detail !== "concise") {
         const probe = await bridge.call<InspectResponse>(
           "discover.inspect",
-          { paths: args.paths, includeChildren: false },
+          // probeOnly is inert on the plugin side; it only tells the console
+          // this is the class-probe half of one `inspect` call, not a second
+          // read. Without it two calls this close together, identically
+          // labelled "Inspect X", read as a duplicate rather than as the
+          // two-pass shape this genuinely is.
+          { paths: args.paths, includeChildren: false, probeOnly: true },
           { studioId: args.studioId },
         );
         const names = new Set<string>();

@@ -245,6 +245,18 @@ local DESCRIBERS: { [string]: Describer } = {
 		return if where ~= nil then "Browse " .. where else "Browse the place"
 	end,
 	["discover.inspect"] = function(params)
+		--[[
+			`inspect` (no explicit `properties`, not concise detail) and `modify`
+			(when setting properties) both probe a class before doing the thing
+			the caller actually asked for -- reading the properties that matter
+			for it, or typing the values it is about to write. That probe is a
+			second, genuine call to this same op, and unmarked it logged
+			identically to the read it precedes: two lines reading "Inspect X"
+			back to back, indistinguishable from asking twice by mistake.
+		]]
+		if params.probeOnly == true then
+			return "Check the class of " .. subjectOf(params.paths, "instance")
+		end
 		return "Inspect " .. subjectOf(params.paths, "instance")
 	end,
 	["discover.find"] = function(params)

@@ -246,7 +246,14 @@ export function registerInstanceTools(context: ToolContext): void {
           items: Array<{ path: string; requested?: string; className: string }>;
         }>(
           "discover.inspect",
-          { paths: args.targets.flatMap((target) => target.paths), includeChildren: false },
+          // probeOnly: this is `modify` learning what it is about to change,
+          // not the agent asking to inspect anything — see discover.ts for
+          // why the console needs to be told apart the two.
+          {
+            paths: args.targets.flatMap((target) => target.paths),
+            includeChildren: false,
+            probeOnly: true,
+          },
           { studioId: args.studioId },
         );
         // Correlated on the path we asked about, not the one that came back. The
