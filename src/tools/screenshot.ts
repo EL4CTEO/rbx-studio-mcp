@@ -57,13 +57,11 @@ export function registerScreenshotTools(context: ToolContext): void {
         "their camera angle, not a framing of your choosing. Frame the subject " +
         "with `viewport op=\"focus\"` first — that is what makes this tool " +
         "worth calling.\n\n" +
-        "NOT AVAILABLE WHILE A PLAYTEST IS RUNNING. Studio only lets a client " +
-        "session capture the screen, and it forbids client sessions from making " +
-        "HTTP requests, so no session that can be reached is allowed to take the " +
-        "picture: the playtest server refuses outright and the editor session " +
-        "times out, because the window is no longer rendering its data model. " +
-        "Stop the playtest and screenshot in edit mode, or read the running game " +
-        "through `character`, `console` and `find` instead.",
+        "Works during a playtest too — address it at the playtest's studioId and " +
+        "you get the player's own view, which is the only way to check what a GUI " +
+        "actually looks like in front of the game. That capture is taken on the " +
+        "client and relayed back, so it is a little slower and caps at 1000px " +
+        "wide; the caption says `playtest client` when it came from there.",
       inputSchema: {
         width: z
           .number()

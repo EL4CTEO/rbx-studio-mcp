@@ -161,7 +161,7 @@ Port defaults to **44755** — `--port` or `ROBLOX_STUDIO_MCP_PORT`, matched in 
 | **Look** | `screenshot` `viewport` `device` |
 | **Session** | `list_studios` `set_active_studio` |
 
-Gotchas: `screenshot` doesn't work mid-playtest. `debug` needs **API debugger Luau** in `File → Beta Features`. `device` emulation persists until `device op="stop"`.
+Gotchas: `debug` needs **API debugger Luau** in `File → Beta Features`. `device` emulation persists until `device op="stop"`. During a playtest two sessions connect — pass `studioId` explicitly, using the edit session for anything that must persist.
 
 ## Batching
 

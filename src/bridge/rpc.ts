@@ -4,6 +4,7 @@ import {
   AMBIGUOUS_STUDIO,
   DISCONNECTED,
   NO_STUDIO,
+  SAME_PLACE_STUDIO,
   TIMEOUT,
   ToolError,
 } from "../lib/errors.js";
@@ -192,7 +193,19 @@ export class Bridge {
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         session.pending.delete(command.id);
-        reject(TIMEOUT(op, timeoutMs));
+        // A bare "it timed out" leaves nowhere to go, and the interesting part
+        // is knowable here: whether the command ever left this process, and
+        // whether the plugin has said anything since. A command still sitting in
+        // the queue was never seen by Studio, which is a different fault from
+        // one Studio took and did not finish.
+        reject(
+          TIMEOUT(op, timeoutMs, {
+            delivered: session.queue.every((queued) => queued.id !== command.id),
+            silentForMs: Date.now() - session.lastSeenAt,
+            alsoInFlight: session.pending.size,
+            transport: session.stream ? "sse" : "poll",
+          }),
+        );
       }, timeoutMs);
 
       session.pending.set(command.id, {
@@ -272,15 +285,27 @@ export class Bridge {
       const session = this.sessions.get(this.activeStudioId);
       if (session) return session;
     }
-    throw AMBIGUOUS_STUDIO(
-      // The context is the part that decides it. Two rows reading "Untitled
-      // Experience" are indistinguishable, and picking the playtest means work
-      // that disappears when it stops.
-      this.list().map(
-        (session) =>
-          `${session.studioId} (${session.placeName}${session.context ? `, ${session.context}` : ""})`,
-      ),
+    const connected = this.list();
+
+    // The context is the part that decides it. Two rows reading "Untitled
+    // Experience" are indistinguishable, and picking the playtest means work
+    // that disappears when it stops.
+    const rows = connected.map(
+      (session) =>
+        `${session.studioId} (${session.placeName}${session.context ? `, ${session.context}` : ""})`,
     );
+
+    // A playtest is not a second place. Starting one connects a second session
+    // on the same placeId, and telling the agent to go and ask which place the
+    // user means is then a question with no answer -- there is one place, in two
+    // states, and which to use follows from what is being asked rather than from
+    // anything the user knows.
+    const places = new Set(connected.map((session) => session.placeId));
+    if (places.size === 1 && connected.length > 1) {
+      throw SAME_PLACE_STUDIO(rows);
+    }
+
+    throw AMBIGUOUS_STUDIO(rows);
   }
 
   private deliver(session: Session, command: Command): void {
