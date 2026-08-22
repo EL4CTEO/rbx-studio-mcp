@@ -2,18 +2,21 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
-## Unreleased
+## 0.2.0
+
+A pass on console accuracy and a few real bugs found while doing it.
 
 ### Fixed
-- **`geometry` (union/subtract/intersect) could report a path that did not exist.** The result's path was read while the source part it was built from — same name, not yet destroyed — was still its sibling, so it came back disambiguated as `Foo[2]`; the source was then destroyed, leaving the real result addressable as plain `Foo`. The tool's own reply pointed at a path that no longer resolved. Found live: `delete` on a path this same tool call had just returned failed with `NOT_FOUND`.
-- **`inspect` (the common case: no explicit `properties`, not `concise` detail) logged two identical "Inspect X" lines for one call.** It genuinely makes two plugin round trips — a cheap class probe, then the real read — and both were labelled the same, indistinguishable from asking twice by mistake. `modify` had the same problem: it probes a target's class before writing to type the values correctly, and that probe logged as a bare, unexplained "Inspect X" with no link back to the modify it was serving. Both now log as "Check the class of X".
-- **`debug clear` with just a `path` (no `line`) always failed, asking for a `line` regardless** — the documented "clear every breakpoint in this script" case was entirely unimplemented; only "one exact line" and "everything, session-wide" worked. The plugin now tracks which lines it has set per script and removes all of them for that one, without touching breakpoints anyone else set.
+- `geometry` (union/subtract/intersect) could return a path that didn't exist.
+- `inspect` and `modify` logged an internal probe call as a bare, misleading "Inspect X".
+- `debug clear` with just a `path` (no `line`) always failed instead of clearing that script.
+- The console described ~10 ops (`input`, `device.*`, `api.*`, `perf.scene`, `studio.transport`, capture internals) by raw wire name only.
+- `playtest stop`'s teardown poll logged as "Check the playtest" with no "stop" line anywhere.
+- The plugin's protocol version was sent but never checked; a rejected handshake showed a generic error instead of the real reason.
 
 ### Added
-- **`collision` can now `remove` a group.** `PhysicsService:UnregisterCollisionGroup` has always existed; the tool never exposed it, so any group created during a session — including by mistake, or just to try something — stayed registered in the place permanently, with no way back short of `execute_luau`.
-
-### Changed
-- **`instances.create`, `instances.modify` and `instances.move` describe what actually happened, not just that something did.** Create now names the class ("Create ScreenGui" instead of whatever the caller happened to name it); modify names the properties or attributes that changed ("Set Color on Sword"); move/clone says the destination name when a rename happened in the same call, since the old text described an instance that was never created under that name.
+- `collision` can now `remove` a group — previously created-only, permanent for the place.
+- `create`, `modify`, `move` describe what actually changed (class, properties, rename), not just that something did.
 
 ## 0.1.8
 
