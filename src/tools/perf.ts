@@ -322,14 +322,35 @@ export function registerPerfTools(context: ToolContext): void {
           );
         }
         if (response.scripts.length === 0) {
+          /*
+           * An empty result has two very different causes, and this reported
+           * both as "No coverage recorded yet".
+           *
+           * `notMeasurable` covers a script the profiler holds a record for
+           * with zero instrumented lines. But one that was already compiled
+           * when instrumentation was switched on has no record AT ALL, so it
+           * never reaches `scripts` and the array comes back empty -- which
+           * reads as "your code did not run" for code that demonstrably did.
+           * Observed on a Script in ServerScriptService: it printed all the
+           * way through a playtest and coverage reported nothing.
+           *
+           * Whatever the session was asked to instrument is named here, with
+           * the reason, so the answer is never silence.
+           */
+          const asked = response.remembered ?? response.enabled ?? [];
+          const unmeasurable =
+            asked.length > 0
+              ? "\nNothing was instrumented for: " +
+                asked.join(", ") +
+                ".\nThe usual cause is that these compiled before instrumentation was switched on — Luau binds coverage at first compile and keeps the bytecode it built. A script that starts with the place always does, so it cannot be measured by the session that loaded it. Modules required later can be: enable them, start the playtest, then read coverage back from the playtest's studioId."
+              : "";
           return text(
             (response.enabled.length > 0
               ? `Coverage enabled for ${response.enabled.length} script(s). `
               : "") +
-              "No coverage recorded yet.\n" +
-              "Coverage is recorded per session. If the code runs in a playtest, " +
-              "read it back from the playtest's studioId — the editor session " +
-              "instruments its own data model and never ran that code.\n" +
+              "No coverage recorded yet." +
+              unmeasurable +
+              "\nCoverage is recorded per session. If the code runs in a playtest, read it back from the playtest's studioId — the editor session instruments its own data model and never ran that code.\n" +
               `This session carried over: ${JSON.stringify(response.carriedOver ?? [])}; ` +
               `failed: ${JSON.stringify(response.carriedFailed ?? [])}; ` +
               `remembered: ${JSON.stringify(response.remembered ?? [])}.`,

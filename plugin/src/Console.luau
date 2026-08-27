@@ -433,7 +433,16 @@ end
 	activity is inference, and is worded as inference.
 ]]
 function Console.agentFinished()
-	Console.log("ok", "Agent finished task.", "client left")
+	--[[
+		Named for what happened, not for what it might have meant.
+
+		This said "Agent finished task." and that was overclaiming: the bridge
+		sees a client disconnect and nothing more. Quitting the editor, a crash
+		and a restart all arrive here identically, and the first time one was
+		watched live it announced a completed task for an agent that had simply
+		been closed mid-idle.
+	]]
+	Console.log("ok", "Agent disconnected.", "client left")
 	Visuals.setQuiet()
 end
 

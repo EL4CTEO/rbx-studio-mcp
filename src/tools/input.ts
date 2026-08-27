@@ -3,6 +3,8 @@ import { json, type ToolResult } from "../lib/format.js";
 import { defineTool, type ToolContext } from "../lib/tool.js";
 
 interface InputResponse {
+  /** Present only while a device is emulated; see the note built below. */
+  emulation?: { id: string; resolution: string; orientation?: string };
   delivered: boolean;
   steps: number;
   player: string;
@@ -129,7 +131,23 @@ export function registerInputTools(context: ToolContext): void {
         { studioId: args.studioId, timeoutMs: 90_000 },
       );
 
-      return json(response, "Delivered on the client and confirmed back. Read the result with `character op=\"state\"`, `console`, or `screenshot`.");
+      /*
+       * A click can be delivered and still hit nothing while a device is
+       * emulated, so the emulation is called out rather than left to be
+       * discovered.
+       *
+       * Pointer events are interpreted in the emulated device's resolution,
+       * while `screenshot` returns the viewport's pixels -- 780x360 against
+       * 689x318 for a Galaxy S25 Ultra. Taking coordinates off a screenshot,
+       * which is exactly what this tool tells you to do, therefore misses by
+       * that ratio. Keys are unaffected: they carry no coordinates.
+       */
+      const emulated = response.emulation;
+      const note = emulated
+        ? "Delivered on the client and confirmed back. NOTE: " + emulated.id + " is being emulated at " + emulated.resolution +
+          ". Click coordinates are read in that device resolution, while `screenshot` returns the viewport's own pixels, so coordinates taken from a screenshot must be scaled by (device width / screenshot width) or they land short of the target. Keys are unaffected. `device op=\"stop\"` removes the discrepancy."
+        : "Delivered on the client and confirmed back. Read the result with `character op=\"state\"`, `console`, or `screenshot`.";
+      return json(response, note);
     },
   );
 }

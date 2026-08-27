@@ -29,6 +29,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
 local Dispatch = require(script.Parent.Parent.Dispatch)
+local Emulation = require(script.Parent.Parent.Emulation)
 
 local Input = {}
 
@@ -441,6 +442,20 @@ function Input.send(params: { [string]: any }): { [string]: any }
 		steps = #plan,
 		player = player.Name,
 		performed = result.performed,
+		--[[
+			Reported so the caller can tell why a click that was delivered still
+			hit nothing.
+
+			Measured, not assumed: with a Galaxy S25 Ultra emulated, a click at
+			the coordinates a screenshot showed landed short every time, and the
+			same click with the emulation off landed exactly. The pointer events
+			are interpreted in the emulated device's own resolution -- 780x360
+			here -- while a screenshot comes back in the viewport's pixels,
+			689x318, so every coordinate is out by the ratio between them. Keys
+			are unaffected because they carry no coordinates, which is what made
+			this look like a GUI fault rather than an input one.
+		]]
+		emulation = Emulation.summary(),
 	}
 end
 

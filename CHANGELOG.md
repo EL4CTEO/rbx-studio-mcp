@@ -2,6 +2,16 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.2.6
+
+Four places where a tool told you something that wasn't true.
+
+### Fixed
+- **`input` clicks miss while a device is emulated.** Pointer coordinates are read in the emulated device's resolution, but `screenshot` returns the viewport's own pixels — 780x360 against 689x318 on a Galaxy S25 Ultra — so coordinates taken from a screenshot land short of the target. `input` now reports the emulation and says how to scale, or use `device op="stop"`. Keys were never affected, which is what made it look like a GUI fault.
+- **`perf coverage` reported "no coverage recorded yet" for code that demonstrably ran.** A script already compiled when instrumentation was switched on gets no record at all, so it never reaches the results. The scripts the session was asked to instrument are now named, with the reason.
+- **`list_studios` told the agent to ask the user which place they mean when only one place was open.** Two sessions on one placeId is an editor and its playtest, and the next call would have said so; the listing that comes first said the opposite. Both now give the same answer: pass `studioId` explicitly, edit session for anything that must outlive the playtest.
+- **The console announced "Agent finished task." for an agent that had simply been closed.** The bridge sees a client disconnect and nothing more — quitting, a crash and a restart all arrive identically. It now says "Agent disconnected."
+
 ## 0.2.5
 
 The console panel reacts to what the session is doing, reports how many agents share it, and says what a latency bar was.

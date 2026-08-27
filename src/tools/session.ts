@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { json, text, type ToolResult } from "../lib/format.js";
 import { pluginStalenessWarning } from "../lib/pluginbuild.js";
-import { protocolMismatchWarning } from "../lib/protocol.js";
+import { protocolMismatchWarning, type StudioSession } from "../lib/protocol.js";
 import { defineTool, type ToolContext } from "../lib/tool.js";
 
 /** Snapshot the plugin returns for `studio.status`. */
@@ -31,6 +31,35 @@ interface StudioStatus {
     selectedText?: string;
     visibleLines?: string;
   }>;
+}
+
+/**
+ * What to tell the agent when this listing leaves no default target.
+ *
+ * Two sessions on one placeId is an editor and its own playtest, and telling
+ * the agent to go and ask the user which place they mean is a question with no
+ * answer -- there is one place, in two states. `resolveSession` already knew
+ * that and raised SAME_PLACE_STUDIO with real guidance, but this listing, which
+ * is what an agent reads *before* it gets that far, gave the opposite advice.
+ * Asking the user was the first thing it said, and the error it would hit next
+ * says in as many words not to. Same wording in both places now.
+ */
+function listingHint(sessions: StudioSession[], active: string | null): string | undefined {
+  if (active !== null || sessions.length <= 1) return undefined;
+
+  const places = new Set(sessions.map((session) => session.placeId));
+  if (places.size === 1) {
+    return (
+      "This is one place with a playtest running, not two places — do not ask " +
+      "the user which they mean. Pass `studioId` explicitly: the *edit* session " +
+      "for anything that must outlive the playtest, the *playtest* session for " +
+      "the running game."
+    );
+  }
+  return (
+    "Several places are open and none is selected. Ask the user which one they " +
+    "mean, then call set_active_studio."
+  );
 }
 
 export function registerSessionTools(context: ToolContext): void {
@@ -171,10 +200,7 @@ export function registerSessionTools(context: ToolContext): void {
           })),
           activeStudioId: active,
         },
-        active === null && sessions.length > 1
-          ? "No place is selected. Ask the user which one they mean, then call " +
-              "set_active_studio."
-          : undefined,
+        listingHint(sessions, active),
       );
     },
   );
