@@ -11,10 +11,47 @@ interface InputResponse {
    * come back nil on its own, so a device can be known while its size is not.
    */
   emulation?: { id: string; resolution?: string; orientation?: string };
+  /** Where the client read the last click, against where it was aimed. */
+  landed?: { sent: { x: number; y: number }; seen: { x: number; y: number } };
   delivered: boolean;
   steps: number;
   player: string;
   performed?: string[];
+}
+
+/**
+ * The gap between where a click was aimed and where the client read it.
+ *
+ * Returned rather than corrected because it cannot be predicted. Measured
+ * against a live playtest, sending (300,300):
+ *
+ *   Galaxy S25 Ultra, landscape  viewport 685x338  read at (253,242)
+ *   iPhone 16, portrait          viewport 391x758  read at (300,183)
+ *   no device emulated                             read at (300,242)
+ *
+ * A constant translation in every case, never a scale -- four points spanning
+ * the viewport gave the same delta to the pixel. But the translation changes
+ * with the device and the orientation, and fits no formula over resolution,
+ * viewport and GUI inset that holds for both phones: the horizontal term is
+ * (device - viewport) / 2 and the vertical term is not.
+ *
+ * An earlier version of this file claimed the error was the ratio between the
+ * device resolution and the screenshot's, which is wrong, and wrong in a way
+ * that happens to land close to correct in the middle of the screen where it
+ * was first observed. Reporting the measurement retires the guesswork: aim
+ * once, read the delta, correct.
+ */
+function landingNote(landed: NonNullable<InputResponse["landed"]>): string {
+  const dx = landed.seen.x - landed.sent.x;
+  const dy = landed.seen.y - landed.sent.y;
+  if (dx === 0 && dy === 0) {
+    return ` The last click was aimed at (${landed.sent.x}, ${landed.sent.y}) and the client read it there, so screen coordinates are landing exactly.`;
+  }
+  return (
+    ` COORDINATES ARE OFFSET: the last click was aimed at (${landed.sent.x}, ${landed.sent.y}) and the client read it at (${landed.seen.x}, ${landed.seen.y}) — ` +
+    `off by (${dx}, ${dy}). Add (${-dx}, ${-dy}) to coordinates taken from a \`screenshot\` to hit what you are aiming at. ` +
+    "The offset is constant across the viewport but changes with the device and orientation, so re-read it from this field after either changes."
+  );
 }
 
 export function registerInputTools(context: ToolContext): void {
@@ -138,33 +175,37 @@ export function registerInputTools(context: ToolContext): void {
       );
 
       /*
-       * A click can be delivered and still hit nothing while a device is
-       * emulated, so the emulation is called out rather than left to be
-       * discovered.
+       * A click can be delivered and still hit nothing, so the two things that
+       * explain it are said here rather than left to be discovered: what the
+       * viewport is pretending to be, and where the click was actually read.
        *
-       * Pointer events are interpreted in the emulated device's resolution,
-       * while `screenshot` returns the viewport's pixels -- 780x360 against
-       * 689x318 for a Galaxy S25 Ultra. Taking coordinates off a screenshot,
-       * which is exactly what this tool tells you to do, therefore misses by
-       * that ratio. Keys are unaffected: they carry no coordinates.
+       * Keys are never affected. They carry no coordinates, which is what made
+       * this look like a GUI fault rather than an input one.
        */
       const emulated = response.emulation;
-      const delivered = "Delivered on the client and confirmed back.";
-      let note = `${delivered} Read the result with \`character op="state"\`, \`console\`, or \`screenshot\`.`;
+      const parts = ["Delivered on the client and confirmed back."];
       if (emulated) {
-        // Named without its size when the size is unknown. "emulated at
-        // undefined" is worse than saying nothing about the resolution, and the
-        // warning still stands without the number -- the mismatch is caused by
-        // the emulation, not by any particular figure.
-        note =
-          `${delivered} NOTE: ${emulated.id} is being emulated` +
-          (emulated.resolution ? ` at ${emulated.resolution}` : "") +
-          ". Click coordinates are read in the emulated device's resolution, while " +
-          "`screenshot` returns the viewport's own pixels, so coordinates taken from a " +
-          "screenshot must be scaled by (device width / screenshot width) or they land " +
-          'short of the target. Keys are unaffected. `device op="stop"` removes the ' +
-          "discrepancy.";
+        parts.push(
+          `NOTE: ${emulated.id} is being emulated` +
+            (emulated.resolution ? ` at ${emulated.resolution}` : "") +
+            '. `device op="stop"` returns the viewport to normal.',
+        );
       }
+      if (response.landed) {
+        parts.push(landingNote(response.landed).trim());
+      } else if (response.performed?.some((kind) => kind === "click")) {
+        // A click went out and the client reported reading no pointer event at
+        // all. That is the loud case -- it means the click did not register,
+        // not that it landed somewhere unhelpful.
+        parts.push(
+          "WARNING: a click was sent but the client read no pointer event for it, " +
+            "so it did not register at all. Check that a playtest is actually in " +
+            "focus and that nothing is covering the target.",
+        );
+      } else {
+        parts.push('Read the result with `character op="state"`, `console`, or `screenshot`.');
+      }
+      const note = parts.join(" ");
       return json(response, note);
     },
   );

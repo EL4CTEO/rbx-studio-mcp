@@ -75,6 +75,36 @@ local virtual = UserInputService:CreateVirtualInput()
 local performed = {}
 
 --[[
+	Where the client actually read the last pointer event, against where it was
+	aimed.
+
+	Measured, because it cannot be derived. A click sent at (300,300) with a
+	Galaxy S25 Ultra emulated is read at (253,242); the same click with an
+	iPhone 16 in portrait is read at (300,183). Constant per configuration, and
+	fitting no formula over device resolution, viewport size and GUI inset that
+	holds for both -- the horizontal term matches (device - viewport) / 2 and
+	the vertical term does not.
+
+	So it is reported rather than predicted. The caller aims once, sees where it
+	landed, and corrects; that works on every device, in both orientations, and
+	with no device emulated at all, which no formula here has managed.
+
+	`InputBegan` rather than `GetMouseLocation`: the latter is frozen at the
+	last real click under touch emulation -- twenty samples across two sent
+	moves never changed it -- and is offset from `InputBegan.Position` by the
+	GUI inset besides. Phone emulation also turns MouseEnabled off and delivers
+	these as Touch, so both types are watched.
+]]
+local landed = nil
+local aimed = nil
+UserInputService.InputBegan:Connect(function(input)
+	local kind = input.UserInputType
+	if aimed ~= nil and (kind == Enum.UserInputType.MouseButton1 or kind == Enum.UserInputType.Touch) then
+		landed = { sent = aimed, seen = { x = input.Position.X, y = input.Position.Y } }
+	end
+end)
+
+--[[
 	The on-screen pointer.
 
 	Roblox's own arrow texture, not one of ours. Shipping the pixels was tried
@@ -241,6 +271,7 @@ for _, step in plan do
 	elseif kind == "click" then
 		local button = Enum.UserInputType[step.button or "MouseButton1"]
 		local at = Vector2.new(step.x, step.y)
+		aimed = { x = step.x, y = step.y }
 		-- Travel first, then click. Teleporting the pointer onto the target at
 		-- the same instant it fires looks like nothing happened at all.
 		moveCursor(step.x, step.y, 0.3)
@@ -266,7 +297,7 @@ if cursorGui ~= nil then
 	cursorGui:Destroy()
 end
 
-report:FireServer({ ok = true, performed = performed })
+report:FireServer({ ok = true, performed = performed, landed = landed })
 ]==]
 
 local function playerFor(name: string?): Player
@@ -443,19 +474,13 @@ function Input.send(params: { [string]: any }): { [string]: any }
 		player = player.Name,
 		performed = result.performed,
 		--[[
-			Reported so the caller can tell why a click that was delivered still
-			hit nothing.
-
-			Measured, not assumed: with a Galaxy S25 Ultra emulated, a click at
-			the coordinates a screenshot showed landed short every time, and the
-			same click with the emulation off landed exactly. The pointer events
-			are interpreted in the emulated device's own resolution -- 780x360
-			here -- while a screenshot comes back in the viewport's pixels,
-			689x318, so every coordinate is out by the ratio between them. Keys
-			are unaffected because they carry no coordinates, which is what made
-			this look like a GUI fault rather than an input one.
+			Named so the caller can tell why a click that was delivered still hit
+			nothing. `landed` carries the arithmetic; this says what to turn off.
 		]]
 		emulation = Emulation.summary(),
+		-- Where the client read the last click, against where it was aimed. See
+		-- the note in RELAY_SOURCE for why this is measured and not computed.
+		landed = result.landed,
 	}
 end
 

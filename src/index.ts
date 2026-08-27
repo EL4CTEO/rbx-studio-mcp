@@ -56,6 +56,14 @@ function installPlugin(): void {
   );
 }
 
+/**
+ * How often to check the MCP client that spawned this process is still alive.
+ *
+ * Slow on purpose: this only has to beat "forever", and the cost of being wrong
+ * about a recycled pid is shutting down a server somebody is using.
+ */
+const ORPHAN_CHECK_MS = 60_000;
+
 async function main(): Promise<void> {
   if (process.argv.includes("--install-plugin")) {
     installPlugin();
@@ -158,6 +166,36 @@ async function main(): Promise<void> {
    * long enough to finish sending it.
    */
   process.stdin.on("end", () => void shutdown());
+
+  /*
+   * The same hang-up, for a client that was killed rather than closed.
+   *
+   * `end` covers a clean exit. It does not cover the parent dying without its
+   * side of the pipe being closed -- and when that happens this process lives
+   * on forever: it keeps the bridge port bound, and `LocalBridge` keeps
+   * re-registering it every 30s, so the staleness reaper never sweeps it and
+   * the Studio console shows an agent that left hours ago. Found exactly that
+   * way: two server processes alive, the older one from a session that had
+   * long since ended, and the panel truthfully reporting two clients.
+   *
+   * Guarded on stdin being a pipe. That is what says an MCP client is driving
+   * this process, and it keeps the check away from a server started detached
+   * from a shell that exits immediately -- there, a vanished parent is normal
+   * and shutting down would be the bug.
+   */
+  if (!process.stdin.isTTY && process.ppid > 0) {
+    const parent = process.ppid;
+    const orphanWatch = setInterval(() => {
+      try {
+        // Signal 0 tests for existence without delivering anything.
+        process.kill(parent, 0);
+      } catch {
+        clearInterval(orphanWatch);
+        void shutdown();
+      }
+    }, ORPHAN_CHECK_MS);
+    orphanWatch.unref();
+  }
 
   // stdout belongs to the MCP transport from here on; nothing else may write to it.
   await server.connect(new StdioServerTransport());
