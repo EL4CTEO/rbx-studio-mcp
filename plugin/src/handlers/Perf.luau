@@ -480,13 +480,15 @@ function Perf.coverage(params: { [string]: any }): { [string]: any }
 			--[[
 				Zero instrumented lines is not "already compiled when coverage
 				was switched on". That was the earlier reading here and it is
-				wrong: measured against ScriptContext, a script that ran before
+				wrong: probed against ScriptContext, a script that ran before
 				being enabled gets NO record at all and never reaches this loop.
 
-				A record with zero instrumented lines is the opposite case -- the
-				script WAS registered, and the bytecode that ran was still built
-				without instrumentation. Either way it is unmeasured, which 0/0
-				would otherwise read as "none of this ran".
+				What it IS has not been pinned down. The session that produced
+				0-line records could not be made to produce them again -- the
+				same create/enable/require sequence instrumented 6 of 6 lines on
+				the next attempt -- so no cause is claimed here. The flag exists
+				because 0/0 and 0/many render identically and mean opposite
+				things: no data, versus nothing ran.
 			]]
 			notMeasurable = if instrumented == 0 then true else nil,
 		})

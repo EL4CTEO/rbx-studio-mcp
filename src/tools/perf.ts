@@ -43,7 +43,11 @@ interface CoverageResponse {
     percent: number;
     /** Line numbers that were instrumented but never executed. */
     uncoveredLines?: number[];
-    /** Compiled before coverage was on, so no line of it can be measured. */
+    /**
+     * Studio holds a record for this script but instrumented no line of it, so
+     * there is no data either way. Not the same as "compiled before coverage
+     * was on" — that case produces no record at all.
+     */
     notMeasurable?: boolean;
   }>;
   raw?: unknown;
@@ -359,9 +363,20 @@ export function registerPerfTools(context: ToolContext): void {
               "that loaded it. Modules required later can be: enable them, start the " +
               "playtest, then read from the playtest's studioId.";
 
+          // `enable: []` is a request to stop, and with nothing to report the
+          // caller otherwise gets a message that never mentions the thing they
+          // just asked for -- indistinguishable from the call being ignored.
+          const stopped =
+            args.enable !== undefined && args.enable.length === 0
+              ? "\nInstrumentation is now off for this place: no future session " +
+                "will switch it on. Scripts already instrumented in a running " +
+                "session keep reporting until it ends."
+              : "";
+
           const failed = response.carriedFailed ?? [];
           return text(
             lead +
+              stopped +
               (response.carriedOver && response.carriedOver.length > 0
                 ? `\nThis session instrumented at load: ${response.carriedOver.join(", ")}.`
                 : "") +
@@ -405,19 +420,27 @@ export function registerPerfTools(context: ToolContext): void {
         }
         if (misses.length > 0) sections.push(`Lines never executed:\n${misses.join("\n")}`);
         if (unmeasured.length > 0) {
-          // Not "already compiled when coverage was switched on": that case
-          // produces no record at all, measured directly against ScriptContext.
-          // A record with zero instrumented lines means the opposite -- the
-          // script WAS registered, and the bytecode that ran was still built
-          // without instrumentation.
+          /*
+           * What this is NOT is settled; what it is, is not.
+           *
+           * It is not "already compiled when coverage was switched on", which
+           * is what this said before: probed against ScriptContext, a script
+           * that ran before being enabled gets no record at all and never
+           * reaches this branch. That much is reproducible.
+           *
+           * The positive cause is not. The one session that produced 0-line
+           * records could not be made to produce them again -- the identical
+           * create/enable/require sequence instrumented 6 of 6 lines the next
+           * time. So the wording stops at what the number means for the reader
+           * and does not name a mechanism nobody has reproduced twice.
+           */
           sections.push(
-            `Not measurable, reported as 0 lines: ${unmeasured.map((e) => e.path).join(", ")}.
-` +
-              "Coverage was switched on for these and Studio holds a record for " +
-              "them, but not one line could be instrumented — the bytecode that " +
-              "ran was built without it, and Luau keeps a script's first build. " +
-              "Re-running does not help. Treat these as unmeasured rather than as " +
-              "dead code: 0 of 0 lines is not the same as 0 of many.",
+            `Not measurable, reported as 0 lines: ${unmeasured.map((e) => e.path).join(", ")}.\n` +
+              "Studio holds a coverage record for these but instrumented no line " +
+              "of them, so nothing about them was measured. Read it as no data, " +
+              "never as dead code — 0 of 0 lines is not 0 of many. If you need " +
+              "them covered, enable them and start a fresh playtest so they are " +
+              "instrumented before they first compile.",
           );
         }
 
