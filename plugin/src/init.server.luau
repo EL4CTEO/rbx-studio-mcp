@@ -1,6 +1,6 @@
 --!strict
 --[[
-	Studio MCP -- plugin entry point.
+	rbx-studio -- plugin entry point.
 
 	Owns the toolbar UI, this window's Studio identity, and the command loop.
 	Handlers do the actual work; this file only wires them to the transport and
@@ -121,10 +121,10 @@ Input.register()
 Device.register()
 Api.register()
 
-local toolbar = plugin:CreateToolbar("Studio MCP")
+local toolbar = plugin:CreateToolbar("rbx-studio")
 local button = toolbar:CreateButton(
-	"Studio MCP",
-	"Show the Studio MCP console",
+	"rbx-studio",
+	"Show the rbx-studio console",
 	"rbxasset://textures/ui/common/robux.png"
 )
 button.ClickableWhenViewportHidden = true
@@ -136,7 +136,7 @@ local widget = plugin:CreateDockWidgetPluginGuiAsync(
 	"StudioMCP_Console",
 	DockWidgetPluginGuiInfo.new(Enum.InitialDockState.Float, true, false, 560, 320, 360, 200)
 )
-widget.Title = "Studio MCP"
+widget.Title = "rbx-studio"
 
 local currentStatus: Transport.Status = "disconnected"
 
@@ -167,7 +167,7 @@ Console.mount(widget, {
 	end,
 })
 
-Console.log("info", string.format("Studio MCP v%s", Config.PLUGIN_VERSION), "build " .. Config.BUILD_ID)
+Console.log("info", string.format("rbx-studio v%s", Config.PLUGIN_VERSION), "build " .. Config.BUILD_ID)
 Console.log("dim", string.format("place: %s (%d)", game.Name, game.PlaceId))
 
 local function onStatus(status: Transport.Status, detail: string?)
@@ -210,12 +210,36 @@ local function onCommand(id: string, op: string, params: { [string]: any }?)
 			something needs debugging.
 		]]
 		local title = Phrase.of(op, params)
+		--[[
+			Announced synchronously, unlike the logging below.
+
+			Deferring this looked like free latency and was not. `beginCall` sets
+			two labels and some fields -- it never touches the RichText log, which
+			is where the cost actually is -- and deferring it let a call that
+			finished inside one frame record its result before the call had been
+			announced, so the bar on the trace lost the name it was supposed to
+			carry. A microsecond is not worth an ordering hazard.
+		]]
 		Console.beginCall(title, Phrase.kindOf(op))
 
 		local result = Dispatch.invoke(id, op, params)
-		local elapsed = string.format("%.0fms", (os.clock() - startedAt) * 1000)
+		local milliseconds = (os.clock() - startedAt) * 1000
 
-		Console.recordCall(result.ok, (os.clock() - startedAt) * 1000)
+		--[[
+			The answer goes out before the console hears about it.
+
+			This used to be the last line of the function, which put a
+			`table.concat` of three hundred strings, a RichText relayout of the
+			whole log, two `Instance.new` calls and a forty-bar relayout in front
+			of the reply on its way back to the agent. None of that is work the
+			caller asked for, and all of it was being billed to the round trip
+			this project measures. Drawing happens below, on time the agent is no
+			longer waiting for.
+		]]
+		Transport.sendResult(result)
+
+		local elapsed = string.format("%.0fms", milliseconds)
+		Console.recordCall(result.ok, milliseconds)
 
 		if result.ok then
 			Console.log("reply", title, elapsed)
@@ -230,9 +254,22 @@ local function onCommand(id: string, op: string, params: { [string]: any }?)
 				Console.log("dim", "   " .. err.message)
 			end
 		end
-
-		Transport.sendResult(result)
 	end)
+end
+
+--[[
+	Bridge news that is not a command.
+
+	Kept deliberately narrow: an unknown event is ignored rather than logged,
+	because a newer server talking to an older plugin is a supported situation
+	and "unknown event" rows would be the only symptom of it working correctly.
+]]
+local function onEvent(event: { [string]: any })
+	if event.event == "clients" and typeof(event.count) == "number" then
+		Console.setClients(event.count)
+	elseif event.event == "agent" and event.state == "finished" then
+		Console.agentFinished()
+	end
 end
 
 function connect()
@@ -249,7 +286,7 @@ function connect()
 		Console.setCaption("switch to the Server view to watch this playtest")
 		return
 	end
-	Transport.start(studioId(), { onCommand = onCommand, onStatus = onStatus })
+	Transport.start(studioId(), { onCommand = onCommand, onStatus = onStatus, onEvent = onEvent })
 	plugin:SetSetting(SETTING_AUTOCONNECT, true)
 end
 

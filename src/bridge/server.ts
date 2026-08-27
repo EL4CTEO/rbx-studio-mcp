@@ -55,6 +55,32 @@ export function startBridgeServer(
     void handle(bridge, req, res);
   });
 
+  /**
+   * No Nagle on the command channel.
+   *
+   * Every frame this server pushes is a couple of hundred bytes written to an
+   * otherwise idle socket, which is precisely the shape Nagle holds back
+   * waiting for more to send. The whole claim of this transport is that a
+   * command reaches Studio the instant it is issued, and it was being left to
+   * the kernel's discretion.
+   */
+  server.on("connection", (socket) => socket.setNoDelay(true));
+
+  /**
+   * Tells every streaming plugin how many agents now share it, and says so
+   * plainly when one leaves.
+   *
+   * The departure is the only moment this server can state that a session
+   * ended rather than paused, so it is the only thing it phrases as a fact.
+   */
+  let knownClients = bridge.clientCount();
+  bridge.watchClients((count) => {
+    const left = count < knownClients;
+    knownClients = count;
+    bridge.broadcast({ event: "clients", count });
+    if (left) bridge.broadcast({ event: "agent", state: "finished" });
+  });
+
   // Long-poll requests park for POLL_HOLD_MS; Node's 2-minute default would be
   // fine, but SSE streams must never be reaped by the server itself.
   server.headersTimeout = 0;
@@ -78,11 +104,17 @@ export function startBridgeServer(
         void probeOwner(port).then((existing) => {
           if (existing) {
             clearInterval(reaper);
+            const remote = new RemoteBridge(port, existing);
             resolve({
-              bridge: new RemoteBridge(port, existing),
+              bridge: remote,
               port,
               owner: false,
-              close: async () => clearInterval(reaper),
+              // The owner is a different process and outlives this one, so
+              // saying goodbye is the only way it learns this agent has gone.
+              close: async () => {
+                clearInterval(reaper);
+                await remote.goodbye();
+              },
             });
             return;
           }
@@ -160,6 +192,7 @@ async function handle(
         return await handlePeerCall(bridge, req, res);
       case "GET /sessions": {
         const clientId = peerId(req);
+        bridge.noteClient(clientId);
         return send(res, 200, {
           list: bridge.list(),
           activeId: bridge.activeId(clientId),
@@ -170,6 +203,14 @@ async function handle(
         return await handlePeerActive(bridge, req, res);
       case "POST /place-name":
         return await handlePeerPlaceName(bridge, req, res);
+      case "POST /hello":
+        // Registers a peer, and refreshes one already known. Peers call this on
+        // startup and on a keepalive, so it must be idempotent.
+        bridge.noteClient(peerId(req));
+        return send(res, 200, { ok: true, clients: bridge.clientCount() });
+      case "POST /goodbye":
+        bridge.forgetClient(peerId(req));
+        return send(res, 200, { ok: true, clients: bridge.clientCount() });
       case "POST /bye":
         bridge.detach(url.searchParams.get("studioId") ?? "");
         return send(res, 200, { ok: true });
@@ -314,6 +355,10 @@ async function handleEvents(
   res.write(`: connected ${PROTOCOL_VERSION}\n\n`);
 
   const studioId = bridge.attach(identity, res);
+  // Sent on connect, not only on change: a plugin that reconnects -- Studio
+  // caps a stream at thirty minutes, so every long session does -- would
+  // otherwise show a stale badge until the next agent came or went.
+  res.write(`data: ${JSON.stringify({ event: "clients", count: bridge.clientCount() })}\n\n`);
   const heartbeat = setInterval(() => {
     if (res.writableEnded) return;
     res.write(": ping\n\n");
@@ -340,7 +385,12 @@ async function handlePoll(
     return send(res, 409, { error: "unknown studioId", reconnect: true });
   }
   const command = await bridge.waitForCommand(studioId);
-  send(res, 200, command ? { command } : { idle: true });
+  // Poll sessions cannot be pushed to, so the count rides on the answer they
+  // were already waiting for. Sent every time rather than on change: the plugin
+  // ignores repeats, and a session parked through a change would otherwise
+  // never learn of it.
+  const clients = bridge.clientCount();
+  send(res, 200, command ? { command, clients } : { idle: true, clients });
 }
 
 async function handleResult(
@@ -443,6 +493,10 @@ async function handlePeerCall(
   };
   if (typeof body.op !== "string") return send(res, 400, { ok: false, error: { code: "BAD_PEER_CALL", message: "no op" } });
 
+  // A peer that predates /hello still counts, and one whose keepalive was lost
+  // in a restart re-registers itself simply by working.
+  bridge.noteClient(peerId(req));
+
   try {
     const data = await bridge.call(body.op, body.params ?? {}, {
       clientId: peerId(req),
@@ -462,6 +516,7 @@ async function handlePeerActive(
   res: ServerResponse,
 ): Promise<void> {
   const body = JSON.parse(await readBody(req)) as { studioId?: string };
+  bridge.noteClient(peerId(req));
   try {
     bridge.setActive(peerId(req), String(body.studioId ?? ""));
     return send(res, 200, { ok: true });

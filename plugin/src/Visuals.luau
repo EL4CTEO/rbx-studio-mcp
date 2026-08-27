@@ -123,9 +123,35 @@ local INNER_SCALE = 0.42
 -- The solid was originally as tall as the band and read as looming: it crowded
 -- the caption and made a 46px strip feel like a panel. It is an indicator, not
 -- the subject, so it sits small with air around it.
-Visuals.BAND_HEIGHT = 44
-local CELL = 34
+--
+-- Both grew when the solid learned to overshoot. `cell` clips its descendants,
+-- so a shape that swells to 1.4x has to have somewhere to swell into, and the
+-- extra band height goes to the trace, whose bars are what people try to point
+-- at.
+Visuals.BAND_HEIGHT = 52
+local CELL = 40
 local GUTTER = 16
+
+--[[
+	The solid's resting radius as a fraction of the cell.
+
+	Tuned against the new cell so resting size is unchanged: 40 x 0.185 is 7.4px
+	where 34 x 0.2 was 6.8px. At full overshoot the perspective divide pushes a
+	near vertex to roughly 15px, which still clears the cell's 20px half-width.
+]]
+local BASE_RADIUS = 0.185
+
+--[[
+	Spring constants for the scale. Stiff enough that a call reads as a snap
+	rather than a swell, damped just under critical so a reply overshoots once
+	and settles instead of ringing.
+]]
+local SPRING = 90
+local DAMPING = 14
+
+-- How long the session must go without a command before the solid winds down.
+-- Matches the console's idle notice, so the picture and the log agree.
+local QUIET_AFTER = 20
 
 -- How many calls the trace remembers. Forty is about a screen's width of bars
 -- at two pixels each, and about as far back as anyone reads a trend.
@@ -141,6 +167,10 @@ local SLOW_MS = 400
 -- rather than falling into a dead gap.
 local BAR_STRIDE = 5
 
+-- Height of the trace, and so of every bar's hit column. The taller band spends
+-- its extra pixels here: a 19px column was a small thing to aim a pointer at.
+local TRACE_HEIGHT = 26
+
 type Bar = {
 	frame: Frame,
 	--[[
@@ -153,6 +183,15 @@ type Bar = {
 	hit: TextButton,
 	milliseconds: number,
 	ok: boolean,
+	--[[
+		What ran, in the same words the log uses.
+
+		The trace plotted durations with nothing to attach them to, so a tall bar
+		raised the question it could not answer: forty numbers and no way to tell
+		which of them was the script edit. Carried per bar rather than looked up,
+		because the bar outlives whatever produced it.
+	]]
+	title: string,
 }
 
 type Runtime = {
@@ -174,6 +213,20 @@ type Runtime = {
 
 	energy: number,
 	shake: number,
+	--[[
+		The solid's size, as a spring rather than a value.
+
+		Scale was previously a small function of energy -- a 24% range that
+		nobody could see. Driving it as a spring means each event can push it and
+		let physics do the rest: a dispatch pulls it in, a reply throws it out
+		past its resting size, and it settles on its own.
+	]]
+	scale: number,
+	scaleVelocity: number,
+	-- Brightens and fattens the vertices for a moment after a call lands.
+	flare: number,
+	-- Seconds since anything last ran. Drives the wind-down.
+	quiet: number,
 	tint: Color3,
 	targetTint: Color3,
 	baseTint: Color3,
@@ -200,6 +253,10 @@ local runtime: Runtime = {
 	shapeIndex = 1,
 	energy = 0,
 	shake = 0,
+	scale = 1,
+	scaleVelocity = 0,
+	flare = 0,
+	quiet = 0,
 	tint = Color3.fromRGB(167, 139, 250),
 	targetTint = Color3.fromRGB(167, 139, 250),
 	baseTint = Color3.fromRGB(167, 139, 250),
@@ -251,7 +308,16 @@ local function step(delta: number)
 
 	runtime.energy = math.max(0, runtime.energy - delta * 0.9)
 	runtime.shake = math.max(0, runtime.shake - delta * 2.4)
-	runtime.activity = math.max(0, runtime.activity - delta * 0.35)
+	--[[
+		Slower than it was. The shape is meant to climb as the session works, and
+		at the old rates a call had to arrive every three seconds just to hold the
+		octahedron -- so the icosahedron at the top of the list was, in practice,
+		unreachable. A burst of four calls now gets there, and it unwinds over
+		about ten seconds afterwards.
+	]]
+	runtime.activity = math.max(0, runtime.activity - delta * 0.28)
+	runtime.flare = math.max(0, runtime.flare - delta * 3)
+	runtime.quiet += delta
 	--[[
 		Two colours, blended by how recently something happened.
 
@@ -268,14 +334,52 @@ local function step(delta: number)
 
 	-- Turning faster while busy makes the rate itself readable: a glance says
 	-- whether anything is happening without reading a word.
-	runtime.angle += runtime.spin * delta * (1 + runtime.energy * 2.2)
+	--
+	-- And nearly stopping once the session has gone quiet, for the same reason in
+	-- reverse: a strip that keeps spinning at its working rate hours after the
+	-- last command claims an activity that is not happening.
+	local pace = if runtime.quiet > QUIET_AFTER then 0.25 else 1
+	runtime.angle += runtime.spin * delta * (1 + runtime.energy * 2.2) * pace
+
+	--[[
+		Where the solid wants to be, before the spring gets a say.
+
+		Three things move it and they are deliberately ordered. Energy -- how
+		recently work happened -- swells it while a session is busy. The breathe
+		is a slow sine that only survives while energy is near zero, so an idle
+		panel is visibly alive without a resting animation competing with the
+		reaction to a real call. And past QUIET_AFTER seconds of nothing, it draws
+		in and stays there: the picture of a session that has stopped.
+	]]
+	local calm = 1 - math.clamp(runtime.energy, 0, 1)
+	local breathe = math.sin(os.clock() * 0.9) * 0.04 * calm
+	local target = 1 + math.clamp(runtime.energy, 0, 1.6) * 0.18 + breathe
+	if runtime.quiet > QUIET_AFTER then
+		target = 0.82
+	end
+
+	--[[
+		A damped spring rather than a lerp, because a lerp cannot overshoot and
+		overshoot is the whole point: a reply that pushes the solid past its
+		resting size and lets it fall back reads as a thing being struck, where
+		easing toward a value reads as a slider being dragged.
+
+		Integrated semi-implicitly -- velocity first, then position from the new
+		velocity -- which stays stable at the frame times Studio actually hands us
+		rather than only at small ones.
+	]]
+	local step = math.min(delta, 1 / 30)
+	runtime.scaleVelocity += (target - runtime.scale) * SPRING * step
+	runtime.scaleVelocity -= runtime.scaleVelocity * DAMPING * step
+	runtime.scale += runtime.scaleVelocity * step
+	runtime.scale = math.clamp(runtime.scale, 0.55, 1.7)
 
 	local shape = SHAPES[runtime.shapeIndex]
 	local centre = Vector2.new(CELL / 2, CELL / 2)
 	-- Kept clear of the cell's edge. The perspective divide pushes a near vertex
 	-- outward, so sizing to the full half-width clipped the solid against its own
 	-- container whenever a corner swung toward the viewer.
-	local radius = CELL * (0.2 + runtime.energy * 0.03)
+	local radius = CELL * BASE_RADIUS * runtime.scale
 
 	-- Wobble the axis rather than the panel: shaking the strip would read as a
 	-- glitch, tilting the solid reads as it being knocked.
@@ -309,9 +413,9 @@ local function step(delta: number)
 			frame,
 			projected[a],
 			projected[b],
-			math.max(1, math.floor(1 + depth * 1.6)),
-			runtime.tint:Lerp(Color3.new(1, 1, 1), depth * 0.35),
-			0.84 - depth * 0.74
+			math.max(1, math.floor(1 + depth * 1.6 + runtime.flare * 0.8)),
+			runtime.tint:Lerp(Color3.new(1, 1, 1), depth * 0.35 + runtime.flare * 0.3),
+			math.max(0, 0.84 - depth * 0.74 - runtime.flare * 0.3)
 		)
 	end
 
@@ -330,12 +434,15 @@ local function step(delta: number)
 			continue
 		end
 		local depth = math.clamp((depths[index] + 2) / 4, 0, 1)
-		local size = math.max(2, math.floor(1.5 + depth * 2.5))
+		-- The corners carry the flare. A pulse of light travelling through the
+		-- vertices is what makes a completed call land as an event rather than as
+		-- a bar quietly appearing somewhere off to the right.
+		local size = math.max(2, math.floor(1.5 + depth * 2.5 + runtime.flare * 2.5))
 		dot.Visible = true
 		dot.Position = UDim2.fromOffset(point.X, point.Y)
 		dot.Size = UDim2.fromOffset(size, size)
 		dot.BackgroundColor3 = runtime.tint:Lerp(Color3.new(1, 1, 1), 0.25 + depth * 0.5)
-		dot.BackgroundTransparency = 0.55 - depth * 0.5
+		dot.BackgroundTransparency = math.max(0, 0.55 - depth * 0.5 - runtime.flare * 0.45)
 	end
 
 	--[[
@@ -392,12 +499,29 @@ local function showReading(entry: Bar)
 		return
 	end
 
-	highlight.Position = UDim2.new(entry.hit.Position.X.Scale, entry.hit.Position.X.Offset, 0, 0)
+	--[[
+		The Y here has to be 1, and was 0.
+
+		The highlight is anchored to its own bottom edge, so a Y scale of 0 put
+		that edge on the trace's top line and drew the whole 26px column above it
+		-- outside a frame that clips its descendants. The hover has therefore
+		never been visible to anyone: the hit targets fired, the readout appeared,
+		and the highlight they were meant to explain was off screen every time.
+	]]
+	highlight.Position = UDim2.new(entry.hit.Position.X.Scale, entry.hit.Position.X.Offset, 1, 0)
 	highlight.Visible = true
 
+	--[[
+		Named, not just timed.
+
+		A duration with nothing attached to it raises the question it cannot
+		answer -- forty bars, one of them tall, and no way to tell whether that
+		was a script edit or a screenshot. The title is the same phrase the log
+		row uses, so pointing at a bar and reading the log agree with each other.
+	]]
 	readout.Text = if entry.ok
-		then string.format("%d ms", math.round(entry.milliseconds))
-		else string.format("failed after %d ms", math.round(entry.milliseconds))
+		then string.format("%s: %d ms", entry.title, math.round(entry.milliseconds))
+		else string.format("%s: failed after %d ms", entry.title, math.round(entry.milliseconds))
 	readout.TextColor3 = if entry.ok
 		then runtime.palette.text or Color3.fromRGB(226, 232, 240)
 		else runtime.palette.red or Color3.fromRGB(251, 113, 133)
@@ -420,11 +544,26 @@ end
 	distinguishable at a glance -- which is the pair of questions that actually
 	get asked of a log this size.
 ]]
-function Visuals.recordCall(milliseconds: number, ok: boolean)
+function Visuals.recordCall(milliseconds: number, ok: boolean, title: string)
 	runtime.energy = math.min(1.6, runtime.energy + (if ok then 0.3 else 0.8))
-	runtime.activity = math.min(1, runtime.activity + 0.25)
+	runtime.activity = math.min(1, runtime.activity + 0.34)
 	runtime.shapeIndex = math.clamp(1 + math.floor(runtime.activity * (#SHAPES - 0.001)), 1, #SHAPES)
-	if not ok then
+	runtime.quiet = 0
+	runtime.flare = 1
+
+	--[[
+		A shove rather than a new target.
+
+		Setting the scale outright would snap; giving the spring velocity lets it
+		carry past its resting size and fall back, which is the difference between
+		a value changing and something being struck. A failure shoves the other
+		way and knocks the axis with it.
+	]]
+	if ok then
+		runtime.scaleVelocity += 9
+	else
+		runtime.scale = 0.8
+		runtime.scaleVelocity = -2
 		runtime.shake = 1
 	end
 
@@ -449,7 +588,13 @@ function Visuals.recordCall(milliseconds: number, ok: boolean)
 	hit.Size = UDim2.new(0, BAR_STRIDE, 1, 0)
 	hit.Parent = trace
 
-	local entry: Bar = { frame = bar, hit = hit, milliseconds = milliseconds, ok = ok }
+	local entry: Bar = {
+		frame = bar,
+		hit = hit,
+		milliseconds = milliseconds,
+		ok = ok,
+		title = if title ~= "" then title else "call",
+	}
 	table.insert(runtime.bars, entry)
 
 	hit.MouseEnter:Connect(function()
@@ -507,6 +652,15 @@ end
 function Visuals.setKind(color: Color3, urgency: number)
 	runtime.activeTint = color
 	runtime.energy = math.min(1.6, math.max(runtime.energy, urgency))
+	runtime.quiet = 0
+	--[[
+		Drawn in as the command goes out, so the pair reads as one gesture: the
+		solid contracts while the request is in flight and springs open when the
+		answer arrives. On a fast call the two are almost one motion, which is
+		itself the report -- a slow call visibly holds its breath.
+	]]
+	runtime.scale = math.min(runtime.scale, 0.85)
+	runtime.scaleVelocity = math.min(runtime.scaleVelocity, 0)
 	-- Re-aimed per kind so successive commands of different types visibly
 	-- change the axis rather than continuing the same turn.
 	runtime.spin = Vector3.new(
@@ -541,6 +695,37 @@ function Visuals.setIdle()
 	runtime.caption.Text = if runtime.lastTitle ~= nil
 		then "last: " .. runtime.lastTitle
 		else "waiting for a command"
+end
+
+--[[
+	Winds the solid down, because the session has stopped rather than paused.
+
+	The strip already decays on its own, but decay bottoms out at "idle and
+	turning", which looks the same after twenty seconds as after two hours. This
+	is the console telling the picture what it has just told the log, so the two
+	agree: the shape falls back to a tetrahedron, the spin drops to a quarter
+	pace, and the solid draws in.
+]]
+function Visuals.setQuiet()
+	runtime.quiet = QUIET_AFTER + 1
+	runtime.activity = 0
+	runtime.shapeIndex = 1
+end
+
+--[[
+	Empties the trace.
+
+	Paired with the console's clear button. The bars used to survive it while the
+	footer counters reset, so "clear" wiped the log, wiped the statistics, and
+	left forty timings from the session it had just erased sitting on screen.
+]]
+function Visuals.clearTrace()
+	for _, entry in runtime.bars do
+		entry.frame:Destroy()
+		entry.hit:Destroy()
+	end
+	table.clear(runtime.bars)
+	clearReading()
 end
 
 function Visuals.setVisible(visible: boolean)
@@ -649,7 +834,7 @@ function Visuals.mount(parent: Instance, palette: { [string]: Color3 })
 	local trace = Instance.new("Frame")
 	trace.Name = "Trace"
 	trace.Position = UDim2.new(0, CELL + GUTTER, 0, 21)
-	trace.Size = UDim2.new(1, -CELL - GUTTER - 12, 0, 19)
+	trace.Size = UDim2.new(1, -CELL - GUTTER - 12, 0, TRACE_HEIGHT)
 	trace.BackgroundTransparency = 1
 	trace.ClipsDescendants = true
 	trace.Parent = band
@@ -677,7 +862,10 @@ function Visuals.mount(parent: Instance, palette: { [string]: Color3 })
 	highlight.Position = UDim2.new(1, 0, 1, 0)
 	highlight.Size = UDim2.new(0, BAR_STRIDE, 1, 0)
 	highlight.BackgroundColor3 = palette.text or Color3.fromRGB(226, 232, 240)
-	highlight.BackgroundTransparency = 0.85
+	-- Faint enough not to hide the bar it sits behind, solid enough to be seen
+	-- at all. The previous value was chosen for a highlight that never rendered,
+	-- so it had never been looked at.
+	highlight.BackgroundTransparency = 0.7
 	highlight.BorderSizePixel = 0
 	highlight.Visible = false
 	highlight.Parent = trace
@@ -693,7 +881,11 @@ function Visuals.mount(parent: Instance, palette: { [string]: Color3 })
 	readout.Name = "Readout"
 	readout.AnchorPoint = Vector2.new(0, 0.5)
 	readout.Position = UDim2.new(0, 0, 0.5, 0)
-	readout.Size = UDim2.new(0, 110, 0, 14)
+	-- Sized by its text now that it carries a name as well as a number. A fixed
+	-- 110px was enough for "18 ms" and truncates anything with a phrase in front
+	-- of it, which is the half worth reading.
+	readout.AutomaticSize = Enum.AutomaticSize.X
+	readout.Size = UDim2.new(0, 0, 0, 14)
 	readout.BackgroundColor3 = palette.background or Color3.fromRGB(11, 12, 20)
 	readout.BackgroundTransparency = 0.15
 	readout.BorderSizePixel = 0
@@ -705,6 +897,11 @@ function Visuals.mount(parent: Instance, palette: { [string]: Color3 })
 	readout.ZIndex = 3
 	readout.Parent = trace
 	runtime.readout = readout
+
+	local readoutPadding = Instance.new("UIPadding")
+	readoutPadding.PaddingLeft = UDim.new(0, 4)
+	readoutPadding.PaddingRight = UDim.new(0, 4)
+	readoutPadding.Parent = readout
 end
 
 return Visuals

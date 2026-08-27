@@ -24,6 +24,16 @@ export const POLL_HOLD_MS = 25_000;
 /** A session is considered dead if we have not heard from it in this long. */
 const STALE_AFTER_MS = 90_000;
 
+/**
+ * How long a client may go silent before we assume its process died.
+ *
+ * Peers post a keepalive well inside this, so the only thing it catches is a
+ * client that was killed rather than closed. Matched to the session rule
+ * deliberately: two different staleness windows on one bridge is a thing to
+ * remember, and there is no reason for them to differ.
+ */
+const CLIENT_STALE_AFTER_MS = 90_000;
+
 interface Pending {
   resolve: (value: unknown) => void;
   reject: (reason: ToolError) => void;
@@ -54,6 +64,21 @@ interface Session {
  */
 export class Bridge {
   private readonly sessions = new Map<string, Session>();
+
+  /**
+   * Every MCP client currently using this bridge, owner included.
+   *
+   * The bridge already knew clients existed -- `chosen` is keyed on them -- but
+   * only ever learned of one at the moment it made a call, and never learned
+   * that one had gone. So `forgetClient` sat here uncalled and a peer that
+   * exited left its chosen Studio behind forever. Tracking them outright fixes
+   * that leak and makes the count reportable, which is the thing a user sharing
+   * one Studio between two agents actually wants to see.
+   */
+  private readonly clients = new Map<string, { lastSeenAt: number }>();
+
+  /** Called whenever the client count changes, so the plugin can be told. */
+  private onClientsChanged: ((count: number) => void) | null = null;
 
   /**
    * Which Studio each connected client chose, keyed by client.
@@ -122,17 +147,53 @@ export class Bridge {
     }
   }
 
-  /** Drops sessions whose plugin stopped checking in without a clean detach. */
+  /** Drops sessions and clients that stopped checking in without a goodbye. */
   reapStale(): void {
     const cutoff = Date.now() - STALE_AFTER_MS;
     for (const [id, session] of this.sessions) {
       if (session.lastSeenAt < cutoff && !session.stream) this.detach(id);
+    }
+
+    // A client killed rather than closed never says goodbye. Without this its
+    // entry would inflate the count for as long as the bridge lived.
+    const clientCutoff = Date.now() - CLIENT_STALE_AFTER_MS;
+    for (const [id, client] of this.clients) {
+      if (client.lastSeenAt < clientCutoff) this.forgetClient(id);
     }
   }
 
   touch(studioId: string): void {
     const session = this.sessions.get(studioId);
     if (session) session.lastSeenAt = Date.now();
+  }
+
+  // --- clients -----------------------------------------------------------
+
+  /** Records a client as present, or refreshes one already known. */
+  noteClient(clientId: string): void {
+    if (clientId.length === 0) return;
+    const known = this.clients.has(clientId);
+    this.clients.set(clientId, { lastSeenAt: Date.now() });
+    if (!known) this.announceClients();
+  }
+
+  clientCount(): number {
+    return this.clients.size;
+  }
+
+  /**
+   * Subscribes to changes in the client count.
+   *
+   * A callback rather than the bridge writing to streams itself: the bridge
+   * owns sessions and requests, and what a *change* should cause -- an SSE
+   * frame, a log line, nothing at all -- belongs to whoever wired it up.
+   */
+  watchClients(listener: (count: number) => void): void {
+    this.onClientsChanged = listener;
+  }
+
+  private announceClients(): void {
+    this.onClientsChanged?.(this.clients.size);
   }
 
   /**
@@ -192,9 +253,17 @@ export class Bridge {
     this.chosen.set(clientId, studioId);
   }
 
-  /** Forgets a client's choice when its server instance goes away. */
-  forgetClient(clientId: string): void {
+  /**
+   * Drops a client that has gone away, and its chosen Studio with it.
+   *
+   * Returns true when the client was actually known, so a caller can tell a
+   * real departure from a duplicate goodbye and only announce the first.
+   */
+  forgetClient(clientId: string): boolean {
     this.chosen.delete(clientId);
+    if (!this.clients.delete(clientId)) return false;
+    this.announceClients();
+    return true;
   }
 
   // --- request/response --------------------------------------------------
@@ -330,6 +399,21 @@ export class Bridge {
     }
 
     throw AMBIGUOUS_STUDIO(rows);
+  }
+
+  /**
+   * Writes one non-command frame to every plugin holding an open stream.
+   *
+   * Poll sessions are not served here -- they have no socket to write to, and
+   * their own response already carries the same value. Best-effort by design:
+   * a plugin that misses one of these has stale trim on its header, which is
+   * not worth a retry queue.
+   */
+  broadcast(frame: Record<string, unknown>): void {
+    const payload = `data: ${JSON.stringify(frame)}\n\n`;
+    for (const session of this.sessions.values()) {
+      if (session.stream && !session.stream.writableEnded) session.stream.write(payload);
+    }
   }
 
   private deliver(session: Session, command: Command): void {

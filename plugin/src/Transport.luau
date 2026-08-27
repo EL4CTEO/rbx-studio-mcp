@@ -28,6 +28,19 @@ export type Status = "disconnected" | "connecting" | "connected"
 type Callbacks = {
 	onCommand: (id: string, op: string, params: { [string]: any }?) -> (),
 	onStatus: (status: Status, detail: string?) -> (),
+	--[[
+		Anything the bridge wants to tell this plugin that is not a command.
+
+		The stream was one-way in practice -- commands down, results back over a
+		separate POST -- and there was no way for the server to say something the
+		plugin should merely know, like how many agents are now sharing it. A
+		frame carrying `event` instead of `id`/`op` is that channel.
+
+		No protocol bump: a plugin older than this drops any frame without an id
+		and an op, which is exactly the right behaviour for a frame it does not
+		understand.
+	]]
+	onEvent: (event: { [string]: any }) -> (),
 }
 
 local running = false
@@ -87,23 +100,53 @@ local function identity(transport: string): { [string]: any }
 end
 
 --[[
-	Parses one SSE payload. `MessageReceived` hands over the event data, but the
-	exact framing is not contractual, so a stray `data:` prefix is tolerated and
-	comment/keepalive lines are dropped.
+	Parses one delivery from the stream, which may hold more than one event.
+
+	This used to assume one event per `MessageReceived` and decode the whole
+	payload as a single JSON object. That held only because the bridge had never
+	written two frames in the same tick -- and the moment it did, both were lost:
+	the two writes arrived in one chunk, so the decode saw
+	`{...}<blank>data: {...}` and returned nil for the pair. The visible symptom
+	was a client-count badge that went up and never came back down. The invisible
+	one is why this is written properly rather than patched around: nothing stops
+	a *command* from sharing a chunk with anything else, and a dropped command is
+	a tool call that disappears with no error on either side.
+
+	So the payload is split into events on blank lines, and each event's `data:`
+	lines are concatenated the way the SSE spec says they should be. Comments --
+	the `: connected` greeting and the `: ping` keepalives -- are skipped rather
+	than being allowed to poison the block they arrive with.
 ]]
-local function parseFrame(message: string): { [string]: any }?
-	local text = (string.gsub(message, "^%s+", ""))
-	if text == "" or string.sub(text, 1, 1) == ":" then
-		return nil
+local function parseFrames(message: string): { { [string]: any } }
+	local frames: { { [string]: any } } = {}
+
+	-- Normalised so one split handles either line ending.
+	local normalised = (string.gsub(message, "\r\n", "\n"))
+
+	-- The appended separator gives every event, the last one included, a
+	-- trailing blank line, so a single pattern finds them all.
+	for block in string.gmatch(normalised .. "\n\n", "(.-)\n\n") do
+		local payload: string? = nil
+		for line in string.gmatch(block, "[^\n]+") do
+			if string.sub(line, 1, 1) ~= ":" then
+				local value = line
+				if string.sub(value, 1, 5) == "data:" then
+					value = (string.gsub(string.sub(value, 6), "^%s+", ""))
+				end
+				-- Several data lines in one event concatenate, per the spec.
+				payload = if payload == nil then value else payload .. "\n" .. value
+			end
+		end
+
+		if payload ~= nil and payload ~= "" then
+			local decoded = Net.decode(payload)
+			if typeof(decoded) == "table" then
+				table.insert(frames, decoded)
+			end
+		end
 	end
-	if string.sub(text, 1, 5) == "data:" then
-		text = (string.gsub(string.sub(text, 6), "^%s+", ""))
-	end
-	local decoded = Net.decode(text)
-	if typeof(decoded) ~= "table" then
-		return nil
-	end
-	return decoded
+
+	return frames
 end
 
 local function handleFrame(callbacks: Callbacks, frame: { [string]: any })
@@ -111,6 +154,10 @@ local function handleFrame(callbacks: Callbacks, frame: { [string]: any })
 	local op = frame.op
 	if typeof(id) == "string" and typeof(op) == "string" then
 		callbacks.onCommand(id, op, frame.params)
+		return
+	end
+	if typeof(frame.event) == "string" then
+		callbacks.onEvent(frame)
 	end
 end
 
@@ -151,8 +198,7 @@ local function runStream(callbacks: Callbacks): boolean
 	table.insert(
 		connections,
 		client.MessageReceived:Connect(function(message: string)
-			local frame = parseFrame(message)
-			if frame then
+			for _, frame in parseFrames(message) do
 				handleFrame(callbacks, frame)
 			end
 		end)
@@ -224,8 +270,21 @@ local function runPolling(callbacks: Callbacks): boolean
 			return false
 		else
 			local payload = Net.decode(response.body)
-			if typeof(payload) == "table" and typeof(payload.command) == "table" then
-				handleFrame(callbacks, payload.command)
+			if typeof(payload) == "table" then
+				if typeof(payload.command) == "table" then
+					handleFrame(callbacks, payload.command)
+				end
+				--[[
+					Poll sessions get the same news, riding on the answer they were
+					already waiting for. The bridge has nowhere to push to here, so
+					every poll response carries the current value rather than only
+					the moments it changed -- the console filters out the repeats,
+					and a poll session that missed a change while it was handling a
+					command would otherwise never hear about it.
+				]]
+				if typeof(payload.clients) == "number" then
+					callbacks.onEvent({ event = "clients", count = payload.clients })
+				end
 			end
 		end
 

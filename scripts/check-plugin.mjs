@@ -72,14 +72,34 @@ for (const file of files) {
  * filtering to this one diagnostic gets the signal without needing a
  * definitions file that would then have to be kept current with the engine.
  */
+/*
+ * Diagnostics about a table this file declares its own type for.
+ *
+ * The LocalShadow filter was the only thing let through, and that let a whole
+ * class of error ship: a field read or written on a `--!strict` table type that
+ * does not declare it. The plugin failed to load on the first line it logged --
+ * "attempt to perform arithmetic on nil" -- because a batch of edits added five
+ * uses of `state.entries` and the edit declaring it never landed. The analyser
+ * had said so, four times, and this script threw it away.
+ *
+ * These two patterns are safe to surface where the rest is not. Without Roblox
+ * type definitions the analyser cannot know what `Instance` or `Color3` are, so
+ * it reports engine globals in their hundreds -- but those come out as unknown
+ * *globals* and unknown *types*. A key missing from a named table type can only
+ * be a table this file declared itself.
+ */
+const TYPE_PATTERNS = [/Key '[^']+' not found in table/, /Cannot add property '[^']+' to table/];
+
 const analyser = locateLuau("LUAU_ANALYZE", ["luau-analyze.exe", "luau-analyze"]);
 const shadowed = [];
+const mistyped = [];
 if (analyser !== null) {
   for (const file of files) {
     const result = spawnSync(analyser, [file], { encoding: "utf8" });
     const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
     for (const line of output.split("\n")) {
       if (line.includes("LocalShadow:")) shadowed.push(line.trim());
+      else if (TYPE_PATTERNS.some((pattern) => pattern.test(line))) mistyped.push(line.trim());
     }
   }
 }
@@ -94,4 +114,12 @@ if (shadowed.length > 0) {
       `${shadowed.join("\n")}\n`,
   );
 }
-process.exit(failures.length > 0 || shadowed.length > 0 ? 1 : 0);
+if (mistyped.length > 0) {
+  process.stderr.write(
+    "\nA field is used on a table whose type does not declare it. It is nil at " +
+      "runtime, and the plugin fails the first time that line runs:\n" +
+      `${mistyped.join("\n")}
+`,
+  );
+}
+process.exit(failures.length > 0 || shadowed.length > 0 || mistyped.length > 0 ? 1 : 0);

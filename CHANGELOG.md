@@ -2,6 +2,34 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.2.5
+
+The console panel reacts to what the session is doing, reports how many agents share it, and says what a latency bar was.
+
+### Added
+- The activity band moves with the work: the solid draws in as a command goes out, springs past its size when the answer lands, snaps and wobbles on failure, breathes while idle, and winds down once the session goes quiet.
+- Hovering a latency bar names the call — `Run luau: 2 ms`, not `2 ms`.
+- A badge when more than one MCP client shares the bridge. Nothing shown for the usual single client.
+- `Agent finished task.` when a client disconnects, and `agent idle — N calls, avg Xms` when work stops.
+- **clear** logs `cleared N logs`, timestamped like every other row, and empties the latency trace with it.
+
+### Changed
+- The plugin is now called **rbx-studio** — window title, toolbar, and footer. Your panel's saved position and size are unaffected.
+
+### Fixed
+- **Two SSE frames sent in the same tick were both dropped.** They arrive as one chunk, and the parser decoded the whole chunk as a single JSON document. Visible as a client badge that went up and never came down; the real risk was a command sharing a chunk with a keepalive and vanishing — a lost tool call with no error at either end.
+- An MCP client disconnecting was never noticed: `StdioServerTransport` listens only for `data` and `error` on stdin, so EOF never closes it and `onclose` never fires. Taken from stdin's `end` event instead.
+- The bridge swept away the process it runs inside. The owner registered once and nothing refreshed it, so the reaper dropped it after 90s while it was serving — the client count read short and the drop was reported as an agent finishing.
+- The latency bars' hover highlight had never once been visible: anchored to its bottom edge but positioned at the top of a frame that clips, so it drew entirely off screen.
+- A departing client left its chosen Studio in the bridge forever.
+- Shutdown aborted on Windows (`UV_HANDLE_CLOSING`) by calling `process.exit` mid-teardown.
+- `check-plugin` filtered the Luau analyser to `LocalShadow` only, so a field used on a `--!strict` table that does not declare it shipped and crashed the plugin on load. It now also reports missing table keys.
+
+### Faster
+- The reply goes back to the agent before the console draws it. Repainting the log sat in front of every result on its way out.
+- Repaints coalesced to one per frame, so a failure writing three rows no longer redraws the console three times.
+- `TCP_NODELAY` on the bridge sockets.
+
 ## 0.2.0
 
 A pass on console accuracy and a few real bugs found while doing it.

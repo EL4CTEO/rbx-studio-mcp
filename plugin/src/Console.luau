@@ -1,6 +1,6 @@
 --!strict
 --[[
-	The Studio MCP console.
+	The rbx-studio console.
 
 	This is the only feedback channel the plugin has. It deliberately never
 	writes to Studio's Output window, because that log is also what the agent
@@ -107,12 +107,22 @@ end
 
 type State = {
 	lines: { string },
+	--[[
+		Rows written, as opposed to lines rendered.
+
+		`lines` also holds the indented continuations a long detail wraps onto,
+		so counting it would report a number nobody wrote -- "cleared 41 logs"
+		for twelve commands. This counts calls to `log`, which is what a person
+		means by a log line.
+	]]
+	entries: number,
 	label: TextLabel?,
 	scroller: ScrollingFrame?,
 	statusDot: TextLabel?,
 	statusText: TextLabel?,
 	metaText: TextLabel?,
 	countersText: TextLabel?,
+	clientsChip: TextLabel?,
 	pinned: boolean,
 	calls: number,
 	errors: number,
@@ -120,22 +130,42 @@ type State = {
 	-- The command in flight, shown in the footer while it runs. One value that
 	-- is replaced, never a list that grows.
 	running: string?,
+	--[[
+		Bumped by every call, so a pending idle timer can tell whether it is still
+		the most recent one. Cheaper and less error-prone than cancelling timers:
+		`task.delay` has no handle to cancel, and a stale closure that checks a
+		counter simply does nothing.
+	]]
+	generation: number,
+	-- How many MCP clients share this bridge. Only ever displayed above one.
+	clients: number,
+	-- Set while a repaint is already scheduled for the end of this frame.
+	dirty: boolean,
 }
 
 local state: State = {
 	lines = {},
+	entries = 0,
 	label = nil,
 	scroller = nil,
 	statusDot = nil,
 	statusText = nil,
 	metaText = nil,
 	countersText = nil,
+	clientsChip = nil,
 	pinned = true,
 	calls = 0,
 	errors = 0,
 	totalMs = 0,
 	running = nil,
+	generation = 0,
+	clients = 1,
+	dirty = false,
 }
+
+-- How long the session must be silent before the console says so. Long enough
+-- that an agent pausing to think is not announced as having stopped.
+local QUIET_SECONDS = 20
 
 local function hex(color: Color3): string
 	return string.format(
@@ -159,7 +189,8 @@ local function span(color: Color3, value: string): string
 	return string.format('<font color="%s">%s</font>', hex(color), escape(value))
 end
 
-local function redraw()
+local function paint()
+	state.dirty = false
 	local label = state.label
 	if not label then
 		return
@@ -175,6 +206,24 @@ local function redraw()
 			end
 		end)
 	end
+end
+
+--[[
+	Asks for a repaint, at most one per frame.
+
+	Painting is a concat of up to three hundred strings followed by a RichText
+	relayout of the whole label, and it used to run once per appended row. A
+	failed command writes three rows -- the failure, its message, sometimes a
+	hint -- so a single unlucky call repainted the entire console three times,
+	and all of that sat in front of the reply on its way back to the agent.
+	Deferring collapses them into the one paint that was always sufficient.
+]]
+local function redraw()
+	if state.dirty then
+		return
+	end
+	state.dirty = true
+	task.defer(paint)
 end
 
 local function refreshCounters()
@@ -257,6 +306,7 @@ function Console.log(level: Level, message: string, detail: string?)
 		off beneath it.
 	]]
 	table.insert(state.lines, line)
+	state.entries += 1
 	if detail then
 		if inlineDetail then
 			local padding = math.max(1, DETAIL_COLUMN - bodyWidth)
@@ -303,6 +353,7 @@ local KIND_LOOK: { [string]: { color: Color3, urgency: number } } = {
 
 function Console.beginCall(title: string, kind: string)
 	state.running = title
+	state.generation += 1
 	local look = KIND_LOOK[kind] or KIND_LOOK.read
 	Visuals.setCaption(title)
 	Visuals.setKind(look.color, look.urgency)
@@ -319,6 +370,9 @@ function Console.recordCall(ok: boolean, milliseconds: number)
 	if not ok then
 		state.errors += 1
 	end
+	-- Read before it is cleared: the bar wants the same phrase the log row uses,
+	-- and this is the only place that still has it.
+	local title = state.running or "call"
 	state.running = nil
 	refreshCounters()
 	-- The footer reports totals when idle, so the band shows what just ran
@@ -327,7 +381,35 @@ function Console.recordCall(ok: boolean, milliseconds: number)
 
 	-- The band plots it: bar height is how long it took, colour is whether it
 	-- worked, and a failure knocks the solid off its axis as well.
-	Visuals.recordCall(milliseconds, ok)
+	Visuals.recordCall(milliseconds, ok, title)
+
+	--[[
+		Says so when the session goes quiet, once per burst.
+
+		There is no "the agent has finished" message in MCP -- an agent that has
+		stopped and one that is thinking are the same silence -- so this reports
+		the silence rather than claiming to know what caused it: what ran, how
+		much of it, and how fast. The generation check is what makes it once per
+		burst: every later call bumps the counter, so all but the newest timer
+		wake up, find they are stale, and do nothing.
+	]]
+	state.generation += 1
+	local mine = state.generation
+	task.delay(QUIET_SECONDS, function()
+		if state.generation ~= mine or state.calls == 0 then
+			return
+		end
+		Console.log(
+			"dim",
+			string.format(
+				"agent idle -- %d call%s, avg %.0fms",
+				state.calls,
+				if state.calls == 1 then "" else "s",
+				state.totalMs / state.calls
+			)
+		)
+		Visuals.setQuiet()
+	end)
 end
 
 --[[
@@ -342,13 +424,90 @@ function Console.setCaption(message: string)
 	Visuals.setCaption(message)
 end
 
+--[[
+	Announces that an MCP client disconnected.
+
+	This is the one moment the bridge can be certain a session ended rather than
+	paused -- the client's process is gone -- so it is the one place the console
+	is allowed to state it outright. Everything else it knows about agent
+	activity is inference, and is worded as inference.
+]]
+function Console.agentFinished()
+	Console.log("ok", "Agent finished task.", "client left")
+	Visuals.setQuiet()
+end
+
+--[[
+	How many MCP clients are sharing this bridge.
+
+	Reported only above one. A single client is the ordinary case and needs no
+	badge -- a permanent "1 client connected" is a label, not a signal, and the
+	header has better uses for the width.
+]]
+function Console.setClients(count: number)
+	local previous = state.clients
+	state.clients = count
+
+	local chip = state.clientsChip
+	if chip then
+		chip.Visible = count > 1
+		-- Pluralised even though the badge hides at one. A string that is only
+		-- ever correct because nobody can see it is a trap for whoever changes
+		-- the visibility rule later.
+		chip.Text = string.format(
+			"\u{25C6} %d client%s",
+			count,
+			if count == 1 then "" else "s"
+		)
+	end
+
+	local meta = state.metaText
+	if meta then
+		meta.Size = UDim2.new(1, if count > 1 then -486 else -394, 1, 0)
+	end
+
+	--[[
+		Only the arrival is worth a row.
+
+		The departure had one too, and seeing it live made the redundancy plain:
+		"one MCP client connected" landed in the same second as "Agent finished
+		task.", saying the same thing less well, while the badge disappearing
+		said it a third time. The count going up is news because nothing else
+		reports it; the count coming down is already covered twice over.
+	]]
+	if count > 1 and previous <= 1 then
+		Console.log("info", string.format("%d MCP clients connected", count))
+	end
+end
+
 function Console.clear()
+	--[[
+		Says what it did, with a timestamp, like everything else in here.
+
+		A button that empties the screen and leaves no trace is indistinguishable
+		from one that crashed the panel. The count is read before the clear and
+		written after it, so the first row of the fresh log is the receipt for
+		the one that went.
+	]]
+	local cleared = state.entries
 	table.clear(state.lines)
+	state.entries = 0
 	state.calls = 0
 	state.errors = 0
 	state.totalMs = 0
 	refreshCounters()
+	-- The bars belonged to the log that just went. Leaving forty timings from an
+	-- erased session on screen while the footer reads "idle" is two answers to
+	-- one question.
+	Visuals.clearTrace()
 	redraw()
+
+	if cleared > 0 then
+		Console.log(
+			"dim",
+			string.format("cleared %d log%s", cleared, if cleared == 1 then "" else "s")
+		)
+	end
 end
 
 --[[
@@ -482,6 +641,38 @@ function Console.mount(parent: Instance, handlers: Handlers)
 	meta.Parent = header
 	state.metaText = meta
 
+	--[[
+		The shared-bridge badge, hidden until there is something to share.
+
+		Sits between the meta line and the buttons rather than in the activity
+		band, because it is a fact about the connection and the header is where
+		connection facts live. `meta` gives up the width when it appears; see
+		`Console.setClients`.
+	]]
+	local clientsChip = Instance.new("TextLabel")
+	clientsChip.Name = "Clients"
+	clientsChip.AnchorPoint = Vector2.new(1, 0.5)
+	clientsChip.Position = UDim2.new(1, -252, 0.5, 0)
+	clientsChip.Size = UDim2.new(0, 84, 0, 18)
+	clientsChip.BackgroundColor3 = PALETTE.background
+	clientsChip.BorderSizePixel = 0
+	clientsChip.Font = Enum.Font.Code
+	clientsChip.TextSize = 11
+	clientsChip.TextColor3 = PALETTE.cyan
+	clientsChip.Text = ""
+	clientsChip.Visible = false
+	clientsChip.Parent = header
+	state.clientsChip = clientsChip
+
+	local chipCorner = Instance.new("UICorner")
+	chipCorner.CornerRadius = UDim.new(0, 3)
+	chipCorner.Parent = clientsChip
+
+	local chipStroke = Instance.new("UIStroke")
+	chipStroke.Color = PALETTE.cyan
+	chipStroke.Transparency = 0.6
+	chipStroke.Parent = clientsChip
+
 	local buttons = Instance.new("Frame")
 	buttons.AnchorPoint = Vector2.new(1, 0.5)
 	buttons.Position = UDim2.new(1, 0, 0.5, 0)
@@ -571,7 +762,7 @@ function Console.mount(parent: Instance, handlers: Handlers)
 	footerPadding.Parent = footer
 
 	local prompt = Instance.new("TextLabel")
-	prompt.Text = "studio\u{00B7}mcp"
+	prompt.Text = "rbx\u{00B7}studio"
 	prompt.Font = Enum.Font.Code
 	prompt.TextSize = 11
 	prompt.TextColor3 = PALETTE.violet

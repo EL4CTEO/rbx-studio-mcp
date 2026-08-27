@@ -20,6 +20,14 @@ export interface OwnerIdentity {
 export const PEER_HEADER = "x-roblox-studio-mcp-peer";
 
 /**
+ * How often a peer reminds the owner it is still here.
+ *
+ * Comfortably inside the owner's 90-second staleness window, so two missed
+ * keepalives in a row are needed before a live peer is dropped by mistake.
+ */
+const KEEPALIVE_MS = 30_000;
+
+/**
  * Asks whatever holds `port` whether it is another copy of this server.
  *
  * Deliberately narrow. Something else on 44755 is a reason to fail with the
@@ -54,11 +62,40 @@ export async function probeOwner(port: number): Promise<OwnerIdentity | null> {
 export class RemoteBridge implements StudioBridge {
   readonly isOwner = false;
   private readonly clientId = randomUUID();
+  private keepalive: NodeJS.Timeout | null = null;
 
   constructor(
     private readonly port: number,
     readonly owner: OwnerIdentity,
-  ) {}
+  ) {
+    // Announce immediately, then keep saying so. Without the keepalive the
+    // owner cannot distinguish a peer sitting idle between tasks -- which is
+    // most of any session -- from one whose process is gone.
+    void this.hello();
+    this.keepalive = setInterval(() => void this.hello(), KEEPALIVE_MS);
+    this.keepalive.unref();
+  }
+
+  /** Best effort: failing to register costs a badge, never a call. */
+  private async hello(): Promise<void> {
+    try {
+      await this.post("/hello", {}, 5_000);
+    } catch {
+      /* ignored */
+    }
+  }
+
+  async goodbye(): Promise<void> {
+    if (this.keepalive) {
+      clearInterval(this.keepalive);
+      this.keepalive = null;
+    }
+    try {
+      await this.post("/goodbye", {}, 5_000);
+    } catch {
+      /* ignored */
+    }
+  }
 
   private get base(): string {
     return `http://127.0.0.1:${this.port}`;

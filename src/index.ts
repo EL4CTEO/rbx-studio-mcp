@@ -22,7 +22,7 @@ import { registerDeviceTools } from "./tools/device.js";
 import { registerApiTools } from "./tools/api.js";
 import { registerResources } from "./resources.js";
 
-const VERSION = "0.2.0";
+const VERSION = "0.2.5";
 
 function parsePort(argv: string[]): number {
   const flag = argv.indexOf("--port");
@@ -103,13 +103,61 @@ async function main(): Promise<void> {
   registerCharacterTools(context);
   registerResources(context);
 
+  /**
+   * Leaves the bridge cleanly, however this process is asked to stop.
+   *
+   * Guarded because the paths overlap: an MCP client that quits closes stdin,
+   * which closes the transport, which fires `onclose` -- and the same quit
+   * often sends a signal too. Running the teardown twice would race the socket
+   * close against itself for no benefit.
+   */
+  let stopping = false;
   const shutdown = async (): Promise<void> => {
+    if (stopping) return;
+    stopping = true;
+    // Said before the server goes down, because when this process is proxying
+    // to another one, the owner is still there to hear it -- and telling it is
+    // what makes the Studio console report the agent as finished at the moment
+    // it finished, rather than when the staleness reaper notices.
+    await bridgeServer.bridge.goodbye();
     await bridgeServer.close();
     await server.close();
-    process.exit(0);
+
+    /*
+     * Set rather than called, so the process ends by running out of work.
+     *
+     * `process.exit` here aborted on Windows -- "Assertion failed:
+     * !(handle->flags & UV_HANDLE_CLOSING), src\win\async.c" -- because the
+     * stdin-end path calls this while libuv is still tearing that handle down,
+     * and exiting mid-teardown trips the assertion. The goodbye had already
+     * been sent by then, so the crash cost nothing but an alarming exit code;
+     * it is still not something to ship. Everything this process owns is closed
+     * or unref'd by the time we get here, so there is nothing left to run and
+     * it exits on its own.
+     */
+    process.exitCode = 0;
   };
   process.on("SIGINT", () => void shutdown());
   process.on("SIGTERM", () => void shutdown());
+
+  /*
+   * The client hanging up is the one unambiguous "this agent is done".
+   *
+   * Hooked on stdin rather than on the transport or the server, because neither
+   * of those fires. `StdioServerTransport` subscribes to `data` and `error` on
+   * stdin and to nothing else, so EOF never closes it and `onclose` is never
+   * called; `connect` also overwrites `transport.onclose` with its own handler,
+   * so setting it beforehand achieves nothing either. Both were tried against a
+   * real peer before this was, and the count stayed up in both cases.
+   *
+   * Registering here also matters for a second reason. A proxying instance owns
+   * no listening socket, so when stdin ends there is nothing ref'd left to hold
+   * the event loop open and the process exits immediately. Starting the goodbye
+   * from inside this callback gets a request in flight while the loop is still
+   * turning, and that in-flight request is itself what keeps the process alive
+   * long enough to finish sending it.
+   */
+  process.stdin.on("end", () => void shutdown());
 
   // stdout belongs to the MCP transport from here on; nothing else may write to it.
   await server.connect(new StdioServerTransport());
