@@ -2,6 +2,12 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.2.8
+
+Packaging only. No code changes from 0.2.7.
+
+The npm keywords were missing the terms people actually search for — `mcp-server`, `claude-code`, `cursor`, `ai-agent`, `roblox-development` — and keywords only take effect when a version is published, so they needed a release of their own to reach the registry.
+
 ## 0.2.7
 
 Four tools that reported something untrue, and the one from 0.2.6 that replaced a wrong answer with another wrong answer.
