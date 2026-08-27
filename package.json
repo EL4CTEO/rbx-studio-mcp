@@ -32,12 +32,17 @@
   },
   "keywords": [
     "mcp",
+    "mcp-server",
     "model-context-protocol",
     "roblox",
     "roblox-studio",
+    "roblox-development",
     "luau",
     "claude",
-    "ai"
+    "claude-code",
+    "cursor",
+    "ai",
+    "ai-agent"
   ],
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.22.0",
