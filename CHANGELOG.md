@@ -2,6 +2,20 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.2.7
+
+Four tools that reported something untrue, and the one from 0.2.6 that replaced a wrong answer with another wrong answer.
+
+### Fixed
+- **`input` clicks land at an offset, and it now tells you what the offset is.** 0.2.6 said coordinates were out by the ratio between the emulated device's resolution and the screenshot's. Measured against a live playtest, it is a constant translation, never a scale — and it changes with the device and orientation, fitting no formula over resolution, viewport and GUI inset. So the relay now watches what the client actually receives and reports where the click was read against where it was aimed: `off by (-59, -58). Add (59, 58)`. Aim once, read the delta, correct. The offset is present with no device emulated at all, which the old explanation could not account for.
+- **A click the client never registers is now called out as such**, instead of being reported as delivered. Phone emulation switches the client to touch input, which is why one that registered nowhere still looked like a success.
+- **`perf coverage` diagnosed a failure on its own happy path.** Enabling coverage and reading straight back is expected to be empty — instrumentation only records while code runs — but 0.2.6 answered that with "these compiled before instrumentation was switched on". It now says what it actually knows, and where two causes are genuinely indistinguishable it names both instead of picking one.
+- **Coverage reported scripts that had been destroyed**, for the rest of the session, under a bare name rather than a path.
+- **`perf coverage` explained the "0 lines" flag with a cause that does not produce it.** An already-compiled script gets no record at all rather than an empty one; the replacement cause could not be reproduced either, so none is claimed now.
+- `perf coverage` with an empty `enable` said nothing about having stopped, so a request to stop looked like a call that did nothing.
+- `input` printed "emulated at undefined" when the device was known but its resolution was not.
+- **A server whose MCP client was killed rather than closed never exited.** It kept the bridge port bound and re-registered itself every 30 seconds, so nothing ever swept it and the Studio console truthfully reported an agent that had left hours ago. It now shuts down when the process that spawned it goes away.
+
 ## 0.2.6
 
 Four places where a tool told you something that wasn't true.
