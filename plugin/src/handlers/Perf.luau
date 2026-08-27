@@ -454,6 +454,21 @@ function Perf.coverage(params: { [string]: any }): { [string]: any }
 
 		table.sort(missed)
 
+		--[[
+			A destroyed script keeps its coverage record for the life of the
+			session, and `Paths.of` on something with no ancestry returns a bare
+			name -- so the report named "MCPProbeB" with no path, for a script
+			that no longer existed and could not be looked up. Measured by
+			destroying an instrumented ModuleScript and reading coverage back:
+			the row was still there, and still there on the call after it.
+
+			Dropped rather than flagged. Coverage answers "which lines of my code
+			ran", and a script that is gone has no lines anyone can go and read.
+		]]
+		if typeof(target) == "Instance" and not (target :: Instance):IsDescendantOf(game) then
+			continue
+		end
+
 		table.insert(scripts, {
 			path = if typeof(target) == "Instance" then Paths.of(target) else tostring(target),
 			instrumentedLines = instrumented,
@@ -463,15 +478,15 @@ function Perf.coverage(params: { [string]: any }): { [string]: any }
 				then math.floor(covered / instrumented * 1000 + 0.5) / 10
 				else 0,
 			--[[
-				Zero instrumented lines does not mean an empty script; it means
-				this one was already compiled when coverage was switched on, and
-				Luau keeps the bytecode it first built.
+				Zero instrumented lines is not "already compiled when coverage
+				was switched on". That was the earlier reading here and it is
+				wrong: measured against ScriptContext, a script that ran before
+				being enabled gets NO record at all and never reaches this loop.
 
-				Measured: a script re-run from scratch, after enabling, still
-				reported every line as uninstrumentable -- it printed its output
-				twice and reported 0 both times. So the distinction matters and
-				cannot be recovered later. Without saying so, 0/0 reads as "this
-				never ran", which is the opposite of what happened.
+				A record with zero instrumented lines is the opposite case -- the
+				script WAS registered, and the bytecode that ran was still built
+				without instrumentation. Either way it is unmeasured, which 0/0
+				would otherwise read as "none of this ran".
 			]]
 			notMeasurable = if instrumented == 0 then true else nil,
 		})

@@ -3,8 +3,14 @@ import { json, type ToolResult } from "../lib/format.js";
 import { defineTool, type ToolContext } from "../lib/tool.js";
 
 interface InputResponse {
-  /** Present only while a device is emulated; see the note built below. */
-  emulation?: { id: string; resolution: string; orientation?: string };
+  /**
+   * Present only while a device is emulated; see the note built below.
+   *
+   * `resolution` is optional because the plugin's is: every
+   * StudioDeviceSimulatorService read is guarded separately and each one can
+   * come back nil on its own, so a device can be known while its size is not.
+   */
+  emulation?: { id: string; resolution?: string; orientation?: string };
   delivered: boolean;
   steps: number;
   player: string;
@@ -143,10 +149,22 @@ export function registerInputTools(context: ToolContext): void {
        * that ratio. Keys are unaffected: they carry no coordinates.
        */
       const emulated = response.emulation;
-      const note = emulated
-        ? "Delivered on the client and confirmed back. NOTE: " + emulated.id + " is being emulated at " + emulated.resolution +
-          ". Click coordinates are read in that device resolution, while `screenshot` returns the viewport's own pixels, so coordinates taken from a screenshot must be scaled by (device width / screenshot width) or they land short of the target. Keys are unaffected. `device op=\"stop\"` removes the discrepancy."
-        : "Delivered on the client and confirmed back. Read the result with `character op=\"state\"`, `console`, or `screenshot`.";
+      const delivered = "Delivered on the client and confirmed back.";
+      let note = `${delivered} Read the result with \`character op="state"\`, \`console\`, or \`screenshot\`.`;
+      if (emulated) {
+        // Named without its size when the size is unknown. "emulated at
+        // undefined" is worse than saying nothing about the resolution, and the
+        // warning still stands without the number -- the mismatch is caused by
+        // the emulation, not by any particular figure.
+        note =
+          `${delivered} NOTE: ${emulated.id} is being emulated` +
+          (emulated.resolution ? ` at ${emulated.resolution}` : "") +
+          ". Click coordinates are read in the emulated device's resolution, while " +
+          "`screenshot` returns the viewport's own pixels, so coordinates taken from a " +
+          "screenshot must be scaled by (device width / screenshot width) or they land " +
+          'short of the target. Keys are unaffected. `device op="stop"` removes the ' +
+          "discrepancy.";
+      }
       return json(response, note);
     },
   );

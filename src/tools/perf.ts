@@ -323,37 +323,53 @@ export function registerPerfTools(context: ToolContext): void {
         }
         if (response.scripts.length === 0) {
           /*
-           * An empty result has two very different causes, and this reported
-           * both as "No coverage recorded yet".
+           * An empty result has more than one cause and this asserted a single
+           * one, so it was wrong whenever the other applied.
            *
-           * `notMeasurable` covers a script the profiler holds a record for
-           * with zero instrumented lines. But one that was already compiled
-           * when instrumentation was switched on has no record AT ALL, so it
-           * never reaches `scripts` and the array comes back empty -- which
-           * reads as "your code did not run" for code that demonstrably did.
-           * Observed on a Script in ServerScriptService: it printed all the
-           * way through a playtest and coverage reported nothing.
+           * Measured against a live session, `ScriptContext`:
+           *   - enable a script, read straight back  -> NO record. The normal
+           *     state of the documented workflow, before anything has run.
+           *   - run a script, then enable it         -> NO record. Already
+           *     compiled; Luau keeps the bytecode it first built.
+           * The two are indistinguishable from here, so neither is asserted.
+           * Saying "these compiled too early" to someone who has simply not
+           * pressed Play yet is the same failure as the message it replaced.
            *
-           * Whatever the session was asked to instrument is named here, with
-           * the reason, so the answer is never silence.
+           * What IS known is whether this call switched anything on, and that
+           * decides which half of the answer is useful.
            */
-          const asked = response.remembered ?? response.enabled ?? [];
-          const unmeasurable =
-            asked.length > 0
-              ? "\nNothing was instrumented for: " +
-                asked.join(", ") +
-                ".\nThe usual cause is that these compiled before instrumentation was switched on — Luau binds coverage at first compile and keeps the bytecode it built. A script that starts with the place always does, so it cannot be measured by the session that loaded it. Modules required later can be: enable them, start the playtest, then read coverage back from the playtest's studioId."
-              : "";
+          const justEnabled = response.enabled.length > 0;
+          const pending = response.remembered ?? [];
+
+          const lead = justEnabled
+            ? `Coverage is on for ${response.enabled.length} script(s): ${response.enabled.join(", ")}.\n` +
+              "Nothing has been recorded yet, which is expected — instrumentation only " +
+              "collects while the code runs. Start the playtest, then read coverage back " +
+              "from the PLAYTEST's studioId; this editor session never runs that code."
+            : "No coverage recorded in this session.\n" +
+              (pending.length > 0
+                ? `Instrumentation is remembered for: ${pending.join(", ")}.\n` +
+                  "An empty result means either that this code has not run yet, or that " +
+                  "it was already compiled when instrumentation was switched on — Luau " +
+                  "binds coverage at first compile and keeps that bytecode. The two look " +
+                  "identical from here.\n"
+                : "Nothing is instrumented for this place. Pass `enable` with the " +
+                  "scripts you want measured.\n") +
+              "A script that starts with the place can never be measured by the session " +
+              "that loaded it. Modules required later can be: enable them, start the " +
+              "playtest, then read from the playtest's studioId.";
+
+          const failed = response.carriedFailed ?? [];
           return text(
-            (response.enabled.length > 0
-              ? `Coverage enabled for ${response.enabled.length} script(s). `
-              : "") +
-              "No coverage recorded yet." +
-              unmeasurable +
-              "\nCoverage is recorded per session. If the code runs in a playtest, read it back from the playtest's studioId — the editor session instruments its own data model and never ran that code.\n" +
-              `This session carried over: ${JSON.stringify(response.carriedOver ?? [])}; ` +
-              `failed: ${JSON.stringify(response.carriedFailed ?? [])}; ` +
-              `remembered: ${JSON.stringify(response.remembered ?? [])}.`,
+            lead +
+              (response.carriedOver && response.carriedOver.length > 0
+                ? `\nThis session instrumented at load: ${response.carriedOver.join(", ")}.`
+                : "") +
+              (failed.length > 0
+                ? `\nFailed to instrument: ${failed
+                    .map((entry) => `${entry.path} (${entry.error})`)
+                    .join("; ")}.`
+                : ""),
           );
         }
         const summary = textOf(
@@ -389,14 +405,19 @@ export function registerPerfTools(context: ToolContext): void {
         }
         if (misses.length > 0) sections.push(`Lines never executed:\n${misses.join("\n")}`);
         if (unmeasured.length > 0) {
+          // Not "already compiled when coverage was switched on": that case
+          // produces no record at all, measured directly against ScriptContext.
+          // A record with zero instrumented lines means the opposite -- the
+          // script WAS registered, and the bytecode that ran was still built
+          // without instrumentation.
           sections.push(
-            `Not measurable, reported as 0 lines: ${unmeasured.map((e) => e.path).join(", ")}.\n` +
-              "These were already compiled when coverage was switched on, and Luau " +
-              "keeps its first bytecode — re-running them does not help. This is " +
-              "normal for a script that starts with the place, since nothing can " +
-              "instrument it before the data model loads it. Coverage measures " +
-              "modules required after instrumentation, which is where most game " +
-              "logic lives.",
+            `Not measurable, reported as 0 lines: ${unmeasured.map((e) => e.path).join(", ")}.
+` +
+              "Coverage was switched on for these and Studio holds a record for " +
+              "them, but not one line could be instrumented — the bytecode that " +
+              "ran was built without it, and Luau keeps a script's first build. " +
+              "Re-running does not help. Treat these as unmeasured rather than as " +
+              "dead code: 0 of 0 lines is not the same as 0 of many.",
           );
         }
 
