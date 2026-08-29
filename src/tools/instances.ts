@@ -1,5 +1,11 @@
 import { z } from "zod";
-import { propertiesOf, suggestClass, suggestProperty } from "../lib/apidump.js";
+import {
+  describeRestriction,
+  propertiesOf,
+  restrictionsOf,
+  suggestClass,
+  suggestProperty,
+} from "../lib/apidump.js";
 import { ToolError } from "../lib/errors.js";
 import { table, type ToolResult } from "../lib/format.js";
 import { defineTool, type ToolContext } from "../lib/tool.js";
@@ -60,9 +66,31 @@ async function resolveProperties(
   const byName = new Map(known.map((property) => [property.name, property]));
   const resolved: Record<string, PropertySpec> = {};
 
+  const restricted = await restrictionsOf(className);
+
   for (const [name, value] of Object.entries(properties)) {
     const info = byName.get(name);
     if (!info) {
+      // A name missing from `known` is usually a typo, but it is also how every
+      // property above plugin identity looks — Lighting.Technology among them.
+      // Telling the agent that a property it can see in Studio "does not exist"
+      // sends it hunting for a name it already had, so the two are answered
+      // separately.
+      const restriction = restricted.get(name);
+      if (restriction && !restriction.writable) {
+        throw new ToolError(
+          "RESTRICTED_PROPERTY",
+          `${className}.${name} exists but is ${describeRestriction(restriction)} (${where}).`,
+          "Change it in Studio's Properties panel (or Game Settings) instead.",
+        );
+      }
+      // Readable only at a higher identity, but writable at ours: the write is
+      // legal, so it goes through with the type the dump declares.
+      if (restriction) {
+        resolved[name] = { value, type: restriction.valueType };
+        continue;
+      }
+
       const suggestions = await suggestProperty(className, name);
       throw new ToolError(
         "UNKNOWN_PROPERTY",

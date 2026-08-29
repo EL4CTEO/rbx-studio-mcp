@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { json, text, type ToolResult } from "../lib/format.js";
-import { pluginStalenessWarning } from "../lib/pluginbuild.js";
+import { pluginStalenessNotice, pluginStalenessWarning } from "../lib/pluginbuild.js";
 import { protocolMismatchWarning, type StudioSession } from "../lib/protocol.js";
 import { defineTool, type ToolContext } from "../lib/tool.js";
 
@@ -106,10 +106,11 @@ export function registerSessionTools(context: ToolContext): void {
       if (targetId) await bridge.notePlaceName(targetId, status.placeName, status.context);
 
       // A stale plugin answers with older handlers and no other symptom, so the
-      // warning rides along with the one call agents are told to make first.
+      // warning rides along with the one call agents are told to make first —
+      // in full the first time, as a one-line tag on every call after that.
       const session = view.list.find((entry) => entry.studioId === targetId);
       const warnings = [
-        pluginStalenessWarning(session?.buildId),
+        pluginStalenessNotice(session?.buildId),
         session ? protocolMismatchWarning(session.protocolVersion) : null,
       ].filter((warning): warning is string => warning !== null);
       return json(status, warnings.length > 0 ? `WARNING: ${warnings.join(" ")}` : undefined);
@@ -184,6 +185,25 @@ export function registerSessionTools(context: ToolContext): void {
         }),
       );
 
+      // Hoisted out of the rows: every row carried the whole four-sentence
+      // explanation, so two windows on the same stale build said it twice in
+      // one response. The row keeps a boolean — which window is stale is
+      // per-row information — and the explanation is stated once, for the
+      // response, and only for build ids not already explained this session.
+      const staleBuilds = [...new Set(sessions.map((session) => session.buildId))].filter(
+        (buildId) => pluginStalenessWarning(buildId) !== null,
+      );
+      const notices = staleBuilds
+        .map((buildId) => pluginStalenessNotice(buildId))
+        .filter((notice): notice is string => notice !== null);
+
+      const note = [
+        notices.length > 0 ? `WARNING: ${notices.join(" ")}` : null,
+        listingHint(sessions, active),
+      ]
+        .filter((part): part is string => part !== undefined && part !== null)
+        .join("\n\n");
+
       return json(
         {
           studios: sessions.map((session, index) => ({
@@ -194,13 +214,13 @@ export function registerSessionTools(context: ToolContext): void {
             transport: session.transport,
             pluginVersion: session.pluginVersion,
             buildId: session.buildId,
-            stale: pluginStalenessWarning(session.buildId) ?? false,
+            stale: pluginStalenessWarning(session.buildId) !== null,
             protocolMismatch: protocolMismatchWarning(session.protocolVersion) ?? false,
             active: session.studioId === active,
           })),
           activeStudioId: active,
         },
-        listingHint(sessions, active),
+        note.length > 0 ? note : undefined,
       );
     },
   );

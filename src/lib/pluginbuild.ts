@@ -89,3 +89,37 @@ export function pluginStalenessWarning(reported: string | undefined): string | n
     `If that does not clear it, run \`npm run install:plugin\` and restart Studio.`
   );
 }
+
+/** Build ids already explained in full during this server process. */
+const announced = new Set<string>();
+
+/**
+ * The staleness warning, told once.
+ *
+ * The full text is four sentences of instructions, and it was riding on every
+ * `studio_status` and once per row in `list_studios` — with two windows open,
+ * the same paragraph twice in one response, for the rest of the session. It
+ * says one thing, and an agent only needs to be told it once: the first
+ * observation of a build id gets the whole explanation, later ones get a tag
+ * short enough to ignore.
+ *
+ * Keyed on the build id, so a plugin that actually reloads into a different
+ * build is a new fact and gets the full text again. A plugin that reloads into
+ * a *matching* build produces no warning at all, which is the real all-clear.
+ */
+export function pluginStalenessNotice(reported: string | undefined): string | null {
+  const warning = pluginStalenessWarning(reported);
+  if (warning === null) return null;
+
+  const key = reported ?? "unknown";
+  if (announced.has(key)) {
+    return `Plugin is still the stale build ${key} (already explained in this session).`;
+  }
+  announced.add(key);
+  return warning;
+}
+
+/** Test seam: forgets what has been announced, so a fresh process is simulable. */
+export function resetStalenessNotices(): void {
+  announced.clear();
+}

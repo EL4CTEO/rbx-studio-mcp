@@ -2,6 +2,15 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.2.9
+
+A property that exists is no longer reported as a typo, and the stale-plugin warning stops repeating itself.
+
+### Fixed
+- **Properties you cannot set were reported as properties that do not exist.** `Lighting.Technology` is real — it is gated behind the RobloxScript identity, which no plugin has — but the name check reads the API dump filtered to what a plugin can reach, so it was indistinguishable from a misspelling. `modify` and `create` now answer with `RESTRICTED_PROPERTY`: "Lighting.Technology exists but is restricted to RobloxScript identity, so no plugin can set it. Change it in Studio's Properties panel (or Game Settings) instead." True of every property at that security level, and of `NotScriptable` ones, not just this one. Real typos still get `UNKNOWN_PROPERTY` and the closest matching names.
+- **`inspect` with detail `full` hid the same properties.** "Every readable property" quietly meant "every property a plugin is allowed to see", and the ones it skipped were absent exactly the way a nonexistent property would be. They are now listed by name at the end of the response, with the identity each one needs.
+- **The stale-plugin warning repeated on every call, for the whole session.** Four sentences of instructions on every `studio_status`, and once per row in `list_studios` — the same paragraph twice in one response with two Studio windows open. It is now stated in full the first time a build is seen and reduced to a single line after that, and a plugin that genuinely reloads into a different build warns again.
+
 ## 0.2.8
 
 Packaging only. No code changes from 0.2.7.

@@ -59,7 +59,9 @@ interface CacheFile {
 }
 
 let loaded: Promise<ApiDump | null> | null = null;
+let classIndex: Map<string, ApiClass> | null = null;
 const propertyCache = new Map<string, PropertyInfo[]>();
+const restrictionCache = new Map<string, Map<string, PropertyRestriction>>();
 
 function cachePath(): string {
   return join(tmpdir(), "roblox-studio-mcp", "api-dump.json");
@@ -120,14 +122,34 @@ export function loadApiDump(): Promise<ApiDump | null> {
   return loaded;
 }
 
+/** The two identities a plugin actually runs with. Anything else is out of reach. */
+const PLUGIN_REACHABLE = new Set(["None", "PluginSecurity"]);
+
+/** Security is either one level for both directions, or one per direction. */
+function securityOf(member: ApiMember): { read: string; write: string } {
+  const security = member.Security;
+  if (typeof security === "string") return { read: security, write: security };
+  return { read: security?.Read ?? "None", write: security?.Write ?? "None" };
+}
+
+/**
+ * The dump's classes keyed by name, built once. Two walkers need it now, and
+ * rebuilding a map over ~800 classes per lookup was already wasteful with one.
+ */
+async function classesByName(): Promise<Map<string, ApiClass> | null> {
+  if (classIndex) return classIndex;
+  const dump = await loadApiDump();
+  if (!dump) return null;
+  classIndex = new Map(dump.Classes.map((entry) => [entry.Name, entry]));
+  return classIndex;
+}
+
 function isReadable(member: ApiMember): boolean {
   if (member.MemberType !== "Property") return false;
 
-  const security = member.Security;
-  const read = typeof security === "string" ? security : security?.Read;
   // PluginSecurity is fine — the plugin runs with it. Anything higher is not
   // reachable from a plugin and would just produce errors if we offered it.
-  if (read && read !== "None" && read !== "PluginSecurity") return false;
+  if (!PLUGIN_REACHABLE.has(securityOf(member).read)) return false;
 
   // Only `NotScriptable` actually blocks Luau access. `Hidden` means "not
   // serialized / not shown in the Properties widget", which is true of
@@ -135,6 +157,101 @@ function isReadable(member: ApiMember): boolean {
   // perfectly scriptable, and both among the properties agents reach for most.
   // Filtering on `Hidden` would silently hide them.
   return !(member.Tags ?? []).includes("NotScriptable");
+}
+
+/**
+ * A property the dump declares but plugin identity cannot fully use.
+ *
+ * These are dropped from `propertiesOf`, which is right for enumeration and
+ * wrong for validation: a name that exists at a higher security level then
+ * looks exactly like a typo, and the agent is told to go and look for a
+ * property it can already see in Studio's Properties panel. Keeping them here,
+ * separately, lets callers tell "no such property" from "not yours to touch".
+ */
+export interface PropertyRestriction {
+  name: string;
+  declaredBy: string;
+  valueType: string;
+  /**
+   * The identity the engine demands, with the "Security" suffix trimmed so it
+   * reads the way the engine's own error does ("lacking capability
+   * RobloxScript"). Empty when the block is `NotScriptable` rather than security.
+   */
+  capability: string;
+  /** What plugin identity cannot do with it. */
+  blocked: "read" | "write" | "read or write";
+  /** True when the engine exposes it to no script at all, at any identity. */
+  notScriptable: boolean;
+  /** False when the write is blocked — the only case that stops a `modify`. */
+  writable: boolean;
+}
+
+function restrictionOf(member: ApiMember, declaredBy: string): PropertyRestriction | null {
+  const notScriptable = (member.Tags ?? []).includes("NotScriptable");
+  const { read, write } = securityOf(member);
+  const readBlocked = !PLUGIN_REACHABLE.has(read);
+  const writeBlocked = !PLUGIN_REACHABLE.has(write);
+  if (!notScriptable && !readBlocked && !writeBlocked) return null;
+
+  return {
+    name: member.Name,
+    declaredBy,
+    valueType: member.ValueType?.Name ?? "unknown",
+    capability: (writeBlocked ? write : readBlocked ? read : "").replace(/Security$/, ""),
+    blocked:
+      notScriptable || (readBlocked && writeBlocked)
+        ? "read or write"
+        : readBlocked
+          ? "read"
+          : "write",
+    notScriptable,
+    writable: !notScriptable && !writeBlocked,
+  };
+}
+
+/**
+ * Every property of a class that plugin identity cannot fully use, by name.
+ *
+ * Deliberately a sibling of `propertiesOf` rather than part of it: enumeration
+ * wants only what an agent can act on, validation wants to know these exist.
+ */
+export async function restrictionsOf(
+  className: string,
+): Promise<Map<string, PropertyRestriction>> {
+  const cached = restrictionCache.get(className);
+  if (cached) return cached;
+
+  const byName = await classesByName();
+  const found = new Map<string, PropertyRestriction>();
+  // No dump is not the same as "nothing is restricted", so this is not cached:
+  // the next call may have the dump and should get a real answer.
+  if (!byName) return found;
+
+  const seen = new Set<string>();
+  let current = byName.get(className);
+  while (current) {
+    for (const member of current.Members) {
+      if (member.MemberType !== "Property" || seen.has(member.Name)) continue;
+      seen.add(member.Name);
+      const restriction = restrictionOf(member, current.Name);
+      if (restriction) found.set(member.Name, restriction);
+    }
+    current = current.Superclass ? byName.get(current.Superclass) : undefined;
+  }
+
+  restrictionCache.set(className, found);
+  return found;
+}
+
+/** Why a property is out of reach, as a clause that follows "exists but is". */
+export function describeRestriction(restriction: PropertyRestriction): string {
+  if (restriction.notScriptable) {
+    return "marked NotScriptable, so no script or plugin can set it";
+  }
+  return (
+    `restricted to ${restriction.capability} identity, so no plugin can ` +
+    (restriction.blocked === "read" ? "read it" : "set it")
+  );
 }
 
 /**
@@ -146,10 +263,9 @@ export async function propertiesOf(className: string): Promise<PropertyInfo[]> {
   const cached = propertyCache.get(className);
   if (cached) return cached;
 
-  const dump = await loadApiDump();
-  if (!dump) return [];
+  const byName = await classesByName();
+  if (!byName) return [];
 
-  const byName = new Map(dump.Classes.map((entry) => [entry.Name, entry]));
   const properties: PropertyInfo[] = [];
   const seen = new Set<string>();
 

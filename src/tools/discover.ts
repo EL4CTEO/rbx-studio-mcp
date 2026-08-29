@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { propertiesOf, standardProperties } from "../lib/apidump.js";
+import { propertiesOf, restrictionsOf, standardProperties } from "../lib/apidump.js";
 import {
   cursorSchema,
   decodeCursor,
@@ -49,6 +49,48 @@ function pageOf(response: ListResponse, detail: Detail, more?: string): ToolResu
     ...(nextOffset < response.total ? { nextCursor: encodeCursor(nextOffset) } : {}),
     ...(more ? { more } : {}),
   });
+}
+
+/** Per class, at most this many restricted names before the note summarises. */
+const RESTRICTED_SHOWN = 10;
+
+/**
+ * What `detail: "full"` could not read, named rather than omitted.
+ *
+ * "Every readable property" quietly means "every property this identity is
+ * allowed to see", and the gap is invisible: Lighting.Technology is absent from
+ * a full inspect exactly the way a nonexistent property would be. Saying which
+ * ones exist but are out of reach is the difference between an agent trying a
+ * different spelling and an agent telling the user to change it in Studio.
+ */
+async function restrictedNote(classNames: Set<string>): Promise<string | undefined> {
+  const lines: string[] = [];
+
+  for (const className of classNames) {
+    // Only the ones the read actually missed. A property readable by a plugin
+    // but not writable by one is already in the output above.
+    const hidden = [...(await restrictionsOf(className)).values()].filter(
+      (restriction) => restriction.blocked !== "write",
+    );
+    if (hidden.length === 0) continue;
+
+    const shown = hidden.slice(0, RESTRICTED_SHOWN).map((restriction) => {
+      const why = restriction.notScriptable ? "NotScriptable" : restriction.capability;
+      // Unreadable here but still writable is rare enough to be worth saying,
+      // because the rest of this note tells the agent not to bother trying.
+      return `${restriction.name} (${why}${restriction.writable ? ", writable" : ""})`;
+    });
+    const rest = hidden.length - shown.length;
+    lines.push(`  ${className}: ${shown.join(", ")}${rest > 0 ? `, and ${rest} more` : ""}`);
+  }
+
+  if (lines.length === 0) return undefined;
+  return (
+    "Present but not readable at plugin identity, so absent above rather than " +
+    "unset. Unless marked writable they cannot be set from here either — change " +
+    "those in Studio's Properties panel:\n" +
+    lines.join("\n")
+  );
 }
 
 /**
@@ -198,6 +240,10 @@ export function registerDiscoverTools(context: ToolContext): void {
       // Classes are not known until the plugin answers, so resolve the property
       // set in two passes: a cheap probe for class names, then the real read.
       let requested = args.properties;
+      // Classes seen by the probe, so `full` can say which properties it left
+      // out. Empty for `concise` and for an explicit property list, neither of
+      // which claims to be showing everything.
+      const probedClasses = new Set<string>();
 
       if (!requested && args.detail !== "concise") {
         const probe = await bridge.call<InspectResponse>(
@@ -212,6 +258,7 @@ export function registerDiscoverTools(context: ToolContext): void {
         );
         const names = new Set<string>();
         for (const item of probe.items) {
+          if (args.detail === "full") probedClasses.add(item.className);
           const list =
             args.detail === "full"
               ? (await propertiesOf(item.className)).map((property) => property.name)
@@ -231,12 +278,20 @@ export function registerDiscoverTools(context: ToolContext): void {
         { studioId: args.studioId },
       );
 
-      const note =
-        response.failures.length > 0
-          ? `Could not resolve ${response.failures.length} path(s):\n` +
-            response.failures.map((failure) => `  - ${failure}`).join("\n")
-          : undefined;
-      return json(response.items.map(withSortedProperties), note);
+      const notes: string[] = [];
+      if (response.failures.length > 0) {
+        notes.push(
+          `Could not resolve ${response.failures.length} path(s):\n` +
+            response.failures.map((failure) => `  - ${failure}`).join("\n"),
+        );
+      }
+      const restricted = await restrictedNote(probedClasses);
+      if (restricted) notes.push(restricted);
+
+      return json(
+        response.items.map(withSortedProperties),
+        notes.length > 0 ? notes.join("\n\n") : undefined,
+      );
     },
   );
 
