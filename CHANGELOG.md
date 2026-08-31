@@ -2,6 +2,18 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.3.0
+
+`execute_luau` now warns when it is reading a copy of a module instead of the live one, instance names containing dots resolve, and `script_read` can take a different line range per script.
+
+### Fixed
+- **`execute_luau` could report a running system as doing nothing.** It runs in the plugin's own Luau VM, which keeps its own `require` cache, so `require(SomeModule)` against a running playtest returns a second, freshly-initialised copy of that module — its counters and caches read as their starting values while the real ones are fine. A zero read that way is indistinguishable from a genuine zero, and there is no API that would let a plugin reach the game's cache, so the result now says so: any call using `require` while the game is running comes back with a note explaining what it actually read and pointing at the DataModel, or the game's own prints via `console`, as the way to see live state. The tool description says it up front too.
+- **Instance names containing dots could not be addressed.** Paths are dot-separated, so `Workspace.Dr. Simon.Head` split into a segment named `Dr` and failed. Segments are now rejoined greedily, longest first, when the plain lookup misses — a place holding both `Dr` and `Dr. Simon` still resolves the short name to itself.
+
+### Changed
+- **`script_read` takes a line range per script.** An entry may now be `{path, startLine, endLine}` instead of a bare path, so "line 40 of this one, line 300 of that one" is one call rather than one call each. A bare string still reads the whole file, and the top-level `startLine`/`endLine` remain the default for entries without their own.
+- **`script_create` waits 60 seconds instead of 15.** A batch of full script sources is the largest payload any tool sends, and the default was timing out on around 12KB across three scripts — splitting the batch is the wrong answer when creating related scripts as one undo step is the point of the tool.
+
 ## 0.2.9
 
 A property that exists is no longer reported as a typo, and the stale-plugin warning stops repeating itself.

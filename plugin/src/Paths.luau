@@ -131,9 +131,12 @@ function Paths.resolve(path: string): Instance
 	end
 
 	local current: Instance = game
-	for index, segment in segments do
+	local index = 1
+	while index <= #segments do
+		local segment = segments[index]
 		local name, ordinal = parseSegment(segment)
 		local nextInstance: Instance? = nil
+		local consumed = 1
 
 		if ordinal then
 			-- Explicit disambiguation: take the nth child with this exact name.
@@ -148,6 +151,35 @@ function Paths.resolve(path: string): Instance
 			nextInstance = if ok then service else current:FindFirstChild(name)
 		else
 			nextInstance = current:FindFirstChild(name)
+		end
+
+		--[[
+			Instance names may contain dots -- "Dr. Simon" is an ordinary name --
+			and the separator is a dot too, so such a name arrives here already
+			split into pieces that match nothing. Rejoin greedily, longest first,
+			so "Workspace.Dr. Simon.Head" finds the child actually called
+			"Dr. Simon" rather than failing on a segment named "Dr".
+
+			Only attempted after the plain lookup misses, so a place where both
+			"Dr" and "Dr. Simon" exist still resolves the short name to itself.
+		]]
+		if not nextInstance and index < #segments then
+			for last = #segments, index + 1, -1 do
+				local joined = table.concat(segments, ".", index, last)
+				local joinedName, joinedOrdinal = parseSegment(joined)
+				local found: Instance? = nil
+				if joinedOrdinal then
+					local list = childrenByName(current, nil)[joinedName]
+					found = if list then list[joinedOrdinal] else nil
+				else
+					found = current:FindFirstChild(joinedName)
+				end
+				if found then
+					nextInstance = found
+					consumed = last - index + 1
+					break
+				end
+			end
 		end
 
 		if not nextInstance then
@@ -166,6 +198,7 @@ function Paths.resolve(path: string): Instance
 			)
 		end
 		current = nextInstance
+		index += consumed
 	end
 
 	return current

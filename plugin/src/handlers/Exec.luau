@@ -13,6 +13,7 @@
 ]]
 
 local LogService = game:GetService("LogService")
+local RunService = game:GetService("RunService")
 
 local Dispatch = require(script.Parent.Parent.Dispatch)
 local Serialize = require(script.Parent.Parent.Serialize)
@@ -153,6 +154,55 @@ local function compile(
 	return result :: any, nil, "module", module
 end
 
+--[[
+	Warnings about what the code could and could not see, in the result.
+
+	The module-cache one is the important one, and it cost a session before it
+	existed. This chunk runs in the plugin's VM, which keeps its own `require`
+	cache; the running game keeps its own. So `require(SomeModule)` here loads a
+	*second copy* -- fresh upvalues, fresh state -- and reading a counter off it
+	returns the zero it was initialised with while the real module, in the game's
+	VM, is working perfectly. A zero that means "wrong copy" is indistinguishable
+	from a zero that means "nothing happened", so the only defence is saying so
+	every time it could be happening.
+
+	Only raised while the game is actually running, since in an editor session
+	there is no other copy for the answer to disagree with.
+]]
+local function notes(route: string, source: string): string?
+	local lines: { string } = {}
+
+	-- Only mentioned when it constrains what the code could do. On the direct
+	-- route there is nothing to say.
+	if route == "module" then
+		table.insert(
+			lines,
+			"Ran through a ModuleScript because loadstring is disabled in this "
+				.. "session, so the code held script identity rather than plugin "
+				.. "identity -- plugin-only APIs would have been unavailable to it."
+		)
+	end
+
+	if string.find(source, "require", 1, true) and RunService:IsRunning() then
+		table.insert(
+			lines,
+			"This code called `require` while the game is running, and it does NOT "
+				.. "share the running game's module cache -- it got its own fresh copy "
+				.. "of each ModuleScript, with state reset to whatever the module "
+				.. "initialises. Any counter, cache or table read that way reports its "
+				.. "starting value, not the live one, and a zero here does not mean "
+				.. "nothing happened. To read live state, read it off the DataModel "
+				.. "(instances, attributes, properties) or have the running code print "
+				.. "it and read that with `console`."
+		)
+	end
+
+	if #lines == 0 then
+		return nil
+	end
+	return table.concat(lines, "\n\n")
+end
+
 function Exec.run(params: { [string]: any }): { [string]: any }
 	local source = params.source
 	if typeof(source) ~= "string" or source == "" then
@@ -229,13 +279,7 @@ function Exec.run(params: { [string]: any }): { [string]: any }
 		module:Destroy()
 	end
 
-	-- Only mentioned when it constrains what the code could do. On the direct
-	-- route there is nothing to say.
-	local identity = if route == "module"
-		then "Ran through a ModuleScript because loadstring is disabled in this "
-			.. "session, so the code held script identity rather than plugin "
-			.. "identity -- plugin-only APIs would have been unavailable to it."
-		else nil
+	local identity = notes(route, source)
 
 	if not results[1] then
 		return {

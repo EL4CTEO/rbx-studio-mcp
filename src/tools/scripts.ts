@@ -17,6 +17,8 @@ interface ReadResponse {
     className: string;
     lineCount: number;
     startLine: number;
+    /** The end line that was asked for, absent when the read ran to the end. */
+    endLine?: number;
     source: string;
   }>;
   failures: string[];
@@ -81,27 +83,57 @@ export function registerScriptTools(context: ToolContext): void {
         "user has typed but not yet saved is included. Reading the saved property " +
         "instead would hand you stale code and you would 'fix' the change they just " +
         "made.\n\n" +
-        "Pass every script you need in one call. `startLine`/`endLine` apply to all " +
-        "of them, so use them when following one range across several files and " +
-        "read whole files otherwise.",
+        "Pass every script you need in one call, including when you want a " +
+        "different part of each: an entry may be a bare path for the whole file, " +
+        "or `{path, startLine, endLine}` for a window into that one script. The " +
+        "top-level `startLine`/`endLine` are the default for entries that do not " +
+        "carry their own.",
       inputSchema: {
         paths: z
-          .array(z.string())
+          .array(
+            z.union([
+              z.string().describe("A script path, read in full."),
+              z.object({
+                path: z.string().describe("The script to read."),
+                startLine: z
+                  .number()
+                  .int()
+                  .min(1)
+                  .optional()
+                  .describe("First line of the window for this script, 1-based and inclusive."),
+                endLine: z
+                  .number()
+                  .int()
+                  .min(1)
+                  .optional()
+                  .describe("Last line of the window for this script, inclusive."),
+              }),
+            ]),
+          )
           .min(1)
           .max(20)
-          .describe('Script paths, e.g. ["ServerScriptService.Systems.Combat"].'),
+          .describe(
+            'Scripts to read, e.g. ["ServerScriptService.Systems.Combat"] or ' +
+              '[{ path: "...Combat", startLine: 120, endLine: 180 }].',
+          ),
         startLine: z
           .number()
           .int()
           .min(1)
           .optional()
-          .describe("First line to return, 1-based and inclusive. Omit to start at the top."),
+          .describe(
+            "Default first line for entries without their own, 1-based and " +
+              "inclusive. Omit to start at the top.",
+          ),
         endLine: z
           .number()
           .int()
           .min(1)
           .optional()
-          .describe("Last line to return, inclusive. Omit to read to the end."),
+          .describe(
+            "Default last line for entries without their own, inclusive. Omit to " +
+              "read to the end.",
+          ),
         studioId: z.string().optional().describe("Target Studio; omit for the active one."),
       },
       readOnly: true,
@@ -124,8 +156,8 @@ export function registerScriptTools(context: ToolContext): void {
             return `${item.path}  (${item.className}) is empty.`;
           }
           const asked =
-            args.endLine !== undefined
-              ? `Lines ${item.startLine}-${args.endLine}`
+            item.endLine !== undefined
+              ? `Lines ${item.startLine}-${item.endLine}`
               : `Line ${item.startLine} onwards`;
           return (
             `${item.path}  (${item.className}, ${item.lineCount} lines)\n` +
@@ -435,7 +467,11 @@ export function registerScriptTools(context: ToolContext): void {
       const response = await bridge.call<CreateResponse>(
         "script.create",
         { scripts: args.scripts },
-        { studioId: args.studioId },
+        // A batch of full script sources is the largest payload any tool sends,
+        // and the default 15s was seen timing out on ~12KB across three scripts.
+        // Splitting the batch is the wrong fix when the point of the tool is to
+        // create related scripts as one undo step.
+        { studioId: args.studioId, timeoutMs: 60_000 },
       );
 
       return table(

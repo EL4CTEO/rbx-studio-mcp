@@ -75,21 +75,38 @@ function Scripts.read(params: { [string]: any }): { [string]: any }
 	local failures: { string } = {}
 	local memo: Paths.NameIndex = {}
 
-	for _, path in paths do
+	--[[
+		Each entry may carry its own line window, because the shape that actually
+		comes up is "line 40 of this one, line 300 of that one" -- and a single
+		range shared across the whole batch forced one call per script, which is
+		what batching this tool was for in the first place.
+
+		A plain string still means the whole file, or the batch-wide range when
+		one was given.
+	]]
+	for _, entry in paths do
+		local windowed = typeof(entry) == "table"
+		local path = if windowed then entry.path else entry
 		local ok, resolved = pcall(resolveScript, path)
 		if not ok then
 			local err = resolved :: any
 			local reason = if typeof(err) == "table"
 				then (if err.hint then err.message .. " " .. err.hint else err.message)
 				else tostring(err)
-			table.insert(failures, string.format("%s: %s", path, reason))
+			table.insert(failures, string.format("%s: %s", tostring(path), reason))
 			continue
 		end
 
 		local target = resolved :: LuaSourceContainer
 		local lines = TextEdit.toLines(ScriptEdit.read(target))
-		local startLine = math.max(tonumber(params.startLine) or 1, 1)
-		local endLine = math.min(tonumber(params.endLine) or #lines, #lines)
+		local askedStart = if windowed and entry.startLine ~= nil
+			then tonumber(entry.startLine)
+			else tonumber(params.startLine)
+		local askedEnd = if windowed and entry.endLine ~= nil
+			then tonumber(entry.endLine)
+			else tonumber(params.endLine)
+		local startLine = math.max(askedStart or 1, 1)
+		local endLine = math.min(askedEnd or #lines, #lines)
 
 		local window: { string } = {}
 		table.move(lines, startLine, endLine, 1, window)
@@ -99,6 +116,7 @@ function Scripts.read(params: { [string]: any }): { [string]: any }
 			className = target.ClassName,
 			lineCount = #lines,
 			startLine = startLine,
+			endLine = askedEnd,
 			source = table.concat(window, "\n"),
 		})
 	end

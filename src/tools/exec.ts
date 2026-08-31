@@ -56,7 +56,16 @@ export function registerExecTools(context: ToolContext): void {
         "Against a running playtest server, Studio disables `loadstring`, so the " +
         "code is compiled through a ModuleScript instead and runs at script " +
         "identity — plugin-only APIs are unavailable there. When that happens it " +
-        "is stated in the result rather than left to be inferred from a failure.",
+        "is stated in the result rather than left to be inferred from a failure." +
+        "\n\n" +
+        "Do not use `require` to read live state out of a running game. This runs " +
+        "in the plugin's own Luau VM with its own module cache, so `require` here " +
+        "returns a second, freshly-initialised copy of the ModuleScript — its " +
+        "counters and caches read as empty while the real one is running fine, and " +
+        "a zero is indistinguishable from a genuine zero. Read live state off the " +
+        "DataModel instead (instances, attributes, properties), or have the game " +
+        "print it and read that with `console`. The result warns when a call could " +
+        "have hit this.",
       inputSchema: {
         source: z
           .string()
