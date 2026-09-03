@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="rbx-studio-mcp">
+  <title>rbx-studio-mcp</title>
+  <desc>The prism mark alone, square, for a plugin toolbar button or favicon.</desc>
+
+  <defs>
+    <linearGradient id="panel" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#151624"/>
+      <stop offset="1" stop-color="#0A0B12"/>
+    </linearGradient>
+
+    <linearGradient id="edge" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#7C6BD0"/>
+      <stop offset="1" stop-color="#CDBFFF"/>
+    </linearGradient>
+
+    <linearGradient id="face" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#A78BFA" stop-opacity="0.20"/>
+      <stop offset="1" stop-color="#67E8F9" stop-opacity="0.06"/>
+    </linearGradient>
+
+    <linearGradient id="beam" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#CED4E2" stop-opacity="0"/>
+      <stop offset="1" stop-color="#EEF2FA" stop-opacity="0.95"/>
+    </linearGradient>
+
+    <filter id="bloom" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="7" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <filter id="softbloom" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="3.4" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <rect width="512" height="512" rx="112" fill="url(#panel)"/>
+
+  <!--
+    Squarer framing than the lockup. The prism is centred and the fan is
+    shortened, because at 32px the wordmark is gone and this shape alone has to
+    be recognisable as the same product.
+  -->
+  <path d="M52 214 L196 236" stroke="url(#beam)" stroke-width="9" stroke-linecap="round" filter="url(#softbloom)"/>
+
+  <g filter="url(#bloom)" stroke-width="9" stroke-linecap="round" opacity="0.95">
+    <path d="M300 246 L462 158" stroke="#67E8F9"/>
+    <path d="M300 246 L462 202" stroke="#6EE7A8"/>
+    <path d="M300 246 L462 246" stroke="#FBBF24"/>
+    <path d="M300 246 L462 290" stroke="#A78BFA"/>
+    <path d="M300 246 L462 334" stroke="#FB7185"/>
+  </g>
+
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M214 268 L338 268 L276 148 Z" stroke="url(#edge)" stroke-width="6" opacity="0.38"/>
+    <path d="M166 300 L214 268 M290 300 L338 268 M228 180 L276 148"
+          stroke="url(#edge)" stroke-width="6" opacity="0.5"/>
+    <path d="M166 300 L290 300 L228 180 Z" fill="url(#face)" stroke="url(#edge)" stroke-width="10"/>
+  </g>
+
+  <g fill="#EFEAFF" filter="url(#softbloom)">
+    <circle cx="166" cy="300" r="12"/>
+    <circle cx="290" cy="300" r="12"/>
+    <circle cx="228" cy="180" r="12"/>
+  </g>
+  <g fill="#A78BFA" opacity="0.55">
+    <circle cx="214" cy="268" r="7.5"/>
+    <circle cx="338" cy="268" r="7.5"/>
+    <circle cx="276" cy="148" r="7.5"/>
+  </g>
+
+  <!-- The name, set small under the mark. Drops out of legibility below about
+       96px, which is the point: at those sizes the prism is the logo. -->
+  <text x="256" y="404" text-anchor="middle"
+        font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace"
+        font-size="42" font-weight="600" letter-spacing="-1.4" fill="#DCE2EE">rbx-studio-<tspan fill="#A78BFA">mcp</tspan></text>
+</svg>

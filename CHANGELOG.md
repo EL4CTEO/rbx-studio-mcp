@@ -2,6 +2,26 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.3.5
+
+Search results stop reshuffling between calls, values written as text land as the right type, and the console panel gets eight colour presets.
+
+### Fixed
+- **`find` and `tree` returned rows in a different order every call.** The engine does not order `GetDescendants` stably, and pages are cut by position — so page two came from a different ordering than page one, skipping some instances and repeating others with counts that still looked right. Results are now sorted.
+- **A bad cursor silently returned the first page.** Indistinguishable from a genuine first page, so paging could never reach the end. It is an error now.
+- **Numbers in a composite value were misread.** `Position: "1e3, 0, .5"` became `1, 3, 0` and reported success. Scalars and composites now read numbers the same way.
+- **Anything but exactly `"true"` became `false`.** `Anchored: "True"` silently set the opposite. Near misses are accepted; anything else is refused instead of guessed.
+- **Attributes could not hold a Vector3, Color3 or UDim2.** The same text that types a property was stored as a string. Pass `{ type, value }` for any non-scalar.
+- **`find` disagreed with `modify` about enum notation.** `"Plastic"` and `"FALSE"` matched nothing while `modify` accepted both. Matching is case-insensitive and takes a bare enum name.
+- **A self-referencing table printed as three nested copies.** `execute_luau` now says `<circular reference>`.
+- **A backwards line range blamed the file.** `script_read` now names the argument.
+- **`api` gave no suggestion for a mistyped class.** It now answers like `create` does.
+
+### Changed
+- **The console panel has eight colour presets** — Lattice, Observatory, Orbit, Void, Nebula, Aurora, Phosphor, Blueprint. Hover the tab on its right edge. Each replaces the activity cell's contents, not just its colours, and the choice persists across Studio restarts.
+- `debug` now states what breakpoints actually do: they fire once per run rather than once per pass, and a log expression cannot see a loop's control variable.
+- `console` no longer claims Studio's own messages never reach the log. Some do, some do not; a quiet log is not an all-clear.
+
 ## 0.3.1
 
 Paths with dots in them resolve properly, `script_create` catches a script that would run twice, and the stale-plugin warning stops blaming the wrong side.

@@ -43,8 +43,9 @@ local Exec = {}
 	serializer the rest of the server uses, so a Vector3 reads the way it does
 	everywhere else.
 ]]
-local function describe(value: any, depth: number?): any
+local function describe(value: any, depth: number?, seen: { [any]: boolean }?): any
 	local level = depth or 0
+	local visited = seen or {}
 	local kind = typeof(value)
 
 	if kind == "function" or kind == "thread" then
@@ -55,11 +56,18 @@ local function describe(value: any, depth: number?): any
 	end
 
 	local source = value :: { [any]: any }
-	-- Also the cycle guard: a self-referencing table stops here rather than
-	-- recursing until the stack gives out.
+	-- Named separately from the depth cap, because they mean opposite things to
+	-- a reader. The depth cap says "there is more below this"; a cycle says
+	-- "this is the table you are already inside". Reporting the second as the
+	-- first printed `t.self.self.self` as three distinct nested tables, which
+	-- reads as real structure that does not exist.
+	if visited[source] then
+		return "<circular reference>"
+	end
 	if level >= MAX_TABLE_DEPTH then
 		return "<nested table>"
 	end
+	visited[source] = true
 
 	local count = 0
 	for _ in source do
@@ -75,8 +83,11 @@ local function describe(value: any, depth: number?): any
 				table.insert(list, string.format("<%d more>", count - MAX_TABLE_ENTRIES))
 				break
 			end
-			table.insert(list, describe(item, level + 1))
+			table.insert(list, describe(item, level + 1, visited))
 		end
+		-- Cleared on the way out so the same table appearing twice side by side
+		-- still renders twice; only a table containing itself is a cycle.
+		visited[source] = nil
 		return list
 	end
 
@@ -88,8 +99,9 @@ local function describe(value: any, depth: number?): any
 			map["..."] = string.format("<%d more>", count - MAX_TABLE_ENTRIES)
 			break
 		end
-		map[tostring(key)] = describe(item, level + 1)
+		map[tostring(key)] = describe(item, level + 1, visited)
 	end
+	visited[source] = nil
 	return map
 end
 

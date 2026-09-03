@@ -22,7 +22,7 @@ import { registerDeviceTools } from "./tools/device.js";
 import { registerApiTools } from "./tools/api.js";
 import { registerResources } from "./resources.js";
 
-const VERSION = "0.3.1";
+const VERSION = "0.3.5";
 
 function parsePort(argv: string[]): number {
   const flag = argv.indexOf("--port");

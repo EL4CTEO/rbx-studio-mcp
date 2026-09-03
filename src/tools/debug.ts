@@ -145,17 +145,27 @@ export function registerDebugTools(context: ToolContext): void {
         "a breakpoint can fire only on the case that matters — `health < 0`, " +
         "`player.Name == \"someone\"`.\n\n" +
         "`logMessage` is ALSO a Luau expression, not a template string: its value " +
-        'is printed when the breakpoint is hit, so write `"index=" .. index` ' +
-        "rather than `index={index}`. Prose is a syntax error and the breakpoint " +
-        "is skipped. The engine prints it without stopping the thread at all, " +
-        "which makes it the cheapest way to watch a value change on a hot path " +
-        "or inside a tight loop — read the lines back with `console`.\n\n" +
+        'is printed when the breakpoint is hit, so write `"health=" .. health` ' +
+        "rather than `health={health}`. Prose is a syntax error. Read the lines " +
+        "back with `console`.\n\n" +
+        "Two things about it are measured, not assumed, and both waste your time " +
+        "otherwise. A breakpoint fires ONCE PER RUN, not once per pass: on a " +
+        "five-iteration loop it printed a single line, for the first iteration " +
+        "only. It is not a way to watch a value change inside a loop — to see " +
+        "every pass, have the code itself print and read that with `console`. " +
+        "And a log expression CANNOT SEE THE LOOP CONTROL VARIABLE: on " +
+        "`for index = 1, 5 do`, a breakpoint in the body read the body's own " +
+        "locals correctly and `index` as nil. Wrap values in `tostring` so a nil " +
+        "prints as \"nil\" instead of throwing.\n\n" +
+        "A log expression that throws is reported as \"Breakpoint ... ignored\" in " +
+        "`console`, NOT here — `set` still returns Verified, because Studio only " +
+        "compiles the expression once the line is reached.\n\n" +
         "So the two kinds cost different things: a `logMessage` breakpoint never " +
         "stops and gives you one line you composed in advance, while one without " +
         "it stops briefly and gives you the whole frame — every local and its " +
-        "type, without having to guess beforehand which value would matter. " +
-        "Reach for the log when you know what to watch, the capture when you do " +
-        "not.\n\n" +
+        "type, without having to guess beforehand which value would matter. Both " +
+        "give you that for one pass only. Reach for the log when you know what " +
+        "to watch, the capture when you do not.\n\n" +
         "Only one breakpoint exists per line, so the same line cannot both log " +
         "and capture.\n\n" +
         "Put the breakpoint on a line that does something. A `return`, an `end` " +

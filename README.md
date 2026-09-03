@@ -2,7 +2,7 @@
 
 MCP server for Roblox Studio: 29 tools over a push-based bridge, batched writes that undo as one step, editor-safe script edits. MIT.
 
-![The Studio MCP panel, showing calls and their latency](docs/console.png)
+![The Studio MCP panel: a live activity band, a call log with latencies, and the theme drawer open](docs/rbx-studio.png)
 
 ## Install
 
@@ -154,6 +154,12 @@ Subagents share their parent's connection and therefore its target — a subagen
 | **Look** | `screenshot` `viewport` `device` |
 
 Gotchas: during a playtest two sessions connect — pass `studioId` explicitly and use the edit session for anything that must persist. `device` emulation persists until `device op="stop"`.
+
+## The console panel
+
+The plugin widget is a live readout, not a status light: every call is logged with its latency, and the band on top shows a turning solid beside a trace of the last forty calls, so "is it still working" and "is it healthy" are one glance.
+
+Hover the tab on its right edge for eight colour presets — **Lattice**, **Observatory**, **Orbit**, **Void**, **Nebula**, **Aurora**, **Phosphor**, **Blueprint**. Each one replaces what the band draws, not just its colours: Observatory turns your call history into a constellation, Orbit gives the solid a satellite per outstanding call. Your choice is remembered across Studio restarts.
 
 ## Batching
 

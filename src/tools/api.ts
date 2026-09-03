@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { suggestClass } from "../lib/apidump.js";
+import { ToolError } from "../lib/errors.js";
 import { json, text, type ToolResult } from "../lib/format.js";
 import { defineTool, type ToolContext } from "../lib/tool.js";
 
@@ -116,11 +118,31 @@ export function registerApiTools(context: ToolContext): void {
         return text('describe needs a `className`. Use `op: "classes"` to search for one.');
       }
 
-      const response = await bridge.call<DescribeResponse>(
-        "api.describe",
-        { className: args.className, include: args.include, inherited: args.inherited },
-        { studioId: args.studioId },
-      );
+      // `create` answers a mistyped class with the closest real names; this
+      // answered the same typo with "class names are case-sensitive" and left
+      // the agent to work out which letter. The dump is already loaded, so the
+      // suggestion costs nothing -- it was simply never wired up here.
+      const wanted = args.className;
+      let response: DescribeResponse;
+      try {
+        response = await bridge.call<DescribeResponse>(
+          "api.describe",
+          { className: wanted, include: args.include, inherited: args.inherited },
+          { studioId: args.studioId },
+        );
+      } catch (cause) {
+        if (cause instanceof ToolError && cause.code === "NO_SUCH_CLASS") {
+          const near = await suggestClass(wanted);
+          if (near.length > 0) {
+            throw new ToolError(
+              cause.code,
+              `The engine has no class called "${wanted}".`,
+              `Did you mean: ${near.join(", ")}? Class names are case-sensitive.`,
+            );
+          }
+        }
+        throw cause;
+      }
       return json(response);
     },
   );

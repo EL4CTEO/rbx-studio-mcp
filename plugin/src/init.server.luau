@@ -15,6 +15,7 @@ local Console = require(script.Console)
 local Dispatch = require(script.Dispatch)
 local LogBuffer = require(script.LogBuffer)
 local Phrase = require(script.Phrase)
+local Themes = require(script.Themes)
 local Transport = require(script.Transport)
 local Debug = require(script.handlers.Debug)
 local Assets = require(script.handlers.Assets)
@@ -37,6 +38,7 @@ local Session = require(script.handlers.Session)
 local SETTING_PORT = "port"
 local SETTING_AUTOCONNECT = "autoConnect"
 local SETTING_FORCE_POLL = "forcePoll"
+local SETTING_THEME = "theme"
 
 --[[
 	A fresh id per plugin load, which in practice means one per Studio window.
@@ -103,6 +105,20 @@ end
 
 Transport.setForcePoll(plugin:GetSetting(SETTING_FORCE_POLL) == true)
 
+--[[
+	The console's colour preset, restored before anything is drawn.
+
+	Applied here rather than after mounting so the panel is built in the right
+	palette from the start -- restoring it afterwards would flash the default
+	theme for a frame on every Studio launch. An unknown id (a preset renamed,
+	or a setting written by a newer build) falls back to the default rather than
+	failing, which is `Themes.get`'s job.
+]]
+local storedTheme = plugin:GetSetting(SETTING_THEME)
+if typeof(storedTheme) == "string" then
+	Themes.use(storedTheme)
+end
+
 Session.register()
 Discover.register()
 Debug.register()
@@ -121,11 +137,23 @@ Input.register()
 Device.register()
 Api.register()
 
+--[[
+	The toolbar button.
+
+	The icon has to be an uploaded asset: `CreateButton` takes a content string,
+	and the only ones Studio resolves are `rbxassetid://` for uploaded images and
+	`rbxasset://` for files that ship inside Studio itself. A path to something in
+	this repository is not one of them, which is why the mark in `assets/` has to
+	go through an upload before it can appear here.
+
+	It used to borrow `textures/ui/common/robux.png` -- a Robux coin, sitting in
+	the toolbar next to a plugin that has nothing to do with purchases.
+]]
 local toolbar = plugin:CreateToolbar("rbx-studio")
 local button = toolbar:CreateButton(
 	"rbx-studio",
 	"Show the rbx-studio console",
-	"rbxasset://textures/ui/common/robux.png"
+	"rbxassetid://125390773465346"
 )
 button.ClickableWhenViewportHidden = true
 
@@ -164,6 +192,10 @@ Console.mount(widget, {
 	end,
 	onClear = function()
 		Console.clear()
+	end,
+	onTheme = function(id)
+		plugin:SetSetting(SETTING_THEME, id)
+		Console.log("dim", string.format("theme: %s", id))
 	end,
 })
 

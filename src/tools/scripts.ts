@@ -157,12 +157,23 @@ export function registerScriptTools(context: ToolContext): void {
           if (item.lineCount === 0) {
             return `${item.path}  (${item.className}) is empty.`;
           }
+          const header = `${item.path}  (${item.className}, ${item.lineCount} lines)`;
+          // The two causes want different advice, and "the file ends at line 8"
+          // for a backwards range points at the file when the argument is what
+          // is wrong.
+          if (item.endLine !== undefined && item.endLine < item.startLine) {
+            return (
+              `${header}\n` +
+              `Nothing to read: endLine ${item.endLine} is before startLine ` +
+              `${item.startLine}. Ranges run forwards and include both ends.`
+            );
+          }
           const asked =
             item.endLine !== undefined
               ? `Lines ${item.startLine}-${item.endLine}`
               : `Line ${item.startLine} onwards`;
           return (
-            `${item.path}  (${item.className}, ${item.lineCount} lines)\n` +
+            `${header}\n` +
             `${asked} is empty — the file ends at line ${item.lineCount}.`
           );
         }

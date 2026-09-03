@@ -363,6 +363,11 @@ export function registerDiscoverTools(context: ToolContext): void {
         return text(
           `No matches (searched ${response.searched ?? 0} instances).\n` +
             "Check spelling and case — names and class names are case-sensitive. " +
+            (args.propertyName !== undefined
+              ? "`propertyValue` is compared as text: a Vector3 reads \"0, 5, 0\", an " +
+                "enum matches either \"Neon\" or \"Enum.Material.Neon\", and a property " +
+                "that is simply absent on a class never matches. "
+              : "") +
             "Try a shorter `nameContains`, or drop a filter to widen the search.",
         );
       }

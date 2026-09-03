@@ -40,6 +40,72 @@ local function summarise(instance: Instance, memo: Paths.NameIndex): { [string]:
 end
 
 --[[
+	Puts a result list into an order that does not change between calls.
+
+	`GetChildren` and `GetDescendants` do NOT return a stable order. Measured on
+	twelve parts named P01..P12 with nothing mutating between the two calls, the
+	engine returned them in ascending order once and as P08, P06, P04, P03, P11,
+	P02, P01, P12, P10, P07, P05, P09 the next time.
+
+	Unsorted, that made paging incoherent rather than merely untidy: `offset` is
+	a position in this list, so page two came from a different ordering than page
+	one, which silently skips some instances and repeats others. Nothing about
+	the response would have said so -- the counts stay right and every row is a
+	real instance.
+
+	Sorted by name, with the engine's per-instance debug id breaking ties so
+	same-named siblings hold a fixed order too. Name first because it is also
+	the order a reader expects: P01 before P02.
+]]
+local function stableOrder(list: { Instance })
+	local ids: { [Instance]: string } = {}
+	for _, instance in list do
+		-- Cached: `GetDebugId` is a call per comparison otherwise, and a sort
+		-- makes O(n log n) of them.
+		local ok, id = pcall(function()
+			return instance:GetDebugId()
+		end)
+		ids[instance] = if ok then id else tostring(instance)
+	end
+	table.sort(list, function(a: Instance, b: Instance): boolean
+		if a.Name ~= b.Name then
+			return a.Name < b.Name
+		end
+		return (ids[a] or "") < (ids[b] or "")
+	end)
+end
+
+--[[
+	Compares a property against the text a caller asked for.
+
+	This was an exact `tostring` match, which made `find` disagree with `modify`
+	about its own notation: `modify` documents an enum as either "Neon" or
+	"Enum.Material.Neon", but only the qualified form matched here, and "False"
+	matched nothing at all. Both came back as a confident zero rather than an
+	error, which is the hardest kind of wrong answer to notice.
+
+	The bare-name shortcut is allowed only for enums, so a part named
+	"Map.Backup" is not matched by a search for "Backup".
+]]
+local function valueMatches(actual: any, wanted: string): boolean
+	local text = tostring(actual)
+	if text == wanted then
+		return true
+	end
+
+	local lowered = string.lower(text)
+	local target = string.lower(wanted)
+	if lowered == target then
+		return true
+	end
+
+	if string.sub(lowered, 1, 5) == "enum." then
+		return string.match(lowered, "([^%.]+)$") == target
+	end
+	return false
+end
+
+--[[
 	Breadth-first walk to `depth`, newest level last, so a truncated result is
 	still a coherent picture of the top of the tree rather than one deep spur.
 ]]
@@ -86,11 +152,17 @@ function Discover.tree(params: { [string]: any }): { [string]: any }
 				end
 			end
 		end
+		-- Sorted per level rather than at the end, so the breadth-first shape is
+		-- kept -- shallow instances still come before deep ones -- while the
+		-- siblings inside each level stop reshuffling between calls.
+		stableOrder(nextFrontier)
 		frontier = nextFrontier
 		if #frontier == 0 or visits > MAX_VISITS then
 			break
 		end
 	end
+
+	stableOrder(matched)
 
 	local items: { { [string]: any } } = {}
 	local memo: Paths.NameIndex = {}
@@ -257,12 +329,14 @@ function Discover.find(params: { [string]: any }): { [string]: any }
 			if not readOk then
 				continue
 			end
-			if propertyValue ~= nil and tostring(value) ~= tostring(propertyValue) then
+			if propertyValue ~= nil and not valueMatches(value, tostring(propertyValue)) then
 				continue
 			end
 		end
 		table.insert(matched, instance)
 	end
+
+	stableOrder(matched)
 
 	local items: { { [string]: any } } = {}
 	local memo: Paths.NameIndex = {}

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ToolError } from "./errors.js";
 
 /**
  * Hard ceiling on a single tool response, in characters (~6k tokens). Roblox
@@ -47,10 +48,29 @@ export const limitSchema = z
 export const encodeCursor = (offset: number): string =>
   Buffer.from(String(offset)).toString("base64url");
 
+/**
+ * Decodes a page cursor, refusing one this server did not issue.
+ *
+ * This used to fall back to 0 for anything it could not read, which is the
+ * worst available behaviour: a stale or mistyped cursor silently returned page
+ * one again, indistinguishable from a genuine first page. An agent paging
+ * through results that way never reaches the end and never learns why -- it
+ * just reads the same rows forever. Saying so costs one error and ends the
+ * loop immediately.
+ */
 export function decodeCursor(cursor: string | undefined): number {
   if (!cursor) return 0;
-  const parsed = Number.parseInt(Buffer.from(cursor, "base64url").toString("utf8"), 10);
-  return Number.isInteger(parsed) && parsed >= 0 ? parsed : 0;
+  const decoded = Buffer.from(cursor, "base64url").toString("utf8");
+  const parsed = Number.parseInt(decoded, 10);
+  if (!Number.isInteger(parsed) || parsed < 0 || String(parsed) !== decoded.trim()) {
+    throw new ToolError(
+      "BAD_CURSOR",
+      `${JSON.stringify(cursor)} is not a cursor this server issued.`,
+      "Cursors are opaque — pass back the exact `nextCursor` string from the " +
+        "previous page, or omit it to start from the beginning.",
+    );
+  }
+  return parsed;
 }
 
 /** Minimal MCP content result. Kept local so tools never import SDK types. */

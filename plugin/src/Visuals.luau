@@ -1,6 +1,6 @@
 --!strict
 --[[
-	The console's activity band: a turning wireframe beside a live latency trace.
+	The console's activity band: a themed cell beside a live latency trace.
 
 	Watching an agent work is mostly waiting, and the log answers "what is it
 	doing" precisely while answering "is it still alive" badly -- a stalled
@@ -13,133 +13,31 @@
 	log, which keeps every line at full contrast and never moves under the
 	reader. The log shrinks by the band's height and nothing overlaps.
 
-	The strip earns its space twice over. The wireframe on the left says the
-	session is live; the trace beside it is the last forty calls, each a bar as
-	tall as it was slow and coloured by whether it worked. That turns "is it
-	alive" and "is it healthy" into one glance, which is more than the log gives
-	and more than an animation alone would.
+	The strip earns its space twice over. The cell on the left says the session
+	is live; the trace beside it is the last forty calls, each drawn as tall as
+	it was slow and coloured by whether it worked. That turns "is it alive" and
+	"is it healthy" into one glance, which is more than the log gives and more
+	than an animation alone would.
 
-	The solid is a real projection, not a canned loop: vertices rotate in three
-	dimensions and pass through a perspective divide every frame, so near edges
-	are brighter and thicker because they genuinely are nearer. Roblox has no
-	line primitive, so each edge is a thin Frame turned about its midpoint, and
-	the frames are pooled -- allocating Instances inside a per-frame loop is how
-	a decorative strip becomes a performance complaint.
+	WHAT THIS FILE OWNS, since it used to own everything: the strip's Instances,
+	the pointer handling on the trace, and the simulation -- energy, activity,
+	flare, shake, the scale spring, the quiet timer and the blended tint. What
+	it does NOT own is any drawing inside the cell. That belongs to whichever
+	preset is active (see Themes/), which is handed the simulation each frame
+	and paints whatever it likes with it. Eight presets are therefore eight
+	painters over one set of physics rather than eight animation systems, and
+	only one of them is ever mounted.
 ]]
 
 local RunService = game:GetService("RunService")
 
+local Themes = require(script.Parent.Themes)
+
 local Visuals = {}
 
-local PHI = (1 + math.sqrt(5)) / 2
-
-type Shape = {
-	name: string,
-	vertices: { Vector3 },
-	edges: { { number } },
-}
-
---[[
-	Ordered by how busy they look. The session climbs this list as it works, so
-	the shape itself reports load: an idle plugin shows a tetrahedron, a busy one
-	an icosahedron.
-]]
-local SHAPES: { Shape } = {
-	{
-		name = "tetrahedron",
-		vertices = {
-			Vector3.new(1, 1, 1),
-			Vector3.new(1, -1, -1),
-			Vector3.new(-1, 1, -1),
-			Vector3.new(-1, -1, 1),
-		},
-		edges = { { 1, 2 }, { 1, 3 }, { 1, 4 }, { 2, 3 }, { 2, 4 }, { 3, 4 } },
-	},
-	{
-		name = "octahedron",
-		vertices = {
-			Vector3.new(1, 0, 0),
-			Vector3.new(-1, 0, 0),
-			Vector3.new(0, 1, 0),
-			Vector3.new(0, -1, 0),
-			Vector3.new(0, 0, 1),
-			Vector3.new(0, 0, -1),
-		},
-		edges = {
-			{ 1, 3 }, { 1, 4 }, { 1, 5 }, { 1, 6 },
-			{ 2, 3 }, { 2, 4 }, { 2, 5 }, { 2, 6 },
-			{ 3, 5 }, { 5, 4 }, { 4, 6 }, { 6, 3 },
-		},
-	},
-	{
-		name = "cube",
-		vertices = {
-			Vector3.new(-1, -1, -1), Vector3.new(1, -1, -1),
-			Vector3.new(1, 1, -1), Vector3.new(-1, 1, -1),
-			Vector3.new(-1, -1, 1), Vector3.new(1, -1, 1),
-			Vector3.new(1, 1, 1), Vector3.new(-1, 1, 1),
-		},
-		edges = {
-			{ 1, 2 }, { 2, 3 }, { 3, 4 }, { 4, 1 },
-			{ 5, 6 }, { 6, 7 }, { 7, 8 }, { 8, 5 },
-			{ 1, 5 }, { 2, 6 }, { 3, 7 }, { 4, 8 },
-		},
-	},
-	{
-		name = "icosahedron",
-		vertices = {
-			Vector3.new(0, 1, PHI), Vector3.new(0, -1, PHI),
-			Vector3.new(0, 1, -PHI), Vector3.new(0, -1, -PHI),
-			Vector3.new(1, PHI, 0), Vector3.new(-1, PHI, 0),
-			Vector3.new(1, -PHI, 0), Vector3.new(-1, -PHI, 0),
-			Vector3.new(PHI, 0, 1), Vector3.new(PHI, 0, -1),
-			Vector3.new(-PHI, 0, 1), Vector3.new(-PHI, 0, -1),
-		},
-		edges = {
-			{ 1, 2 }, { 1, 5 }, { 1, 6 }, { 1, 9 }, { 1, 11 },
-			{ 2, 7 }, { 2, 8 }, { 2, 9 }, { 2, 11 },
-			{ 3, 4 }, { 3, 5 }, { 3, 6 }, { 3, 10 }, { 3, 12 },
-			{ 4, 7 }, { 4, 8 }, { 4, 10 }, { 4, 12 },
-			{ 5, 6 }, { 5, 9 }, { 5, 10 },
-			{ 6, 11 }, { 6, 12 },
-			{ 7, 8 }, { 7, 9 }, { 7, 10 },
-			{ 8, 11 }, { 8, 12 },
-			{ 9, 10 }, { 11, 12 },
-		},
-	},
-}
-
-local MAX_EDGES = 30
-local MAX_VERTICES = 12
-local FOCAL = 3.4
-
--- The inner solid, counter-rotating inside the outer one. An octahedron
--- regardless of what is outside it: it reads as a core rather than as a second
--- object competing for attention, and its 12 edges are cheap.
-local INNER_SHAPE = 2
-local INNER_SCALE = 0.42
-
--- The strip's height, and the width reserved for the solid at its left end.
--- The solid was originally as tall as the band and read as looming: it crowded
--- the caption and made a 46px strip feel like a panel. It is an indicator, not
--- the subject, so it sits small with air around it.
---
--- Both grew when the solid learned to overshoot. `cell` clips its descendants,
--- so a shape that swells to 1.4x has to have somewhere to swell into, and the
--- extra band height goes to the trace, whose bars are what people try to point
--- at.
-Visuals.BAND_HEIGHT = 52
-local CELL = 40
-local GUTTER = 16
-
---[[
-	The solid's resting radius as a fraction of the cell.
-
-	Tuned against the new cell so resting size is unchanged: 40 x 0.185 is 7.4px
-	where 34 x 0.2 was 6.8px. At full overshoot the perspective divide pushes a
-	near vertex to roughly 15px, which still clears the cell's 20px half-width.
-]]
-local BASE_RADIUS = 0.185
+-- How long the session must go without a command before the cell winds down.
+-- Matches the console's idle notice, so the picture and the log agree.
+local QUIET_AFTER = 20
 
 --[[
 	Spring constants for the scale. Stiff enough that a call reads as a snap
@@ -149,12 +47,8 @@ local BASE_RADIUS = 0.185
 local SPRING = 90
 local DAMPING = 14
 
--- How long the session must go without a command before the solid winds down.
--- Matches the console's idle notice, so the picture and the log agree.
-local QUIET_AFTER = 20
-
 -- How many calls the trace remembers. Forty is about a screen's width of bars
--- at two pixels each, and about as far back as anyone reads a trend.
+-- at five pixels each, and about as far back as anyone reads a trend.
 local TRACE = 40
 
 -- Bars are scaled against this, so a normal call is a low bar and a slow one is
@@ -170,6 +64,25 @@ local BAR_STRIDE = 5
 -- Height of the trace, and so of every bar's hit column. The taller band spends
 -- its extra pixels here: a 19px column was a small thing to aim a pointer at.
 local TRACE_HEIGHT = 26
+
+--[[
+	The strip's height, and the geometry around the cell.
+
+	The cell was originally as tall as the band and read as looming; it crowded
+	the caption and made the strip feel like a panel. It is an indicator, not the
+	subject, so it sits small with air around it.
+
+	INSET and GUTTER both grew after the cell stopped being a wireframe and
+	started being eight different things. At six pixels from the panel edge the
+	cell was pressed into the corner, which reads as cramped for a prism and
+	simply wrong for a starfield -- a sky needs a horizon around it, not a
+	border. The band grew with them so the extra margin comes out of empty space
+	rather than out of the trace, whose bars are what people try to point at.
+]]
+Visuals.BAND_HEIGHT = 58
+local CELL = 40
+local INSET = 12
+local GUTTER = 22
 
 type Bar = {
 	frame: Frame,
@@ -198,23 +111,21 @@ type Runtime = {
 	band: Frame?,
 	cell: Frame?,
 	trace: Frame?,
+	divider: Frame?,
+	baseline: Frame?,
 	highlight: Frame?,
 	readout: TextLabel?,
 	caption: TextLabel?,
-	edges: { Frame },
-	innerEdges: { Frame },
-	dots: { Frame },
 	bars: { Bar },
 	connection: RBXScriptConnection?,
 
 	spin: Vector3,
 	angle: Vector3,
-	shapeIndex: number,
 
 	energy: number,
 	shake: number,
 	--[[
-		The solid's size, as a spring rather than a value.
+		The cell's size, as a spring rather than a value.
 
 		Scale was previously a small function of energy -- a 24% range that
 		nobody could see. Driving it as a spring means each event can push it and
@@ -223,7 +134,7 @@ type Runtime = {
 	]]
 	scale: number,
 	scaleVelocity: number,
-	-- Brightens and fattens the vertices for a moment after a call lands.
+	-- Spikes to 1 the instant a reply lands, gone in a third of a second.
 	flare: number,
 	-- Seconds since anything last ran. Drives the wind-down.
 	quiet: number,
@@ -233,24 +144,23 @@ type Runtime = {
 	activeTint: Color3,
 	activity: number,
 	lastTitle: string?,
-	palette: { [string]: Color3 },
+	-- Whether the active preset has been given its Instances yet.
+	mounted: boolean,
 }
 
 local runtime: Runtime = {
 	band = nil,
 	cell = nil,
 	trace = nil,
+	divider = nil,
+	baseline = nil,
 	highlight = nil,
 	readout = nil,
 	caption = nil,
-	edges = {},
-	innerEdges = {},
-	dots = {},
 	bars = {},
 	connection = nil,
 	spin = Vector3.new(0.18, 0.27, 0.11),
 	angle = Vector3.zero,
-	shapeIndex = 1,
 	energy = 0,
 	shake = 0,
 	scale = 1,
@@ -263,57 +173,49 @@ local runtime: Runtime = {
 	activeTint = Color3.fromRGB(167, 139, 250),
 	activity = 0,
 	lastTitle = nil,
-	palette = {},
+	mounted = false,
 }
 
-local function rotate(point: Vector3, angle: Vector3): Vector3
-	local sinX, cosX = math.sin(angle.X), math.cos(angle.X)
-	local sinY, cosY = math.sin(angle.Y), math.cos(angle.Y)
-	local sinZ, cosZ = math.sin(angle.Z), math.cos(angle.Z)
-
-	local y1 = point.Y * cosX - point.Z * sinX
-	local z1 = point.Y * sinX + point.Z * cosX
-	local x2 = point.X * cosY + z1 * sinY
-	local z2 = -point.X * sinY + z1 * cosY
-	local x3 = x2 * cosZ - y1 * sinZ
-	local y3 = x2 * sinZ + y1 * cosZ
-
-	return Vector3.new(x3, y3, z2)
-end
-
 --[[
-	One edge as a rectangle turned about its midpoint. `Rotation` pivots a
-	GuiObject around its centre, which is exactly what a segment needs.
+	The simulation, packaged for whichever preset is drawing it.
+
+	Rebuilt every frame rather than mutated in place. A preset holding onto the
+	table between frames would see values change under it, and the one rule that
+	keeps eight renderers honest is that they read this and draw -- they do not
+	own any of it.
 ]]
-local function drawEdge(frame: Frame, a: Vector2, b: Vector2, thickness: number, color: Color3, transparency: number)
-	local delta = b - a
-	local length = delta.Magnitude
-	if length < 0.5 then
-		frame.Visible = false
-		return
-	end
-	frame.Visible = true
-	frame.Position = UDim2.fromOffset((a.X + b.X) / 2, (a.Y + b.Y) / 2)
-	frame.Size = UDim2.fromOffset(math.ceil(length), thickness)
-	frame.Rotation = math.deg(math.atan2(delta.Y, delta.X))
-	frame.BackgroundColor3 = color
-	frame.BackgroundTransparency = transparency
+local function context(): Themes.Context
+	return {
+		palette = Themes.palette(),
+		tint = runtime.tint,
+		energy = runtime.energy,
+		activity = runtime.activity,
+		flare = runtime.flare,
+		shake = runtime.shake,
+		scale = runtime.scale,
+		quiet = runtime.quiet,
+		angle = runtime.angle,
+		clock = os.clock(),
+		size = CELL,
+		centre = Vector2.new(CELL / 2, CELL / 2),
+	}
 end
 
 local function step(delta: number)
 	local band = runtime.band
-	if band == nil or not band.Visible then
+	local cell = runtime.cell
+	if band == nil or cell == nil or not band.Visible then
 		return
 	end
 
 	runtime.energy = math.max(0, runtime.energy - delta * 0.9)
 	runtime.shake = math.max(0, runtime.shake - delta * 2.4)
 	--[[
-		Slower than it was. The shape is meant to climb as the session works, and
+		Slower than it was. The cell is meant to climb as the session works, and
 		at the old rates a call had to arrive every three seconds just to hold the
-		octahedron -- so the icosahedron at the top of the list was, in practice,
-		unreachable. A burst of four calls now gets there, and it unwinds over
-		about ten seconds afterwards.
+		middle of the range -- so the top of it was, in practice, unreachable. A
+		burst of four calls now gets there, and it unwinds over about ten seconds
+		afterwards.
 	]]
 	runtime.activity = math.max(0, runtime.activity - delta * 0.28)
 	runtime.flare = math.max(0, runtime.flare - delta * 3)
@@ -336,13 +238,13 @@ local function step(delta: number)
 	-- whether anything is happening without reading a word.
 	--
 	-- And nearly stopping once the session has gone quiet, for the same reason in
-	-- reverse: a strip that keeps spinning at its working rate hours after the
+	-- reverse: a strip that keeps moving at its working rate hours after the
 	-- last command claims an activity that is not happening.
 	local pace = if runtime.quiet > QUIET_AFTER then 0.25 else 1
 	runtime.angle += runtime.spin * delta * (1 + runtime.energy * 2.2) * pace
 
 	--[[
-		Where the solid wants to be, before the spring gets a say.
+		Where the cell wants to be, before the spring gets a say.
 
 		Three things move it and they are deliberately ordered. Energy -- how
 		recently work happened -- swells it while a session is busy. The breathe
@@ -360,7 +262,7 @@ local function step(delta: number)
 
 	--[[
 		A damped spring rather than a lerp, because a lerp cannot overshoot and
-		overshoot is the whole point: a reply that pushes the solid past its
+		overshoot is the whole point: a reply that pushes the cell past its
 		resting size and lets it fall back reads as a thing being struck, where
 		easing toward a value reads as a slider being dragged.
 
@@ -368,118 +270,21 @@ local function step(delta: number)
 		velocity -- which stays stable at the frame times Studio actually hands us
 		rather than only at small ones.
 	]]
-	local step = math.min(delta, 1 / 30)
-	runtime.scaleVelocity += (target - runtime.scale) * SPRING * step
-	runtime.scaleVelocity -= runtime.scaleVelocity * DAMPING * step
-	runtime.scale += runtime.scaleVelocity * step
+	local integration = math.min(delta, 1 / 30)
+	runtime.scaleVelocity += (target - runtime.scale) * SPRING * integration
+	runtime.scaleVelocity -= runtime.scaleVelocity * DAMPING * integration
+	runtime.scale += runtime.scaleVelocity * integration
 	runtime.scale = math.clamp(runtime.scale, 0.55, 1.7)
 
-	local shape = SHAPES[runtime.shapeIndex]
-	local centre = Vector2.new(CELL / 2, CELL / 2)
-	-- Kept clear of the cell's edge. The perspective divide pushes a near vertex
-	-- outward, so sizing to the full half-width clipped the solid against its own
-	-- container whenever a corner swung toward the viewer.
-	local radius = CELL * BASE_RADIUS * runtime.scale
-
-	-- Wobble the axis rather than the panel: shaking the strip would read as a
-	-- glitch, tilting the solid reads as it being knocked.
-	local wobble = if runtime.shake > 0
-		then Vector3.new(
-			math.sin(os.clock() * 37) * runtime.shake * 0.12,
-			math.cos(os.clock() * 29) * runtime.shake * 0.12,
-			0
-		)
-		else Vector3.zero
-
-	local projected: { Vector2 } = {}
-	local depths: { number } = {}
-	for index, vertex in shape.vertices do
-		local turned = rotate(vertex, runtime.angle + wobble)
-		local scale = FOCAL / (FOCAL - turned.Z)
-		projected[index] = centre + Vector2.new(turned.X * scale * radius, turned.Y * scale * radius)
-		depths[index] = turned.Z
-	end
-
-	for index = 1, MAX_EDGES do
-		local frame = runtime.edges[index]
-		local edge = shape.edges[index]
-		if edge == nil then
-			frame.Visible = false
-			continue
-		end
-		local a, b = edge[1], edge[2]
-		local depth = math.clamp(((depths[a] + depths[b]) / 2 + 2) / 4, 0, 1)
-		drawEdge(
-			frame,
-			projected[a],
-			projected[b],
-			math.max(1, math.floor(1 + depth * 1.6 + runtime.flare * 0.8)),
-			runtime.tint:Lerp(Color3.new(1, 1, 1), depth * 0.35 + runtime.flare * 0.3),
-			math.max(0, 0.84 - depth * 0.74 - runtime.flare * 0.3)
-		)
-	end
-
 	--[[
-		Vertices as points, brighter than the edges they join.
-
-		Wireframes read as flat when every stroke is the same weight. Lighting
-		the corners gives the eye something to track as the solid turns, which is
-		what makes it read as rotating rather than merely flickering.
+		Handed off. A preset that throws must not take the console's status
+		display down with it, so a failure here disables the strip and says so
+		once rather than erroring sixty times a second.
 	]]
-	for index = 1, MAX_VERTICES do
-		local dot = runtime.dots[index]
-		local point = projected[index]
-		if point == nil then
-			dot.Visible = false
-			continue
-		end
-		local depth = math.clamp((depths[index] + 2) / 4, 0, 1)
-		-- The corners carry the flare. A pulse of light travelling through the
-		-- vertices is what makes a completed call land as an event rather than as
-		-- a bar quietly appearing somewhere off to the right.
-		local size = math.max(2, math.floor(1.5 + depth * 2.5 + runtime.flare * 2.5))
-		dot.Visible = true
-		dot.Position = UDim2.fromOffset(point.X, point.Y)
-		dot.Size = UDim2.fromOffset(size, size)
-		dot.BackgroundColor3 = runtime.tint:Lerp(Color3.new(1, 1, 1), 0.25 + depth * 0.5)
-		dot.BackgroundTransparency = math.max(0, 0.55 - depth * 0.5 - runtime.flare * 0.45)
-	end
-
-	--[[
-		A second solid inside the first, turning the other way.
-
-		One rotating outline is a loading spinner. Two, at different rates and
-		opposite directions, read as a mechanism -- and the counter-rotation
-		makes the outer solid's direction obvious, which a lone wireframe hides
-		whenever it passes through a symmetrical angle.
-	]]
-	local inner = SHAPES[INNER_SHAPE]
-	local innerAngle = -runtime.angle * 1.6
-	local innerProjected: { Vector2 } = {}
-	local innerDepths: { number } = {}
-	for index, vertex in inner.vertices do
-		local turned = rotate(vertex, innerAngle)
-		local scale = FOCAL / (FOCAL - turned.Z)
-		innerProjected[index] = centre
-			+ Vector2.new(turned.X * scale * radius * INNER_SCALE, turned.Y * scale * radius * INNER_SCALE)
-		innerDepths[index] = turned.Z
-	end
-	for index, frame in runtime.innerEdges do
-		local edge = inner.edges[index]
-		if edge == nil then
-			frame.Visible = false
-			continue
-		end
-		local a, b = edge[1], edge[2]
-		local depth = math.clamp(((innerDepths[a] + innerDepths[b]) / 2 + 2) / 4, 0, 1)
-		drawEdge(
-			frame,
-			innerProjected[a],
-			innerProjected[b],
-			1,
-			runtime.tint:Lerp(Color3.new(1, 1, 1), 0.5),
-			0.9 - depth * 0.35
-		)
+	local ok, err = pcall(Themes.active().paint, context(), delta)
+	if not ok then
+		band.Visible = false
+		warn(string.format("[rbx-studio] theme %q failed to paint: %s", Themes.activeId(), tostring(err)))
 	end
 end
 
@@ -504,9 +309,9 @@ local function showReading(entry: Bar)
 
 		The highlight is anchored to its own bottom edge, so a Y scale of 0 put
 		that edge on the trace's top line and drew the whole 26px column above it
-		-- outside a frame that clips its descendants. The hover has therefore
-		never been visible to anyone: the hit targets fired, the readout appeared,
-		and the highlight they were meant to explain was off screen every time.
+		-- outside a frame that clips its descendants. The hover was therefore
+		never visible to anyone: the hit targets fired, the readout appeared, and
+		the highlight they were meant to explain was off screen every time.
 	]]
 	highlight.Position = UDim2.new(entry.hit.Position.X.Scale, entry.hit.Position.X.Offset, 1, 0)
 	highlight.Visible = true
@@ -519,12 +324,11 @@ local function showReading(entry: Bar)
 		was a script edit or a screenshot. The title is the same phrase the log
 		row uses, so pointing at a bar and reading the log agree with each other.
 	]]
+	local palette = Themes.palette()
 	readout.Text = if entry.ok
 		then string.format("%s: %d ms", entry.title, math.round(entry.milliseconds))
 		else string.format("%s: failed after %d ms", entry.title, math.round(entry.milliseconds))
-	readout.TextColor3 = if entry.ok
-		then runtime.palette.text or Color3.fromRGB(226, 232, 240)
-		else runtime.palette.red or Color3.fromRGB(251, 113, 133)
+	readout.TextColor3 = if entry.ok then palette.text else palette.red
 	readout.Visible = true
 end
 
@@ -538,16 +342,66 @@ local function clearReading()
 end
 
 --[[
-	Records one finished call as a bar on the trace.
+	Bars, for a preset that does not want to draw its own history.
 
 	Height is duration and colour is outcome, so a slow call and a failed one are
 	distinguishable at a glance -- which is the pair of questions that actually
 	get asked of a log this size.
 ]]
+local function defaultSlot(slot: Themes.Slot, ctx: Themes.Context)
+	local frame = slot.frame
+	frame.AnchorPoint = Vector2.new(0.5, 1)
+	frame.Size = UDim2.new(0, 3, math.max(slot.weight, 0.06), 0)
+	frame.Position = UDim2.new(frame.Position.X.Scale, frame.Position.X.Offset, 1, 0)
+	frame.BackgroundColor3 = if slot.ok then ctx.palette.violet else ctx.palette.red
+	frame.BackgroundTransparency = 0.15 + slot.age * 0.6
+	frame.Rotation = 0
+end
+
+--[[
+	Re-places every bar and hands each to the active preset to draw.
+
+	Laid out right to left so the newest bar is always at the same edge and the
+	trace reads as scrolling rather than reshuffling. The horizontal position is
+	set here and the preset is expected to keep it -- everything else about the
+	bar is the preset's to decide.
+]]
+local function relayout()
+	local ctx = context()
+	local painter = Themes.active().paintSlot or defaultSlot
+	local total = #runtime.bars
+
+	for index, item in runtime.bars do
+		local fromRight = total - index
+		local offset = -(fromRight + 1) * BAR_STRIDE + BAR_STRIDE / 2
+
+		item.frame.Position = UDim2.new(1, offset, 1, 0)
+		item.hit.Position = UDim2.new(1, offset, 1, 0)
+
+		local slot: Themes.Slot = {
+			frame = item.frame,
+			milliseconds = item.milliseconds,
+			ok = item.ok,
+			title = item.title,
+			-- 0 for the newest, rising toward 1 for the oldest still shown.
+			age = if TRACE > 1 then fromRight / (TRACE - 1) else 0,
+			weight = math.clamp(item.milliseconds / SLOW_MS, 0.06, 1),
+		}
+		local ok, err = pcall(painter, slot, ctx)
+		if not ok then
+			-- One bad slot must not leave the other thirty-nine unplaced.
+			defaultSlot(slot, ctx)
+			warn(string.format("[rbx-studio] theme %q failed on a slot: %s", Themes.activeId(), tostring(err)))
+		end
+	end
+end
+
+--[[
+	Records one finished call and re-draws the trace.
+]]
 function Visuals.recordCall(milliseconds: number, ok: boolean, title: string)
 	runtime.energy = math.min(1.6, runtime.energy + (if ok then 0.3 else 0.8))
 	runtime.activity = math.min(1, runtime.activity + 0.34)
-	runtime.shapeIndex = math.clamp(1 + math.floor(runtime.activity * (#SHAPES - 0.001)), 1, #SHAPES)
 	runtime.quiet = 0
 	runtime.flare = 1
 
@@ -573,9 +427,13 @@ function Visuals.recordCall(milliseconds: number, ok: boolean, title: string)
 	end
 
 	local bar = Instance.new("Frame")
-	bar.AnchorPoint = Vector2.new(0, 1)
+	bar.AnchorPoint = Vector2.new(0.5, 1)
 	bar.BorderSizePixel = 0
 	bar.Parent = trace
+	-- Presets draw points as well as bars, and a square point is not a point.
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 1)
+	corner.Parent = bar
 
 	-- A TextButton rather than a Frame: buttons take mouse events reliably in a
 	-- plugin widget, and with no text and no background it is purely a target.
@@ -611,22 +469,7 @@ function Visuals.recordCall(milliseconds: number, ok: boolean, title: string)
 		table.remove(runtime.bars, 1)
 	end
 
-	-- Laid out right to left so the newest bar is always at the same edge and
-	-- the trace reads as scrolling rather than reshuffling.
-	local total = #runtime.bars
-	for index, item in runtime.bars do
-		local fromRight = total - index
-		local height = math.clamp(item.milliseconds / SLOW_MS, 0.06, 1)
-		local offset = -(fromRight + 1) * BAR_STRIDE
-		item.frame.Position = UDim2.new(1, offset, 1, 0)
-		item.frame.Size = UDim2.new(0, 3, height, 0)
-		item.frame.BackgroundColor3 = if item.ok
-			then runtime.palette.violet or runtime.tint
-			else runtime.palette.red or Color3.fromRGB(251, 113, 133)
-		item.frame.BackgroundTransparency = 0.15 + (fromRight / TRACE) * 0.6
-		-- Centred on the bar, so the column a person points at is the one they get.
-		item.hit.Position = UDim2.new(1, offset + 1, 1, 0)
-	end
+	relayout()
 
 	-- The bars have all moved, so a reading still on screen now names the wrong
 	-- one. Cheaper and more honest to drop it than to work out which bar the
@@ -655,7 +498,7 @@ function Visuals.setKind(color: Color3, urgency: number)
 	runtime.quiet = 0
 	--[[
 		Drawn in as the command goes out, so the pair reads as one gesture: the
-		solid contracts while the request is in flight and springs open when the
+		cell contracts while the request is in flight and springs open when the
 		answer arrives. On a fast call the two are almost one motion, which is
 		itself the report -- a slow call visibly holds its breath.
 	]]
@@ -698,18 +541,16 @@ function Visuals.setIdle()
 end
 
 --[[
-	Winds the solid down, because the session has stopped rather than paused.
+	Winds the cell down, because the session has stopped rather than paused.
 
 	The strip already decays on its own, but decay bottoms out at "idle and
-	turning", which looks the same after twenty seconds as after two hours. This
+	moving", which looks the same after twenty seconds as after two hours. This
 	is the console telling the picture what it has just told the log, so the two
-	agree: the shape falls back to a tetrahedron, the spin drops to a quarter
-	pace, and the solid draws in.
+	agree.
 ]]
 function Visuals.setQuiet()
 	runtime.quiet = QUIET_AFTER + 1
 	runtime.activity = 0
-	runtime.shapeIndex = 1
 end
 
 --[[
@@ -751,11 +592,68 @@ function Visuals.isVisible(): boolean
 end
 
 --[[
-	Builds the strip. Every edge frame is created here and never again, which is
-	what keeps the per-frame path allocation-free.
+	Swaps the cell's contents and recolours the strip's own chrome.
+
+	The order matters. The outgoing preset is unmounted before the cell is
+	emptied, so a preset that keeps references cannot be handed destroyed
+	Instances; the cell is then cleared outright rather than trusted to be
+	clean, because a preset that errored midway through `mount` will have left
+	something behind.
 ]]
-function Visuals.mount(parent: Instance, palette: { [string]: Color3 })
-	runtime.palette = palette
+function Visuals.applyTheme()
+	local cell = runtime.cell
+	local band = runtime.band
+	if cell == nil or band == nil then
+		return
+	end
+
+	if runtime.mounted then
+		pcall(function()
+			Themes.active().unmount()
+		end)
+	end
+	for _, child in cell:GetChildren() do
+		child:Destroy()
+	end
+
+	local palette = Themes.palette()
+	band.BackgroundColor3 = palette.surface
+	if runtime.divider then
+		(runtime.divider :: Frame).BackgroundColor3 = palette.dim
+	end
+	if runtime.baseline then
+		(runtime.baseline :: Frame).BackgroundColor3 = palette.dim
+	end
+	if runtime.highlight then
+		(runtime.highlight :: Frame).BackgroundColor3 = palette.text
+	end
+	if runtime.caption then
+		(runtime.caption :: TextLabel).TextColor3 = palette.text
+	end
+	if runtime.readout then
+		(runtime.readout :: TextLabel).BackgroundColor3 = palette.background
+	end
+
+	local ok, err = pcall(function()
+		Themes.active().mount(cell)
+	end)
+	runtime.mounted = ok
+	if not ok then
+		warn(string.format("[rbx-studio] theme %q failed to mount: %s", Themes.activeId(), tostring(err)))
+	end
+
+	relayout()
+	-- A preset that failed to paint disabled the band; a new one deserves the
+	-- chance to prove it works.
+	band.Visible = true
+end
+
+--[[
+	Builds the strip. Everything except the cell's contents is created here and
+	never again, which is what keeps the per-frame path allocation-free.
+]]
+function Visuals.mount(parent: Instance)
+	local palette = Themes.palette()
 
 	local band = Instance.new("Frame")
 	band.Name = "ActivityBand"
@@ -767,60 +665,34 @@ function Visuals.mount(parent: Instance, palette: { [string]: Color3 })
 	runtime.band = band
 
 	local cell = Instance.new("Frame")
-	cell.Name = "Solid"
-	cell.Position = UDim2.fromOffset(6, (Visuals.BAND_HEIGHT - CELL) / 2)
+	cell.Name = "Cell"
+	cell.Position = UDim2.fromOffset(INSET, (Visuals.BAND_HEIGHT - CELL) / 2)
 	cell.Size = UDim2.fromOffset(CELL, CELL)
 	cell.BackgroundTransparency = 1
 	cell.ClipsDescendants = true
 	cell.Parent = band
 	runtime.cell = cell
 
-	for index = 1, MAX_EDGES do
-		local edge = Instance.new("Frame")
-		edge.Name = string.format("Edge%02d", index)
-		edge.AnchorPoint = Vector2.new(0.5, 0.5)
-		edge.BorderSizePixel = 0
-		edge.Visible = false
-		edge.Parent = cell
-		runtime.edges[index] = edge
-	end
-
-	-- A hairline between the solid and the trace, so the strip reads as two
-	-- instruments rather than one busy rectangle.
+	-- A hairline between the cell and the trace, so the strip reads as two
+	-- instruments rather than one busy rectangle. Centred in the gutter, which
+	-- is what keeps the extra margin as air on both sides rather than as a gap
+	-- on one.
 	local divider = Instance.new("Frame")
-	divider.Position = UDim2.fromOffset(CELL + GUTTER / 2, 8)
-	divider.Size = UDim2.new(0, 1, 1, -16)
+	divider.Name = "Divider"
+	divider.Position = UDim2.fromOffset(INSET + CELL + GUTTER / 2, 10)
+	divider.Size = UDim2.new(0, 1, 1, -20)
 	divider.BackgroundColor3 = palette.dim
-	divider.BackgroundTransparency = 0.7
+	divider.BackgroundTransparency = 0.78
 	divider.BorderSizePixel = 0
 	divider.Parent = band
+	runtime.divider = divider
 
-	for index = 1, MAX_VERTICES do
-		local dot = Instance.new("Frame")
-		dot.Name = string.format("Vertex%02d", index)
-		dot.AnchorPoint = Vector2.new(0.5, 0.5)
-		dot.BorderSizePixel = 0
-		dot.Visible = false
-		dot.Parent = cell
-		local round = Instance.new("UICorner")
-		round.CornerRadius = UDim.new(1, 0)
-		round.Parent = dot
-		runtime.dots[index] = dot
-	end
-
-	for index = 1, #SHAPES[INNER_SHAPE].edges do
-		local edge = Instance.new("Frame")
-		edge.Name = string.format("Inner%02d", index)
-		edge.AnchorPoint = Vector2.new(0.5, 0.5)
-		edge.BorderSizePixel = 0
-		edge.Visible = false
-		edge.Parent = cell
-		runtime.innerEdges[index] = edge
-	end
+	local right = INSET + CELL + GUTTER
 
 	local caption = Instance.new("TextLabel")
-	caption.Position = UDim2.new(0, CELL + GUTTER, 0, 4)
-	caption.Size = UDim2.new(1, -CELL - GUTTER - 12, 0, 14)
+	caption.Name = "Caption"
+	caption.Position = UDim2.new(0, right, 0, 6)
+	caption.Size = UDim2.new(1, -right - 12, 0, 14)
 	caption.BackgroundTransparency = 1
 	caption.Font = Enum.Font.Code
 	caption.TextSize = 11
@@ -833,8 +705,8 @@ function Visuals.mount(parent: Instance, palette: { [string]: Color3 })
 
 	local trace = Instance.new("Frame")
 	trace.Name = "Trace"
-	trace.Position = UDim2.new(0, CELL + GUTTER, 0, 21)
-	trace.Size = UDim2.new(1, -CELL - GUTTER - 12, 0, TRACE_HEIGHT)
+	trace.Position = UDim2.new(0, right, 0, 24)
+	trace.Size = UDim2.new(1, -right - 12, 0, TRACE_HEIGHT)
 	trace.BackgroundTransparency = 1
 	trace.ClipsDescendants = true
 	trace.Parent = band
@@ -843,6 +715,7 @@ function Visuals.mount(parent: Instance, palette: { [string]: Color3 })
 	-- A baseline under the bars, so an empty trace still reads as an instrument
 	-- waiting for data rather than as a blank gap.
 	local baseline = Instance.new("Frame")
+	baseline.Name = "Baseline"
 	baseline.AnchorPoint = Vector2.new(0, 1)
 	baseline.Position = UDim2.fromScale(0, 1)
 	baseline.Size = UDim2.new(1, 0, 0, 1)
@@ -850,6 +723,7 @@ function Visuals.mount(parent: Instance, palette: { [string]: Color3 })
 	baseline.BackgroundTransparency = 0.75
 	baseline.BorderSizePixel = 0
 	baseline.Parent = trace
+	runtime.baseline = baseline
 
 	--[[
 		Built once and moved, and created BEFORE the bars exist so it sits under
@@ -861,10 +735,9 @@ function Visuals.mount(parent: Instance, palette: { [string]: Color3 })
 	highlight.AnchorPoint = Vector2.new(0.5, 1)
 	highlight.Position = UDim2.new(1, 0, 1, 0)
 	highlight.Size = UDim2.new(0, BAR_STRIDE, 1, 0)
-	highlight.BackgroundColor3 = palette.text or Color3.fromRGB(226, 232, 240)
+	highlight.BackgroundColor3 = palette.text
 	-- Faint enough not to hide the bar it sits behind, solid enough to be seen
-	-- at all. The previous value was chosen for a highlight that never rendered,
-	-- so it had never been looked at.
+	-- at all.
 	highlight.BackgroundTransparency = 0.7
 	highlight.BorderSizePixel = 0
 	highlight.Visible = false
@@ -886,7 +759,7 @@ function Visuals.mount(parent: Instance, palette: { [string]: Color3 })
 	-- of it, which is the half worth reading.
 	readout.AutomaticSize = Enum.AutomaticSize.X
 	readout.Size = UDim2.new(0, 0, 0, 14)
-	readout.BackgroundColor3 = palette.background or Color3.fromRGB(11, 12, 20)
+	readout.BackgroundColor3 = palette.background
 	readout.BackgroundTransparency = 0.15
 	readout.BorderSizePixel = 0
 	readout.Font = Enum.Font.Code
@@ -902,6 +775,14 @@ function Visuals.mount(parent: Instance, palette: { [string]: Color3 })
 	readoutPadding.PaddingLeft = UDim.new(0, 4)
 	readoutPadding.PaddingRight = UDim.new(0, 4)
 	readoutPadding.Parent = readout
+
+	local ok, err = pcall(function()
+		Themes.active().mount(cell)
+	end)
+	runtime.mounted = ok
+	if not ok then
+		warn(string.format("[rbx-studio] theme %q failed to mount: %s", Themes.activeId(), tostring(err)))
+	end
 end
 
 return Visuals

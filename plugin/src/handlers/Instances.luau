@@ -53,13 +53,45 @@ local function applyProperty(target: Instance, name: string, spec: PropertySpec)
 	return nil
 end
 
+--[[
+	Sets attributes, honouring an explicit type where one is given.
+
+	A bare value is written as it arrives, so a string stays a string. That is
+	the safe default and it is also a trap: attributes hold Vector3, Color3,
+	UDim2 and the rest, and `"0, 5, 0"` -- the exact text that sets a Vector3
+	property -- was landing on an attribute as five characters. The write looked
+	like it worked and the game read a string. So a value may instead arrive as
+	{ type = "Vector3", value = "0, 5, 0" }, which goes through the same parser
+	properties use.
+]]
 local function applyAttributes(target: Instance, attributes: { [string]: any }): { string }
 	local failures: { string } = {}
 	for name, value in attributes do
-		-- A JSON null means "remove this attribute", which SetAttribute spells
-		-- as nil. There is no other way to express removal in the payload.
+		local resolved: any = value
+		local typed = typeof(value) == "table" and (value :: any).type ~= nil
+		if typed then
+			local spec = value :: { type: string, value: any }
+			local parsedOk, parsed, reason = Serialize.parse(spec.value, spec.type)
+			if not parsedOk then
+				table.insert(
+					failures,
+					string.format(
+						"attribute %s: %s",
+						name,
+						reason or string.format("could not be read as a %s", tostring(spec.type))
+					)
+				)
+				continue
+			end
+			resolved = parsed
+		end
+
+		-- An empty string means "remove this attribute", which SetAttribute spells
+		-- as nil. There is no other way to express removal in the payload -- and
+		-- the typed form is how to set an attribute to a genuinely empty string,
+		-- since only the bare form is read as removal.
 		local ok, err = pcall(function()
-			target:SetAttribute(name, if value == "" then nil else value)
+			target:SetAttribute(name, if not typed and value == "" then nil else resolved)
 		end)
 		if not ok then
 			table.insert(failures, string.format("attribute %s: %s", name, tostring(err)))

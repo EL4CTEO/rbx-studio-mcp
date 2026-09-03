@@ -152,6 +152,31 @@ function Serialize.readProperty(instance: Instance, name: string): (boolean, any
 end
 
 --[[
+	Pulls the numbers out of a composite value written as text.
+
+	This used to be a single `-?%d+%.?%d*` scan, which is not the grammar Luau
+	numbers actually have: "1e3, 0, .5" came back as 1, 3 and 0, so a Position
+	written in scientific notation was silently set to a different point in the
+	world and reported as applied. Splitting on the separators and handing each
+	token to `tonumber` means this agrees with the scalar path, which always
+	used `tonumber` -- the two disagreeing about what counts as a number was the
+	whole bug.
+
+	Non-numeric tokens are dropped, so "Vector3.new(1, 2, 3)" and "{1, 2, 3}"
+	still read as three numbers.
+]]
+local function scanTokens(text: string): { number }
+	local numbers: { number } = {}
+	for token in string.gmatch(text, "[^,%s%(%)%[%]{}<>]+") do
+		local value = tonumber(token)
+		if value then
+			table.insert(numbers, value)
+		end
+	end
+	return numbers
+end
+
+--[[
 	Parses a serialized string back into a Roblox value, given the target type
 	from the API dump. Returns ok=false with a reason the agent can act on
 	rather than raising, so batch writes can report per-property failures.
@@ -176,7 +201,22 @@ function Serialize.parse(text: any, valueType: string): (boolean, any, string?)
 		if kind == "boolean" then
 			return true, text, nil
 		end
-		return true, text == "true", nil
+		if kind == "number" then
+			return true, text ~= 0, nil
+		end
+		-- This used to be `text == "true"`, which quietly turned "True", "TRUE"
+		-- and "1" into false and reported the write as applied. A bool that is
+		-- silently the opposite of what was asked is the worst failure this
+		-- module can produce, so near misses are accepted and anything else is
+		-- refused rather than guessed at.
+		local lowered = string.lower(tostring(text))
+		if lowered == "true" or lowered == "1" or lowered == "yes" then
+			return true, true, nil
+		end
+		if lowered == "false" or lowered == "0" or lowered == "no" then
+			return true, false, nil
+		end
+		return false, nil, string.format('expected true or false, got "%s"', tostring(text))
 	end
 	if NUMERIC_TYPES[valueType] then
 		local parsed = tonumber(text)
@@ -188,8 +228,8 @@ function Serialize.parse(text: any, valueType: string): (boolean, any, string?)
 
 	local numbers: { number } = {}
 	if kind == "string" then
-		for match in string.gmatch(text, "-?%d+%.?%d*") do
-			table.insert(numbers, tonumber(match) :: number)
+		for _, token in scanTokens(text) do
+			table.insert(numbers, token)
 		end
 	elseif kind == "table" then
 		for _, item in text :: { any } do

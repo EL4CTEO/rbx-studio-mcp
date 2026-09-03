@@ -30,10 +30,70 @@ const propertyBag = z
       'a Color3, "Neon" or "Enum.Material.Neon" for an enum, true/false for a bool.',
   );
 
+/**
+ * Attribute types the engine actually stores. `SetAttribute` rejects anything
+ * else, so the list is checked here rather than letting the write fail in
+ * Studio with a message that does not say which name was at fault.
+ */
+const ATTRIBUTE_TYPES = [
+  "string",
+  "boolean",
+  "number",
+  "BrickColor",
+  "CFrame",
+  "Color3",
+  "ColorSequence",
+  "Font",
+  "NumberRange",
+  "NumberSequence",
+  "Rect",
+  "UDim",
+  "UDim2",
+  "Vector2",
+  "Vector3",
+] as const;
+
+/** A bare value, or one carrying the Roblox type it should be stored as. */
+type AttributeValue =
+  | string
+  | number
+  | boolean
+  | { type: (typeof ATTRIBUTE_TYPES)[number]; value: string | number | boolean };
+
+/**
+ * A bare value is written as it arrives; `{type, value}` is parsed first.
+ *
+ * Properties have always been typed from the API dump, and attributes were
+ * not typed at all, so the same `"0, 5, 0"` that sets a Vector3 property was
+ * landing on an attribute as a five-character string — silently, and reported
+ * as written. Attributes are where a game keeps replicated state, so that is
+ * a wrong value the place then runs on.
+ */
+const attributeValue = z.union([
+  z.string(),
+  z.number(),
+  z.boolean(),
+  z.object({
+    type: z
+      .enum(ATTRIBUTE_TYPES)
+      .describe(
+        "Roblox type to store the attribute as. Needed for anything but a " +
+          "plain string, number or boolean — a bare string stays a string."
+      ),
+    value: z
+      .union([z.string(), z.number(), z.boolean()])
+      .describe('The value, written as the Properties panel shows it: "0, 5, 0".'),
+  }),
+]);
+
 const attributeBag = z
-  .record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
+  .record(z.string(), attributeValue)
   .optional()
-  .describe("Attributes to set, as name → value. An empty string removes one.");
+  .describe(
+    "Attributes to set, as name → value. A bare string, number or boolean is " +
+      'stored as-is; for any other type pass { type, value }, e.g. { type: ' +
+      '"Vector3", value: "0, 5, 0" }. An empty string removes an attribute.'
+  );
 
 const tagSpec = z
   .object({
@@ -125,7 +185,7 @@ interface CreateSpec {
   className: string;
   name?: string;
   properties?: Record<string, string | number | boolean>;
-  attributes?: Record<string, string | number | boolean>;
+  attributes?: Record<string, AttributeValue>;
   tags?: { add?: string[]; remove?: string[] };
   children?: CreateSpec[];
 }

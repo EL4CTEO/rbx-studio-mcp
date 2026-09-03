@@ -18,39 +18,50 @@
 	Instances, and colour spans do the same job in a fraction of the code.
 ]]
 
+local ThemePicker = require(script.Parent.ThemePicker)
+local Themes = require(script.Parent.Themes)
 local Visuals = require(script.Parent.Visuals)
 
 local Console = {}
 
--- Ring buffer bound. Long enough to cover a working session, short enough that
--- re-rendering the whole string on every append stays cheap.
-local MAX_LINES = 300
+--[[
+	Ring buffer bound, counted in logged rows rather than in rendered lines.
 
--- Violet-tinted near-black. The cast is slight but it stops the panel reading
--- as the same grey as every other Studio dock.
-local PALETTE = {
-	background = Color3.fromRGB(11, 12, 20),
-	surface = Color3.fromRGB(18, 20, 31),
-	rule = Color3.fromRGB(167, 139, 250),
-	text = Color3.fromRGB(206, 212, 226),
-	dim = Color3.fromRGB(90, 97, 120),
-	green = Color3.fromRGB(110, 231, 168),
-	red = Color3.fromRGB(251, 113, 133),
-	amber = Color3.fromRGB(251, 191, 36),
-	cyan = Color3.fromRGB(103, 232, 249),
-	violet = Color3.fromRGB(167, 139, 250),
-}
+	It used to bound the rendered lines, which meant a burst of failures -- each
+	writing a message plus two wrapped lines of explanation -- evicted three
+	times as much history as a burst of successes. Bounding the records makes
+	"the last three hundred things that happened" mean what it says.
+]]
+local MAX_RECORDS = 300
+
+--[[
+	The active preset's colours, rebound rather than re-read.
+
+	Every use site in this file is a plain `PALETTE.dim`, and there are about
+	forty of them. Turning each into a function call to satisfy theming would
+	have been forty edits to working code for no gain: the palette changes only
+	when the user picks a different preset, so it is simply reassigned there and
+	the reads stay as they were.
+
+	The catch is that anything which COPIES a colour out of here keeps the old
+	one. Instances built in `mount` do exactly that, which is why `applyTheme`
+	has to walk them by hand.
+]]
+local PALETTE: Themes.Palette = Themes.palette()
 
 -- Sigil plus colour per level. The sigil is what makes the log scannable at a
 -- glance; colour alone fails for anyone who cannot separate red from green.
-local LEVELS: { [string]: { sigil: string, color: Color3 } } = {
-	ok = { sigil = "\u{25C6}", color = PALETTE.green },
-	error = { sigil = "\u{2715}", color = PALETTE.red },
-	warn = { sigil = "\u{25B2}", color = PALETTE.amber },
-	info = { sigil = "\u{25C6}", color = PALETTE.violet },
-	dim = { sigil = "\u{00B7}", color = PALETTE.dim },
-	call = { sigil = "\u{25B8}", color = PALETTE.cyan },
-	reply = { sigil = "\u{25C2}", color = PALETTE.violet },
+-- Named by palette key rather than by colour, because this table is built once
+-- at load and a colour captured then belongs to whichever preset happened to
+-- be active at the time.
+local LEVELS: { [string]: { sigil: string, key: string } } = {
+	ok = { sigil = "\u{25C6}", key = "green" },
+	error = { sigil = "\u{2715}", key = "red" },
+	warn = { sigil = "\u{25B2}", key = "amber" },
+	info = { sigil = "\u{25C6}", key = "violet" },
+	dim = { sigil = "\u{00B7}", key = "dim" },
+	call = { sigil = "\u{25B8}", key = "cyan" },
+	reply = { sigil = "\u{25C2}", key = "violet" },
 }
 
 export type Level = "ok" | "error" | "warn" | "info" | "dim" | "call" | "reply"
@@ -105,8 +116,28 @@ local function wrapDetail(detail: string): { string }
 	return lines
 end
 
+--[[
+	One logged row, before it is coloured.
+
+	Holding the parts rather than the finished string is what lets a theme
+	switch repaint history: see `renderRecord`.
+]]
+type Record = {
+	level: Level,
+	message: string,
+	detail: string?,
+	stamp: string,
+}
+
 type State = {
-	lines: { string },
+	records: { Record },
+	-- The last status reported, replayed after a theme switch. Without it the
+	-- header has no way to know what colour it should be wearing.
+	status: string,
+	statusMeta: string,
+	-- The accent rule's gradient. A ColorSequence rather than a Color3, so it
+	-- cannot ride the generic role list.
+	ruleFade: UIGradient?,
 	--[[
 		Rows written, as opposed to lines rendered.
 
@@ -144,7 +175,10 @@ type State = {
 }
 
 local state: State = {
-	lines = {},
+	records = {},
+	ruleFade = nil,
+	status = "disconnected",
+	statusMeta = "",
 	entries = 0,
 	label = nil,
 	scroller = nil,
@@ -189,13 +223,89 @@ local function span(color: Color3, value: string): string
 	return string.format('<font color="%s">%s</font>', hex(color), escape(value))
 end
 
+--[[
+	Turns one record into the lines it occupies.
+
+	Rendering is deferred to here rather than done when the row is logged, which
+	is the change that made theming possible at all: a line that has already had
+	`#A78BFA` baked into it cannot be recoloured, so switching preset used to
+	leave the whole session's history in the previous theme's palette while new
+	rows arrived in the new one. Now nothing is coloured until it is painted.
+]]
+local function renderRecord(record: Record): { string }
+	local spec = LEVELS[record.level] or LEVELS.info
+	local detail = record.detail
+
+	--[[
+		Measured in characters, not bytes.
+
+		`#body` counts bytes, and every sigil in this console is a 3-byte UTF-8
+		glyph, so it over-counted each line by two and pushed the latency column
+		two places left on exactly the lines that had a latency. The column was
+		never straight, and the cause was invisible until two different sigils
+		sat next to each other.
+	]]
+	--[[
+		Only a detail that will actually sit in the column costs the message any
+		of its width. Cutting the message to make room for a detail that then
+		goes on its own line below would shorten it for nothing.
+	]]
+	local detailWidth = if detail then (utf8.len(detail) or #detail) else 0
+	local inlineDetail = detail ~= nil
+		and (utf8.len(record.message) or #record.message) + detailWidth + 3
+			<= DETAIL_COLUMN + INLINE_DETAIL
+
+	local trimmed = record.message
+	local budget = DETAIL_COLUMN - 3
+	if inlineDetail and (utf8.len(trimmed) or #trimmed) > budget then
+		-- Cut rather than wrap. A wrapped line destroys the alignment and
+		-- carries the detail off the end of the visible width as well.
+		local offset = utf8.offset(trimmed, budget) or budget
+		trimmed = string.sub(trimmed, 1, offset - 1) .. utf8.char(0x2026)
+	end
+
+	local body = string.format("%s %s", spec.sigil, trimmed)
+	local bodyWidth = utf8.len(body) or #body
+	local lines = { span(PALETTE.dim, record.stamp) .. " " .. span(PALETTE[spec.key], body) }
+
+	--[[
+		Short details ride the right-hand column; long ones get their own lines.
+
+		The column exists for latencies -- "12ms" stacking into something
+		readable -- and it was applied to every detail regardless of length. A
+		sentence of prose therefore started at column 52, ran off the widget, and
+		wrapped back to column 0, so the explanation of a standby session came
+		out as a ragged block that began in the middle of the screen and ended at
+		the left edge. Anything that will not fit beside the message is better
+		off beneath it.
+	]]
+	if detail then
+		if inlineDetail then
+			local padding = math.max(1, DETAIL_COLUMN - bodyWidth)
+			lines[1] ..= span(PALETTE.dim, string.rep(" ", padding) .. detail)
+		else
+			for _, wrapped in wrapDetail(detail) do
+				table.insert(lines, span(PALETTE.dim, DETAIL_INDENT .. wrapped))
+			end
+		end
+	end
+	return lines
+end
+
 local function paint()
 	state.dirty = false
 	local label = state.label
 	if not label then
 		return
 	end
-	label.Text = table.concat(state.lines, "\n")
+
+	local lines: { string } = {}
+	for _, record in state.records do
+		for _, line in renderRecord(record) do
+			table.insert(lines, line)
+		end
+	end
+	label.Text = table.concat(lines, "\n")
 
 	-- Only follow the tail when the user has not scrolled up to read history.
 	local scroller = state.scroller
@@ -261,64 +371,18 @@ end
 	ragged offset.
 ]]
 function Console.log(level: Level, message: string, detail: string?)
-	local spec = LEVELS[level] or LEVELS.info
-
-	--[[
-		Measured in characters, not bytes.
-
-		`#body` counts bytes, and every sigil in this console is a 3-byte UTF-8
-		glyph, so it over-counted each line by two and pushed the latency column
-		two places left on exactly the lines that had a latency. The column was
-		never straight, and the cause was invisible until two different sigils
-		sat next to each other.
-	]]
-	--[[
-		Only a detail that will actually sit in the column costs the message any
-		of its width. Cutting the message to make room for a detail that then
-		goes on its own line below would shorten it for nothing.
-	]]
-	local detailWidth = if detail then (utf8.len(detail) or #detail) else 0
-	local inlineDetail = detail ~= nil
-		and (utf8.len(message) or #message) + detailWidth + 3 <= DETAIL_COLUMN + INLINE_DETAIL
-
-	local trimmed = message
-	local budget = DETAIL_COLUMN - 3
-	if inlineDetail and (utf8.len(trimmed) or #trimmed) > budget then
-		-- Cut rather than wrap. A wrapped line destroys the alignment and
-		-- carries the detail off the end of the visible width as well.
-		local offset = utf8.offset(trimmed, budget) or budget
-		trimmed = string.sub(trimmed, 1, offset - 1) .. utf8.char(0x2026)
-	end
-
-	local body = string.format("%s %s", spec.sigil, trimmed)
-	local bodyWidth = utf8.len(body) or #body
-	local line = span(PALETTE.dim, os.date("%H:%M:%S") :: string) .. " " .. span(spec.color, body)
-
-	--[[
-		Short details ride the right-hand column; long ones get their own lines.
-
-		The column exists for latencies -- "12ms" stacking into something
-		readable -- and it was applied to every detail regardless of length. A
-		sentence of prose therefore started at column 52, ran off the widget, and
-		wrapped back to column 0, so the explanation of a standby session came
-		out as a ragged block that began in the middle of the screen and ended at
-		the left edge. Anything that will not fit beside the message is better
-		off beneath it.
-	]]
-	table.insert(state.lines, line)
+	table.insert(state.records, {
+		level = level,
+		message = message,
+		detail = detail,
+		-- Stamped when the row happened, not when it is painted. A repaint after
+		-- a theme switch re-renders every line, and re-reading the clock there
+		-- would restamp the whole session to the moment the user changed colour.
+		stamp = os.date("%H:%M:%S") :: string,
+	})
 	state.entries += 1
-	if detail then
-		if inlineDetail then
-			local padding = math.max(1, DETAIL_COLUMN - bodyWidth)
-			state.lines[#state.lines] ..= span(PALETTE.dim, string.rep(" ", padding) .. detail)
-		else
-			for _, wrapped in wrapDetail(detail) do
-				table.insert(state.lines, span(PALETTE.dim, DETAIL_INDENT .. wrapped))
-			end
-		end
-	end
-	while #state.lines > MAX_LINES do
-		table.remove(state.lines, 1)
+	while #state.records > MAX_RECORDS do
+		table.remove(state.records, 1)
 	end
 	redraw()
 end
@@ -344,11 +408,11 @@ end
 	and heavier still. Urgency drives both the spin rate and how strongly the
 	colour takes over, so the two never disagree.
 ]]
-local KIND_LOOK: { [string]: { color: Color3, urgency: number } } = {
-	read = { color = PALETTE.cyan, urgency = 0.3 },
-	write = { color = PALETTE.violet, urgency = 0.7 },
-	run = { color = PALETTE.green, urgency = 0.9 },
-	debug = { color = PALETTE.amber, urgency = 0.5 },
+local KIND_LOOK: { [string]: { key: string, urgency: number } } = {
+	read = { key = "cyan", urgency = 0.3 },
+	write = { key = "violet", urgency = 0.7 },
+	run = { key = "green", urgency = 0.9 },
+	debug = { key = "amber", urgency = 0.5 },
 }
 
 function Console.beginCall(title: string, kind: string)
@@ -356,7 +420,7 @@ function Console.beginCall(title: string, kind: string)
 	state.generation += 1
 	local look = KIND_LOOK[kind] or KIND_LOOK.read
 	Visuals.setCaption(title)
-	Visuals.setKind(look.color, look.urgency)
+	Visuals.setKind(PALETTE[look.key], look.urgency)
 	refreshCounters()
 end
 
@@ -499,7 +563,7 @@ function Console.clear()
 		the one that went.
 	]]
 	local cleared = state.entries
-	table.clear(state.lines)
+	table.clear(state.records)
 	state.entries = 0
 	state.calls = 0
 	state.errors = 0
@@ -524,6 +588,9 @@ end
 	visible without scrolling, however long the session has run.
 ]]
 function Console.setStatus(status: string, meta: string)
+	state.status = status
+	state.statusMeta = meta
+
 	local dot = state.statusDot
 	local text = state.statusText
 	local metaLabel = state.metaText
@@ -550,14 +617,37 @@ function Console.setStatus(status: string, meta: string)
 	Visuals.setTint(color)
 end
 
+--[[
+	Records which palette colour an Instance is wearing, and puts it on.
+
+	The console builds about thirty Instances and copies a colour into each. A
+	copy does not follow the palette when the user picks a different preset, so
+	the panel would keep the old theme's header, rule, scrollbar and buttons
+	while the log underneath repainted -- which looks less like a theme than
+	like a half-finished render.
+
+	Rather than keep thirty named references and re-set thirty properties by
+	hand, each one declares the property and palette key it is wearing when it
+	is built, and `Console.applyTheme` walks the list. Adding a widget therefore
+	cannot forget to theme it: the same call that colours it registers it.
+]]
+type Role = { instance: Instance, property: string, key: string }
+local roles: { Role } = {}
+
+local function themed<T>(instance: T & Instance, property: string, key: string): T
+	table.insert(roles, { instance = instance, property = property, key = key })
+	;(instance :: any)[property] = PALETTE[key]
+	return instance
+end
+
 local function makeButton(parent: Instance, text: string, order: number): TextButton
 	local button = Instance.new("TextButton")
 	button.Name = text
 	button.Text = text
 	button.Font = Enum.Font.Code
 	button.TextSize = 11
-	button.TextColor3 = PALETTE.dim
-	button.BackgroundColor3 = PALETTE.background
+	themed(button, "TextColor3", "dim")
+	themed(button, "BackgroundColor3", "background")
 	button.AutoButtonColor = false
 	button.BorderSizePixel = 0
 	button.Size = UDim2.new(0, 76, 0, 20)
@@ -569,7 +659,7 @@ local function makeButton(parent: Instance, text: string, order: number): TextBu
 	corner.Parent = button
 
 	local stroke = Instance.new("UIStroke")
-	stroke.Color = PALETTE.dim
+	themed(stroke, "Color", "dim")
 	stroke.Transparency = 0.6
 	stroke.Parent = button
 
@@ -590,6 +680,10 @@ end
 export type Handlers = {
 	onReconnect: () -> (),
 	onClear: () -> (),
+	-- Called after a preset switch has already been applied, so the caller's
+	-- only job is to remember it. Persistence lives there because
+	-- `plugin:SetSetting` is not reachable from a ModuleScript.
+	onTheme: (string) -> (),
 }
 
 --[[
@@ -599,14 +693,14 @@ export type Handlers = {
 function Console.mount(parent: Instance, handlers: Handlers)
 	local root = Instance.new("Frame")
 	root.Size = UDim2.fromScale(1, 1)
-	root.BackgroundColor3 = PALETTE.background
+	themed(root, "BackgroundColor3", "background")
 	root.BorderSizePixel = 0
 	root.Parent = parent
 
 	-- Header ---------------------------------------------------------------
 	local header = Instance.new("Frame")
 	header.Size = UDim2.new(1, 0, 0, 32)
-	header.BackgroundColor3 = PALETTE.surface
+	themed(header, "BackgroundColor3", "surface")
 	header.BorderSizePixel = 0
 	header.Parent = root
 
@@ -619,6 +713,10 @@ function Console.mount(parent: Instance, handlers: Handlers)
 	dot.Text = "\u{25CF}"
 	dot.Font = Enum.Font.Code
 	dot.TextSize = 13
+	-- Deliberately NOT registered with `themed`. Red here is the value it
+	-- STARTS at, not the colour it wears: what it should be is whatever
+	-- `setStatus` last reported. Registering it meant every theme switch
+	-- repainted a connected session red.
 	dot.TextColor3 = PALETTE.red
 	dot.BackgroundTransparency = 1
 	dot.Size = UDim2.new(0, 12, 1, 0)
@@ -641,7 +739,7 @@ function Console.mount(parent: Instance, handlers: Handlers)
 	meta.Text = ""
 	meta.Font = Enum.Font.Code
 	meta.TextSize = 11
-	meta.TextColor3 = PALETTE.dim
+	themed(meta, "TextColor3", "dim")
 	meta.TextXAlignment = Enum.TextXAlignment.Left
 	meta.TextTruncate = Enum.TextTruncate.AtEnd
 	meta.BackgroundTransparency = 1
@@ -663,11 +761,11 @@ function Console.mount(parent: Instance, handlers: Handlers)
 	clientsChip.AnchorPoint = Vector2.new(1, 0.5)
 	clientsChip.Position = UDim2.new(1, -252, 0.5, 0)
 	clientsChip.Size = UDim2.new(0, 84, 0, 18)
-	clientsChip.BackgroundColor3 = PALETTE.background
+	themed(clientsChip, "BackgroundColor3", "background")
 	clientsChip.BorderSizePixel = 0
 	clientsChip.Font = Enum.Font.Code
 	clientsChip.TextSize = 11
-	clientsChip.TextColor3 = PALETTE.cyan
+	themed(clientsChip, "TextColor3", "cyan")
 	clientsChip.Text = ""
 	clientsChip.Visible = false
 	clientsChip.Parent = header
@@ -678,7 +776,7 @@ function Console.mount(parent: Instance, handlers: Handlers)
 	chipCorner.Parent = clientsChip
 
 	local chipStroke = Instance.new("UIStroke")
-	chipStroke.Color = PALETTE.cyan
+	themed(chipStroke, "Color", "cyan")
 	chipStroke.Transparency = 0.6
 	chipStroke.Parent = clientsChip
 
@@ -706,12 +804,13 @@ function Console.mount(parent: Instance, handlers: Handlers)
 	local rule = Instance.new("Frame")
 	rule.Position = UDim2.new(0, 0, 0, 32)
 	rule.Size = UDim2.new(1, 0, 0, 1)
-	rule.BackgroundColor3 = PALETTE.rule
+	themed(rule, "BackgroundColor3", "rule")
 	rule.BorderSizePixel = 0
 	rule.Parent = root
 
 	local ruleFade = Instance.new("UIGradient")
 	ruleFade.Color = ColorSequence.new(PALETTE.rule)
+	state.ruleFade = ruleFade
 	ruleFade.Transparency = NumberSequence.new({
 		NumberSequenceKeypoint.new(0, 0.15),
 		NumberSequenceKeypoint.new(1, 0.85),
@@ -725,7 +824,7 @@ function Console.mount(parent: Instance, handlers: Handlers)
 	scroller.BackgroundTransparency = 1
 	scroller.BorderSizePixel = 0
 	scroller.ScrollBarThickness = 5
-	scroller.ScrollBarImageColor3 = PALETTE.violet
+	themed(scroller, "ScrollBarImageColor3", "violet")
 	scroller.ScrollBarImageTransparency = 0.5
 	scroller.CanvasSize = UDim2.new()
 	scroller.AutomaticCanvasSize = Enum.AutomaticSize.Y
@@ -747,7 +846,7 @@ function Console.mount(parent: Instance, handlers: Handlers)
 	label.Font = Enum.Font.Code
 	label.TextSize = 12
 	label.LineHeight = 1.25
-	label.TextColor3 = PALETTE.text
+	themed(label, "TextColor3", "text")
 	label.RichText = true
 	label.TextWrapped = true
 	label.TextXAlignment = Enum.TextXAlignment.Left
@@ -761,7 +860,7 @@ function Console.mount(parent: Instance, handlers: Handlers)
 	footer.AnchorPoint = Vector2.new(0, 1)
 	footer.Position = UDim2.fromScale(0, 1)
 	footer.Size = UDim2.new(1, 0, 0, 22)
-	footer.BackgroundColor3 = PALETTE.surface
+	themed(footer, "BackgroundColor3", "surface")
 	footer.BorderSizePixel = 0
 	footer.Parent = root
 
@@ -774,7 +873,7 @@ function Console.mount(parent: Instance, handlers: Handlers)
 	prompt.Text = "rbx\u{00B7}studio"
 	prompt.Font = Enum.Font.Code
 	prompt.TextSize = 11
-	prompt.TextColor3 = PALETTE.violet
+	themed(prompt, "TextColor3", "violet")
 	prompt.TextXAlignment = Enum.TextXAlignment.Left
 	prompt.BackgroundTransparency = 1
 	prompt.Size = UDim2.new(0, 70, 1, 0)
@@ -793,7 +892,7 @@ function Console.mount(parent: Instance, handlers: Handlers)
 	counters.Text = "idle"
 	counters.Font = Enum.Font.Code
 	counters.TextSize = 11
-	counters.TextColor3 = PALETTE.dim
+	themed(counters, "TextColor3", "dim")
 	counters.TextXAlignment = Enum.TextXAlignment.Right
 	counters.BackgroundTransparency = 1
 	counters.AnchorPoint = Vector2.new(1, 0)
@@ -810,14 +909,7 @@ function Console.mount(parent: Instance, handlers: Handlers)
 		costs legibility is a bad trade however good it looks, and this is a
 		console before it is anything else.
 	]]
-	Visuals.mount(root, {
-		background = PALETTE.background,
-		surface = PALETTE.surface,
-		text = PALETTE.text,
-		dim = PALETTE.dim,
-		violet = PALETTE.violet,
-		red = PALETTE.red,
-	})
+	Visuals.mount(root)
 	local band = root:FindFirstChild("ActivityBand") :: Frame
 	band.Position = UDim2.new(0, 0, 0, 33)
 	band.Size = UDim2.new(1, 0, 0, Visuals.BAND_HEIGHT)
@@ -846,12 +938,61 @@ function Console.mount(parent: Instance, handlers: Handlers)
 		visualsButton.Text = if Visuals.isVisible() then "\u{25C6} visuals" else "visuals"
 	end)
 
+	--[[
+		The preset drawer, mounted last so its tab sits over everything.
+
+		It has to be the last child of `root` as well as the highest ZIndex: the
+		band, the log and the footer are all built before it and a drawer that
+		opens behind the log is a drawer nobody can click.
+	]]
+	ThemePicker.mount(root, function(id)
+		Console.applyTheme()
+		ThemePicker.applyTheme()
+		layoutLog()
+		handlers.onTheme(id)
+	end)
+
 	-- Treat "scrolled away from the bottom" as the user reading history, and
 	-- stop yanking the view down under them until they scroll back.
 	scroller:GetPropertyChangedSignal("CanvasPosition"):Connect(function()
 		local maxScroll = math.max(0, scroller.AbsoluteCanvasSize.Y - scroller.AbsoluteWindowSize.Y)
 		state.pinned = maxScroll - scroller.CanvasPosition.Y < 24
 	end)
+end
+
+--[[
+	Switches the whole panel to the active preset.
+
+	Three things have to move together or the switch looks broken: the palette
+	this file reads, the Instances that copied a colour out of it, and the log,
+	whose rows are re-rendered from records rather than recoloured in place. The
+	band goes last because remounting a preset is the expensive part and there
+	is no reason to make the text wait for it.
+]]
+function Console.applyTheme()
+	PALETTE = Themes.palette()
+
+	for _, role in roles do
+		-- A widget can outlive its registration if the panel is rebuilt, and
+		-- writing to a destroyed Instance throws.
+		if role.instance.Parent ~= nil or role.instance:IsA("UIStroke") then
+			pcall(function()
+				(role.instance :: any)[role.property] = PALETTE[role.key]
+			end)
+		end
+	end
+
+	local ruleFade = state.ruleFade
+	if ruleFade then
+		ruleFade.Color = ColorSequence.new(PALETTE.rule)
+	end
+
+	refreshCounters()
+	-- Replayed rather than recoloured: the status light's colour is a fact about
+	-- the connection, and the only thing that knows it is `setStatus`.
+	Console.setStatus(state.status, state.statusMeta)
+	redraw()
+	Visuals.applyTheme()
 end
 
 return Console
