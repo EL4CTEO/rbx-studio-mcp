@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -16,7 +16,17 @@ import { fileURLToPath } from "node:url";
  * Must stay byte-identical to the hash in scripts/build-plugin.mjs.
  */
 
-let cached: string | null = null;
+/**
+ * Memo keyed by the sources' modification times, not held for the process.
+ *
+ * Caching the hash forever meant the server kept comparing against the sources
+ * as they were WHEN IT STARTED. Rebuild the plugin mid-session and the freshly
+ * installed plugin gets reported as the stale one, with advice — click into
+ * Studio, reinstall — that cannot possibly help, because the plugin was already
+ * the newer of the two. Re-hashing when a file's mtime moves costs a stat per
+ * source file and keeps the comparison honest.
+ */
+let cached: { key: string; id: string } | null = null;
 
 function pluginSourceDir(): string {
   // dist/lib/pluginbuild.js -> package root -> plugin/src
@@ -29,10 +39,7 @@ function collect(dir: string, root: string, into: Array<[string, string]>): void
     if (entry.isDirectory()) {
       collect(path, root, into);
     } else if (entry.name.endsWith(".luau")) {
-      into.push([
-        relative(root, path).split("\\").join("/"),
-        readFileSync(path, "utf8"),
-      ]);
+      into.push([relative(root, path).split("\\").join("/"), path]);
     }
   }
 }
@@ -43,28 +50,31 @@ function collect(dir: string, root: string, into: Array<[string, string]>): void
  * would otherwise look stale on Windows.
  */
 export function expectedPluginBuildId(): string {
-  if (cached !== null) return cached;
-
   try {
     const root = pluginSourceDir();
     const files: Array<[string, string]> = [];
     collect(root, root, files);
     files.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
 
+    // Cheap enough to check on every call, and the only way a rebuild during a
+    // session is noticed at all.
+    const key = files.map(([name, path]) => `${name}:${statSync(path).mtimeMs}`).join("|");
+    if (cached !== null && cached.key === key) return cached.id;
+
     const hash = createHash("sha256");
-    for (const [path, contents] of files) {
-      hash.update(path);
+    for (const [name, path] of files) {
+      hash.update(name);
       hash.update("\n");
-      hash.update(contents.replace(/\r\n/g, "\n"));
+      hash.update(readFileSync(path, "utf8").replace(/\r\n/g, "\n"));
       hash.update("\n");
     }
-    cached = hash.digest("hex").slice(0, 12);
+    cached = { key, id: hash.digest("hex").slice(0, 12) };
   } catch {
     // Sources missing (an unusual install layout) means we cannot compare, and
     // an unverifiable version is better reported as "unknown" than as stale.
-    cached = "unknown";
+    cached = { key: "missing", id: "unknown" };
   }
-  return cached;
+  return cached.id;
 }
 
 /**

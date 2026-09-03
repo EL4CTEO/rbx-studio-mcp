@@ -95,25 +95,106 @@ local function siblingIndex(instance: Instance, memo: NameIndex?): number?
 	return nil
 end
 
+--[[
+	Names a parent's children for an error message, collapsing repeats.
+
+	Same-named siblings are ordinary in Roblox, and listing them one by one spent
+	the whole budget saying "Part, Part, Part" 25 times -- which tells a reader
+	nothing and hides the names that would have helped. Repeats are counted
+	instead, and the count is exactly what says an index is needed.
+]]
 local function childNames(parent: Instance, limit: number): string
-	local names: { string } = {}
+	local order: { string } = {}
+	local counts: { [string]: number } = {}
 	for _, child in parent:GetChildren() do
-		table.insert(names, child.Name)
-		if #names >= limit then
-			table.insert(names, "...")
-			break
+		if counts[child.Name] == nil then
+			counts[child.Name] = 0
+			table.insert(order, child.Name)
 		end
+		counts[child.Name] += 1
 	end
-	if #names == 0 then
+
+	if #order == 0 then
 		return "(no children)"
 	end
+
+	local names: { string } = {}
+	for _, name in order do
+		if #names >= limit then
+			table.insert(names, string.format("... %d more", #order - limit))
+			break
+		end
+		local count = counts[name]
+		table.insert(names, if count > 1 then string.format("%s (x%d)", name, count) else name)
+	end
 	return table.concat(names, ", ")
+end
+
+--[[
+	Finds one child by a single segment, honouring "Name[2]" and, at the root,
+	fetching services by class name -- they are not always present as children
+	until first accessed.
+
+	The second return is a diagnostic for the one miss a caller cannot work out
+	from the sibling list: an index past the end of a name that does exist.
+]]
+local function childBySegment(
+	parent: Instance,
+	segment: string,
+	atRoot: boolean
+): (Instance?, string?)
+	local name, ordinal = parseSegment(segment)
+
+	if ordinal then
+		local list = childrenByName(parent, nil)[name]
+		if list == nil then
+			return nil, nil
+		end
+		local child = list[ordinal]
+		if child then
+			return child, nil
+		end
+		return nil,
+			string.format(
+				'"%s" has %d child%s named "%s", so [%d] is past the end. Indexes are '
+					.. "1-based and shift when siblings are added or removed -- read a "
+					.. "fresh path from `find` or `tree`.",
+				parent:GetFullName(),
+				#list,
+				if #list == 1 then "" else "ren",
+				name,
+				ordinal
+			)
+	end
+
+	if atRoot then
+		local ok, service = pcall(function()
+			return game:GetService(name :: any)
+		end)
+		if ok and service then
+			return service, nil
+		end
+	end
+	return parent:FindFirstChild(name), nil
 end
 
 --[[
 	Resolves a path to an Instance, or raises a NOT_FOUND with the failing
 	segment and its siblings. `FindFirstChild` is used rather than indexing so a
 	missing child never throws a bare Luau error.
+
+	Instance names may contain dots -- "Dr. Simon" is an ordinary name, and so is
+	"v1.2 backup" -- while the separator is a dot too, so such a name arrives
+	here already split into pieces. Each step therefore tries consuming one
+	segment first and rejoins further segments only if that leads nowhere, which
+	means the search has to BACK TRACK: with both "Dr" and "Dr. Who" present,
+	"Workspace.Dr. Who.Head" matches "Dr", fails to find " Who" under it, and
+	must return to try "Dr. Who". A first pass without that backtracking left the
+	tools emitting `Workspace.Dr. Who` as a path and then refusing to read it
+	back, which is worse than either behaviour on its own.
+
+	Shortest-first keeps the old precedence: where a short name resolves the
+	whole remaining path, it still wins over a longer join.
 ]]
 function Paths.resolve(path: string): Instance
 	if typeof(path) ~= "string" or path == "" then
@@ -130,78 +211,66 @@ function Paths.resolve(path: string): Instance
 		return game
 	end
 
-	local current: Instance = game
-	local index = 1
-	while index <= #segments do
-		local segment = segments[index]
-		local name, ordinal = parseSegment(segment)
-		local nextInstance: Instance? = nil
-		local consumed = 1
+	-- The deepest point any branch of the search reached, so a failure still
+	-- reports the segment that actually broke rather than the first one tried.
+	local deepest = 0
+	local deepestParent: Instance = game
+	local deepestNote: string? = nil
+	-- The segment text the note is about: with a rejoined name it is not
+	-- `segments[failedAt]`, and reporting that instead named "Mr" for a path
+	-- that asked for "Mr. X[3]".
+	local deepestSegment: string? = nil
 
-		if ordinal then
-			-- Explicit disambiguation: take the nth child with this exact name.
-			local list = childrenByName(current, nil)[name]
-			nextInstance = if list then list[ordinal] else nil
-		elseif index == 1 then
-			-- Services must be fetched by class name, and are not always
-			-- present as children until first accessed.
-			local ok, service = pcall(function()
-				return game:GetService(name :: any)
-			end)
-			nextInstance = if ok then service else current:FindFirstChild(name)
-		else
-			nextInstance = current:FindFirstChild(name)
+	local function walk(current: Instance, index: number): Instance?
+		if index > #segments then
+			return current
+		end
+		if index - 1 > deepest then
+			deepest = index - 1
+			deepestParent = current
+			deepestNote = nil
+			deepestSegment = nil
 		end
 
-		--[[
-			Instance names may contain dots -- "Dr. Simon" is an ordinary name --
-			and the separator is a dot too, so such a name arrives here already
-			split into pieces that match nothing. Rejoin greedily, longest first,
-			so "Workspace.Dr. Simon.Head" finds the child actually called
-			"Dr. Simon" rather than failing on a segment named "Dr".
-
-			Only attempted after the plain lookup misses, so a place where both
-			"Dr" and "Dr. Simon" exist still resolves the short name to itself.
-		]]
-		if not nextInstance and index < #segments then
-			for last = #segments, index + 1, -1 do
-				local joined = table.concat(segments, ".", index, last)
-				local joinedName, joinedOrdinal = parseSegment(joined)
-				local found: Instance? = nil
-				if joinedOrdinal then
-					local list = childrenByName(current, nil)[joinedName]
-					found = if list then list[joinedOrdinal] else nil
-				else
-					found = current:FindFirstChild(joinedName)
-				end
+		for last = index, #segments do
+			local joined = table.concat(segments, ".", index, last)
+			local child, note = childBySegment(current, joined, index == 1)
+			if note and index - 1 == deepest then
+				deepestNote = note
+				deepestSegment = joined
+			end
+			if child then
+				local found = walk(child, last + 1)
 				if found then
-					nextInstance = found
-					consumed = last - index + 1
-					break
+					return found
 				end
 			end
 		end
-
-		if not nextInstance then
-			local partial = table.concat(segments, ".", 1, index)
-			-- `fail` never returns; returning its result keeps that visible to
-			-- the type checker so `current` stays non-optional below.
-			return Dispatch.fail(
-				"NOT_FOUND",
-				string.format('No instance at "%s".', partial),
-				string.format(
-					'"%s" has no child named "%s". It does have: %s',
-					current:GetFullName(),
-					segment,
-					childNames(current, 25)
-				)
-			)
-		end
-		current = nextInstance
-		index += consumed
+		return nil
 	end
 
-	return current
+	local resolved = walk(game, 1)
+	if resolved then
+		return resolved
+	end
+
+	local failedAt = deepest + 1
+	local reached = if deepest > 0 then table.concat(segments, ".", 1, deepest) .. "." else ""
+	local named = if deepestSegment
+		then reached .. deepestSegment
+		else table.concat(segments, ".", 1, failedAt)
+	return Dispatch.fail(
+		"NOT_FOUND",
+		string.format('No instance at "%s".', named),
+		if deepestNote
+			then deepestNote
+			else string.format(
+				'"%s" has no child named "%s". It does have: %s',
+				deepestParent:GetFullName(),
+				segments[failedAt],
+				childNames(deepestParent, 25)
+			)
+	)
 end
 
 --[[

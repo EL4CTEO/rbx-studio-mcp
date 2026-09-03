@@ -197,8 +197,26 @@ export function registerSessionTools(context: ToolContext): void {
         .map((buildId) => pluginStalenessNotice(buildId))
         .filter((notice): notice is string => notice !== null);
 
+      // Two sessions of ONE Studio can hold different builds: a playtest loads
+      // the plugin as it was when the test started, so a rebuild part-way
+      // through leaves the editor on the old one and the playtest on the new.
+      // Both were then reported as plain "stale", which says nothing about
+      // which half is current and suggests a refocus that cannot fix it.
+      const distinctBuilds = [...new Set(sessions.map((session) => session.buildId))];
+      const disagreement =
+        distinctBuilds.length > 1
+          ? "The connected sessions are running DIFFERENT plugin builds (" +
+            sessions
+              .map((session, index) => `${detail[index]?.context ?? "session"} ${session.buildId}`)
+              .join(", ") +
+            "). A playtest session keeps the plugin it loaded when the test started, so " +
+            "the same call can behave differently depending on which you target. Stop " +
+            "the playtest and start it again to bring them into line."
+          : null;
+
       const note = [
         notices.length > 0 ? `WARNING: ${notices.join(" ")}` : null,
+        disagreement ? `WARNING: ${disagreement}` : null,
         listingHint(sessions, active),
       ]
         .filter((part): part is string => part !== undefined && part !== null)

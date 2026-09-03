@@ -51,6 +51,8 @@ interface CreateResponse {
   items: Array<{ path: string; className: string }>;
   /** Absent when Studio refused to open a recording, so nothing claims an undo. */
   undoStep?: string;
+  /** Problems with what was created that Studio only reports in its own Output. */
+  warnings?: string[];
 }
 
 /**
@@ -428,7 +430,15 @@ export function registerScriptTools(context: ToolContext): void {
         "Prefer `Script` with `runContext: \"Client\"` over `LocalScript` in new " +
         "work — a Script with an explicit RunContext runs wherever you parent it, " +
         "while LocalScript only runs under a player's character, backpack or " +
-        "PlayerGui. Use `script_edit` to change a script that already exists.",
+        "PlayerGui.\n\n" +
+        "The exception is the starter containers — `StarterGui`, `StarterPack`, " +
+        "`StarterPlayerScripts`, `StarterCharacterScripts`. They are COPIED into " +
+        "each player, so a Script with a non-Legacy RunContext there runs once " +
+        "where it sits and again in every copy, while a Legacy one does not run " +
+        "at all. Use `LocalScript` inside those. Creating one anyway comes back " +
+        "with a warning, because Studio's own warning about it goes to its Output " +
+        "and never reaches `console`.\n\n" +
+        "Use `script_edit` to change a script that already exists.",
       inputSchema: {
         scripts: z
           .array(
@@ -474,7 +484,7 @@ export function registerScriptTools(context: ToolContext): void {
         { studioId: args.studioId, timeoutMs: 60_000 },
       );
 
-      return table(
+      const listing = table(
         ["path", "className"],
         response.items as unknown as Array<Record<string, unknown>>,
         {
@@ -485,6 +495,13 @@ export function registerScriptTools(context: ToolContext): void {
               "as a single step",
         },
       );
+      if (!response.warnings || response.warnings.length === 0) return listing;
+
+      // Appended rather than thrown: the scripts do exist, and the fix is a
+      // different class, not a retry.
+      const existing = listing.content[0];
+      const body = existing && existing.type === "text" ? existing.text : "";
+      return text(`${body}\n\nWARNING: ${response.warnings.join("\n\n")}`);
     },
   );
 }

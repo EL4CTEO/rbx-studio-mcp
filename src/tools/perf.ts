@@ -142,7 +142,16 @@ export function registerPerfTools(context: ToolContext): void {
         "studioId (see `list_studios`); the editor's log will not have it. " +
         "Nothing printed before the plugin loaded is recoverable, and output from " +
         "the playtest *client* is not reachable at all, because Studio forbids " +
-        "client sessions from making HTTP requests.",
+        "client sessions from making HTTP requests." +
+        "\n\n" +
+        "Two more kinds of line are in the Output window and NOT here, so a quiet " +
+        "log is not proof nothing was said. Messages Studio itself emits — the " +
+        "ones the Output window attributes to \"Studio\" rather than to a script, " +
+        "such as the warning that a Script with a non-legacy RunContext inside " +
+        "StarterGui will run multiple times — never reach any session's log. " +
+        "Neither does anything the client printed. When a script misbehaves in a " +
+        "way nothing here explains, check the Output window yourself, or ask the " +
+        "user what it says.",
       inputSchema: {
         level: z
           .enum(["print", "info", "warning", "error"])

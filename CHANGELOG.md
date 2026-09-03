@@ -2,6 +2,20 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.3.1
+
+Paths with dots in them resolve properly, `script_create` catches a script that would run twice, and the stale-plugin warning stops blaming the wrong side.
+
+### Fixed
+- **A path with a dot in a name could not be read back.** 0.3.0 rejoined dotted names but never backtracked, so `Workspace.Dr. Who` failed whenever a sibling named `Dr` existed — a path the tools themselves emit. Resolution now backtracks; a short name that resolves the whole path still wins.
+- **The server compared against the sources it started with.** Rebuilding the plugin mid-session left the freshly installed plugin reported as the stale one, with advice that could not help. The fingerprint is re-checked when a source file changes.
+- **Two sessions of one Studio could run different plugin builds.** A playtest keeps the plugin it loaded when it started, so a rebuild part-way through splits the two. `list_studios` now says so, names each session's build, and tells you to restart the playtest.
+
+### Changed
+- **`script_create` warns about a script that would run twice.** A `Script` with a non-Legacy RunContext inside `StarterGui`, `StarterPack`, `StarterPlayerScripts` or `StarterCharacterScripts` runs once where it sits and again in every player's copy. Studio warns about this in its own Output, which `console` cannot read, so the warning now comes back in the response. Use `LocalScript` there.
+- **Better `NOT_FOUND` messages.** An index past the end says how many siblings share the name instead of blaming the wrong segment, and repeated sibling names are counted — `Part (x73)` rather than "Part" 25 times.
+- **`console` says what it cannot see.** Messages Studio itself emits, and anything printed on the client, never reach any session's log — a quiet log is not proof nothing was said.
+
 ## 0.3.0
 
 `execute_luau` now warns when it is reading a copy of a module instead of the live one, instance names containing dots resolve, and `script_read` can take a different line range per script.

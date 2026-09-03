@@ -324,6 +324,33 @@ end
 	open in the editor and there is no buffer to conflict with. Every later edit
 	goes through the editor path.
 ]]
+--[[
+	Names the starter container a script was just parented into, or nil.
+
+	These four are copied into the player rather than run where they sit, so a
+	`Script` with a non-Legacy RunContext inside one runs BOTH in the original
+	and in every copy. Roblox does warn about it -- "will cause it to run
+	multiple times" -- but that warning is emitted by Studio itself and never
+	reaches `console`, so an agent following the "prefer Script with runContext
+	Client over LocalScript" advice writes a double-running script and is given
+	no way to find out.
+]]
+local STARTER_CONTAINERS = {
+	"StarterGui",
+	"StarterPack",
+	"StarterPlayerScripts",
+	"StarterCharacterScripts",
+}
+
+local function starterContainer(instance: Instance): string?
+	for _, className in STARTER_CONTAINERS do
+		if instance:FindFirstAncestorOfClass(className :: any) then
+			return className
+		end
+	end
+	return nil
+end
+
 function Scripts.create(params: { [string]: any }): { [string]: any }
 	local requests = params.scripts
 	if typeof(requests) ~= "table" or #requests == 0 then
@@ -343,13 +370,18 @@ function Scripts.create(params: { [string]: any }): { [string]: any }
 				"BAD_PARAMS",
 				string.format('scripts[%d] has className "%s".', position, tostring(request.className)),
 				"Use Script, LocalScript or ModuleScript. Prefer a Script with "
-					.. "runContext Client over LocalScript in new work."
+					.. "runContext Client over LocalScript in new work -- except inside "
+					.. "StarterGui, StarterPack, StarterPlayerScripts or "
+					.. "StarterCharacterScripts, where LocalScript is still the right "
+					.. "class."
 			)
 		end
 	end
 
 	-- No shared path memo here: each creation changes its parent's children, so a
 	-- cached sibling grouping would go stale mid-batch and mis-number the paths.
+	local warnings: { string } = {}
+
 	local created, recorded = Undo.record("StudioMCP.ScriptCreate", "MCP create script", function()
 		local created: { { [string]: any } } = {}
 
@@ -381,6 +413,26 @@ function Scripts.create(params: { [string]: any }): { [string]: any }
 
 			instance.Parent = parent
 
+			if instance:IsA("Script") and instance.RunContext ~= Enum.RunContext.Legacy then
+				local container = starterContainer(instance)
+				if container then
+					table.insert(
+						warnings,
+						string.format(
+							'%s is a Script with RunContext %s inside %s. That container is '
+								.. "COPIED into each player, so the script runs once where it "
+								.. "sits and again in every copy. Make it a LocalScript "
+								.. "instead -- a Legacy Script there would not run at all. "
+								.. "Studio warns about this in its own Output, which `console` "
+								.. "cannot read.",
+							instance.Name,
+							instance.RunContext.Name,
+							container
+						)
+					)
+				end
+			end
+
 			table.insert(created, {
 				path = Paths.of(instance),
 				className = instance.ClassName,
@@ -390,7 +442,11 @@ function Scripts.create(params: { [string]: any }): { [string]: any }
 		return created
 	end)
 
-	return { items = created, undoStep = if recorded then "MCP create script" else nil }
+	return {
+		items = created,
+		undoStep = if recorded then "MCP create script" else nil,
+		warnings = if #warnings > 0 then warnings else nil,
+	}
 end
 
 function Scripts.register()
