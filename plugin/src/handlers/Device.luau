@@ -68,9 +68,29 @@ function Device.set(params: { [string]: any }): { [string]: any }
 		(StudioDeviceSimulatorService :: any):SetDeviceAsync(id)
 	end)
 	if not ok then
+		--[[
+			Two different failures, and calling both NO_SUCH_DEVICE sends the
+			caller to check a spelling that was never wrong.
+
+			The simulator refuses outright while a playtest is running -- "cannot
+			change device in current game state" -- and this handler is reachable
+			from the playtest session, which is exactly where someone testing a
+			phone HUD would call it. The device is settable from the EDIT session
+			meanwhile, playtest or no playtest, so the fix is a sentence, not a
+			spelling check.
+		]]
+		local reason = tostring(err)
+		if string.find(reason, "game state", 1, true) ~= nil then
+			Dispatch.fail(
+				"DEVICE_LOCKED",
+				string.format("Studio will not switch to %q while a playtest is running.", id),
+				"Send this to the EDIT session's studioId instead -- it changes the viewport for "
+					.. "the running playtest too -- or set the device before pressing play."
+			)
+		end
 		Dispatch.fail(
 			"NO_SUCH_DEVICE",
-			string.format("Could not switch to %q: %s", id, tostring(err)),
+			string.format("Could not switch to %q: %s", id, reason),
 			"Device ids look like \"iphone_16\" or \"ipad_a16\"; call `list` for the full set."
 		)
 	end

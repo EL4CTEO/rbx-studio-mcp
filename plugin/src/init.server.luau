@@ -14,6 +14,7 @@ local Config = require(script.Config)
 local Console = require(script.Console)
 local Dispatch = require(script.Dispatch)
 local LogBuffer = require(script.LogBuffer)
+local Mirror = require(script.Mirror)
 local Phrase = require(script.Phrase)
 local Themes = require(script.Themes)
 local Transport = require(script.Transport)
@@ -39,6 +40,8 @@ local SETTING_PORT = "port"
 local SETTING_AUTOCONNECT = "autoConnect"
 local SETTING_FORCE_POLL = "forcePoll"
 local SETTING_THEME = "theme"
+local SETTING_WIDGET_OPEN = "widgetOpen"
+local SETTING_WIDGET_SIZE = "widgetSize"
 
 --[[
 	A fresh id per plugin load, which in practice means one per Studio window.
@@ -87,9 +90,10 @@ local function canConnect(): (boolean, string?)
 	]]
 	return false,
 		"client view of a playtest -- Studio forbids client sessions from making HTTP "
-			.. "requests. The playtest's server session is connected and handling this "
-			.. "place; switch Studio to the Server view (Test tab, Current: Server) to "
-			.. "watch it work."
+			.. "requests, so this panel cannot reach the bridge itself. It is MIRRORING "
+			.. "the playtest's server session instead, so the log and the strip below "
+			.. "are live. Switch to the Server view (Test tab, Current: Server) for the "
+			.. "session that is actually connected."
 end
 
 -- First thing, before any handler or the transport can log: the buffer only
@@ -118,6 +122,22 @@ local storedTheme = plugin:GetSetting(SETTING_THEME)
 if typeof(storedTheme) == "string" then
 	Themes.use(storedTheme)
 end
+
+--[[
+	Whether the restore above still has to be pushed into the console.
+
+	`Themes.use` moves the ACTIVE ID, and anything that reads the palette live
+	picks the change up for free -- which is why the prism cell came back on the
+	saved preset. `Console` does not read it live: it caches the palette in an
+	upvalue at module load, deliberately, so that forty read sites stay plain
+	field accesses. Module load happens at the `require` above, which is BEFORE
+	this line, so the cache held the default while the id said otherwise, and a
+	reload came back as the saved prism drawn in the default's colours.
+
+	It cannot simply be applied here either -- the console is not mounted yet.
+	So it is remembered and applied the moment it can be, right after mounting.
+]]
+local themeNeedsApplying = typeof(storedTheme) == "string" and Themes.activeId() == storedTheme
 
 Session.register()
 Discover.register()
@@ -157,14 +177,110 @@ local button = toolbar:CreateButton(
 )
 button.ClickableWhenViewportHidden = true
 
--- Enabled by default: the whole point is that opening a place shows you it
--- connected without touching anything. Studio remembers the user's choice after
--- the first time they close it.
+--[[
+	The panel, opened and sized the way the user last left it -- in EVERY
+	DataModel, which is the whole point.
+
+	Pressing Play loads this plugin again into the playtest's DataModels, and a
+	dock widget belongs to the DataModel that created it: the editor's is hidden
+	along with the editor's view, and the playtest's is a brand new widget that
+	Studio brings up closed and at the default size. So the panel vanished on
+	every playtest and came back, when the user re-opened it from the toolbar,
+	as a 560x320 float with whatever size they had chosen thrown away.
+
+	Studio's own restore does not cross that boundary, so the preference is kept
+	here instead and passed in as the INITIAL state, with `overrideEnabledRestore`
+	set so it is honoured rather than second-guessed. Written only from the
+	editor session -- see below -- so a playtest starting or ending can never
+	record a decision the user did not make.
+]]
+local storedOpen = plugin:GetSetting(SETTING_WIDGET_OPEN)
+local wantOpen = if typeof(storedOpen) == "boolean" then storedOpen else true
+
+local floatWidth, floatHeight = 560, 320
+local storedSize = plugin:GetSetting(SETTING_WIDGET_SIZE)
+if typeof(storedSize) == "table" then
+	local saved = storedSize :: { [string]: any }
+	local x, y = tonumber(saved.x), tonumber(saved.y)
+	-- Guarded against nonsense: a zero or absurd size saved from a docked or
+	-- mid-teardown widget would otherwise be unrecoverable without clearing
+	-- settings by hand.
+	if x ~= nil and y ~= nil and x >= 360 and y >= 200 and x <= 4000 and y <= 4000 then
+		floatWidth, floatHeight = math.floor(x), math.floor(y)
+	end
+end
+
 local widget = plugin:CreateDockWidgetPluginGuiAsync(
 	"StudioMCP_Console",
-	DockWidgetPluginGuiInfo.new(Enum.InitialDockState.Float, true, false, 560, 320, 360, 200)
+	DockWidgetPluginGuiInfo.new(
+		Enum.InitialDockState.Float,
+		wantOpen,
+		-- Override Studio's own enabled-restore: ours is the one that survives
+		-- the hop into a playtest DataModel, and two restores disagreeing is
+		-- what produced a panel that was open in the editor and closed in play.
+		true,
+		floatWidth,
+		floatHeight,
+		360,
+		200
+	)
 )
 widget.Title = "rbx-studio"
+
+--[[
+	Remember what the user does with the panel, from the editor only.
+
+	The editor session is the one whose Enabled and size changes are actually
+	the user's: a playtest DataModel's widget is created, shown and destroyed by
+	Studio around the test, and letting those transitions write would persist a
+	"closed" the user never asked for -- reintroducing the bug through the back
+	door.
+]]
+if RunService:IsEdit() then
+	local unloading = false
+	plugin.Unloading:Connect(function()
+		unloading = true
+	end)
+
+	widget:GetPropertyChangedSignal("Enabled"):Connect(function()
+		if not unloading then
+			plugin:SetSetting(SETTING_WIDGET_OPEN, widget.Enabled)
+		end
+	end)
+
+	-- Only a real, sane size, and only while the panel is up: a hidden or
+	-- collapsing widget reports sizes that are not a choice.
+	local function persistSize(): boolean
+		local size = widget.AbsoluteSize
+		if unloading or not widget.Enabled or size.X < 360 or size.Y < 200 then
+			return false
+		end
+		plugin:SetSetting(SETTING_WIDGET_SIZE, { x = math.floor(size.X), y = math.floor(size.Y) })
+		return true
+	end
+
+	widget:GetPropertyChangedSignal("AbsoluteSize"):Connect(persistSize)
+
+	--[[
+		Seed from the size Studio has already restored, rather than waiting for
+		a resize that may never come.
+
+		Without this the setting stays empty until the user happens to drag the
+		panel's edge, so the first playtest inherits the 560x320 default and the
+		window visibly shrinks -- which is the same complaint as it vanishing,
+		one step later. Studio settles the geometry a few frames after the widget
+		is created and fires no change event for it, so it is polled briefly and
+		then left alone.
+	]]
+	task.defer(function()
+		for _ = 1, 40 do
+			if persistSize() then
+				return
+			end
+			task.wait(0.1)
+		end
+	end)
+end
 
 local currentStatus: Transport.Status = "disconnected"
 
@@ -198,6 +314,56 @@ Console.mount(widget, {
 		Console.log("dim", string.format("theme: %s", id))
 	end,
 })
+
+-- The saved preset, now that there is something to paint. Done immediately
+-- after mounting and before the first line is logged, so nothing is ever drawn
+-- in the wrong palette.
+if themeNeedsApplying then
+	Console.applyTheme()
+end
+
+--[[
+	The playtest halves, joined.
+
+	The server half can reach the bridge and sees every command; the client half
+	is the one Studio actually shows during a playtest and can reach nothing. So
+	the server relays its console events and the client replays them, which is
+	the only way the panel in front of the user reacts to the work being done.
+
+	Note which side sets the observer: only the SERVER. The client replays
+	events through the same `Console` functions, and if it were also observing
+	it would echo each one straight back into the channel.
+]]
+if Mirror.isPlaytestServer() then
+	Mirror.startServer()
+	Console.setObserver(function(kind, arguments)
+		Mirror.send(kind, arguments)
+	end)
+elseif Mirror.isPlaytestClient() then
+	Console.setMirroring(true)
+	Mirror.startClient(function(kind, arguments)
+		if kind == "log" then
+			local level, message, detail = arguments[1], arguments[2], arguments[3]
+			if typeof(level) == "string" and typeof(message) == "string" then
+				Console.log(
+					level :: any,
+					message,
+					if typeof(detail) == "string" then detail else nil
+				)
+			end
+		elseif kind == "beginCall" then
+			local title, callKind = arguments[1], arguments[2]
+			if typeof(title) == "string" and typeof(callKind) == "string" then
+				Console.beginCall(title, callKind)
+			end
+		elseif kind == "recordCall" then
+			local ok, milliseconds = arguments[1], arguments[2]
+			if typeof(ok) == "boolean" and typeof(milliseconds) == "number" then
+				Console.recordCall(ok, milliseconds)
+			end
+		end
+	end)
+end
 
 Console.log("info", string.format("rbx-studio v%s", Config.PLUGIN_VERSION), "build " .. Config.BUILD_ID)
 Console.log("dim", string.format("place: %s (%d)", game.Name, game.PlaceId))
@@ -310,12 +476,12 @@ function connect()
 		-- Reported as standby rather than an error: nothing failed, and this
 		-- session was never going to connect.
 		currentStatus = "disconnected"
-		Console.log("dim", "standby", reason)
+		Console.log("dim", "mirroring", reason)
 		Console.setStatus(
-			"standby",
+			"mirroring",
 			string.format("%s  build %s", "client view", Config.BUILD_ID)
 		)
-		Console.setCaption("switch to the Server view to watch this playtest")
+		Console.setCaption("mirroring the playtest server")
 		return
 	end
 	Transport.start(studioId(), { onCommand = onCommand, onStatus = onStatus, onEvent = onEvent })

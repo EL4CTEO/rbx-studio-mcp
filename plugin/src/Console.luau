@@ -49,6 +49,43 @@ local MAX_RECORDS = 300
 ]]
 local PALETTE: Themes.Palette = Themes.palette()
 
+--[[
+	An optional listener on everything this console is told.
+
+	Exists for `Mirror`, which relays a playtest server's activity to the client
+	view that cannot reach the bridge itself. Kept as one hook rather than as
+	calls sprinkled through the file so there is a single place where "what the
+	console was told" is defined, and so the client half -- which sets no
+	observer -- cannot echo what it replays back into the channel.
+]]
+local observer: ((string, { any }) -> ())? = nil
+
+function Console.setObserver(fn: ((string, { any }) -> ())?)
+	observer = fn
+end
+
+local function notify(kind: string, arguments: { any })
+	local listener = observer
+	if listener ~= nil then
+		task.spawn(listener, kind, arguments)
+	end
+end
+
+--[[
+	Set on the console that is REPLAYING someone else's events.
+
+	A replayed call must not grow its own consequences. `recordCall` schedules
+	the "agent idle" summary, so a mirrored session scheduled one of its own and
+	then received the original over the channel too -- the same line twice, a
+	few pixels apart, which is exactly the sort of thing that makes a panel look
+	broken. The origin is the only session entitled to decide the burst ended.
+]]
+local mirroring = false
+
+function Console.setMirroring(value: boolean)
+	mirroring = value
+end
+
 -- Sigil plus colour per level. The sigil is what makes the log scannable at a
 -- glance; colour alone fails for anyone who cannot separate red from green.
 -- Named by palette key rather than by colour, because this table is built once
@@ -385,6 +422,7 @@ function Console.log(level: Level, message: string, detail: string?)
 		table.remove(state.records, 1)
 	end
 	redraw()
+	notify("log", { level, message, detail })
 end
 
 --[[
@@ -422,6 +460,7 @@ function Console.beginCall(title: string, kind: string)
 	Visuals.setCaption(title)
 	Visuals.setKind(PALETTE[look.key], look.urgency)
 	refreshCounters()
+	notify("beginCall", { title, kind })
 end
 
 --[[
@@ -446,6 +485,7 @@ function Console.recordCall(ok: boolean, milliseconds: number)
 	-- The band plots it: bar height is how long it took, colour is whether it
 	-- worked, and a failure knocks the solid off its axis as well.
 	Visuals.recordCall(milliseconds, ok, title)
+	notify("recordCall", { ok, milliseconds, title })
 
 	--[[
 		Says so when the session goes quiet, once per burst.
@@ -459,6 +499,9 @@ function Console.recordCall(ok: boolean, milliseconds: number)
 	]]
 	state.generation += 1
 	local mine = state.generation
+	if mirroring then
+		return
+	end
 	task.delay(QUIET_SECONDS, function()
 		if state.generation ~= mine or state.calls == 0 then
 			return
@@ -604,7 +647,7 @@ function Console.setStatus(status: string, meta: string)
 	local color = if status == "connected"
 		then PALETTE.green
 		elseif status == "connecting" then PALETTE.amber
-		elseif status == "standby" then PALETTE.dim
+		elseif status == "standby" or status == "mirroring" then PALETTE.dim
 		else PALETTE.red
 
 	dot.TextColor3 = color

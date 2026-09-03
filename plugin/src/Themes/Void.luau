@@ -65,6 +65,29 @@ local core: Frame? = nil
 local shadow: Frame? = nil
 
 --[[
+	Accumulated orbital phase, in the disc's own time.
+
+	This is the fix for the one thing that made this preset unwatchable, and it
+	is worth stating plainly because the broken version looked reasonable.
+
+	The angle used to be `ctx.clock * speed * (1 + ctx.energy)` -- absolute wall
+	time multiplied by a rate that CHANGES. Multiplying a large clock by a moving
+	rate does not speed the disc up; it teleports every mote. `os.clock()` is
+	seconds since Studio started, so after an hour it is about 3600, and energy
+	falls by `delta * 0.9` every frame after a command: at 60fps that is 0.015 of
+	rate change per frame, which at ring one moved the phase by roughly 29
+	radians -- almost five whole revolutions -- BETWEEN CONSECUTIVE FRAMES. For
+	the second or two after every call the disc was not orbiting at all, it was
+	strobing, and it got worse the longer Studio had been open, which is why it
+	looked fine when it was written.
+
+	Integrating the rate instead makes speed a speed. A change in energy now
+	changes how fast the phase grows, and the phase itself stays continuous, so
+	the disc accelerates rather than jumping.
+]]
+local phase = 0
+
+--[[
 	Which ring a mote belongs to, and where it sits on that ring.
 
 	Distributed by index rather than randomly so every ring gets a similar share
@@ -106,15 +129,28 @@ function Void.mount(cell: Frame)
 	corner.CornerRadius = UDim.new(1, 0)
 	corner.Parent = sphere
 	core = sphere
+	phase = 0
 end
 
 function Void.unmount()
 	motes = {}
 	core = nil
 	shadow = nil
+	phase = 0
 end
 
-function Void.paint(ctx: Theme.Context, _delta: number)
+function Void.paint(ctx: Theme.Context, delta: number)
+	--[[
+		Advance the disc by this frame's worth of turning.
+
+		`pace` matches the rest of the set: past the quiet threshold the session
+		has stopped, and a disc still spiralling at working speed claims an
+		activity that is not happening. Applied to the RATE, so crossing the
+		threshold slows the disc instead of jumping it.
+	]]
+	local pace = if ctx.quiet > 20 then 0.25 else 1
+	phase += delta * (1 + ctx.energy) * pace
+
 	local breath = (1 - DISC_BREATH) + ctx.scale * DISC_BREATH
 	local scale = ctx.size * DISC_SPREAD * breath
 	-- Lensing: a failure warps the disc rather than shaking the panel, which on
@@ -135,7 +171,7 @@ function Void.paint(ctx: Theme.Context, _delta: number)
 			thing at the centre is pulling rather than spinning.
 		]]
 		local speed = 2.4 / (0.3 + ring * 0.14)
-		local turn = along * math.pi * 2 + ctx.clock * speed * 0.1 * (1 + ctx.energy)
+		local turn = along * math.pi * 2 + phase * speed * 0.1
 
 		-- Flattened on Y: a disc seen nearly edge-on, not a set of circles.
 		local x = math.cos(turn) * radius

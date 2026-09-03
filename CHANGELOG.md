@@ -2,6 +2,26 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.3.6
+
+A rolled-back edit can no longer be redone, typing into a text box actually types, and the console keeps working while you playtest.
+
+### Fixed
+- **A rolled-back batch could be brought back with one Ctrl+Y.** `modify` said "nothing was changed" and meant it, but Studio filed the cancelled edit on the redo stack — so a single redo re-applied the half-finished state the rollback existed to prevent.
+- **`input` reported typing text that never arrived.** A synthetic click does not give a TextBox focus, and `text` steps go to the focused box, so they did nothing and still returned success. The box under the click is focused now, and a step with nowhere to type says so.
+- **`device` blamed the device id during a playtest.** A valid id came back as `NO_SUCH_DEVICE` with advice to check the spelling. Studio simply refuses device changes while a test runs; it now says that, and points at the edit session, which works.
+- **The console came back on the saved theme's shape but the default's colours.** The palette was read before the saved preset was restored.
+- **The Void preset strobed after every command.** Its orbit multiplied elapsed time by a speed that changes, so a change in speed jumped the disc instead of accelerating it — worse the longer Studio had been open. Aurora had the same fault when a session went quiet.
+- **The activity cell snapped and stalled instead of bouncing.** A reply's impulse drove it into its own size limit while still carrying speed, and long frames dropped motion rather than catching up.
+- **The panel vanished on every playtest.** Studio loads the plugin again into the playtest and its widget starts closed; it now opens the way you left it.
+
+### Changed
+- **The console keeps working during a playtest.** The view Studio shows you is the client half, which Roblox forbids from making HTTP requests, so it sat on a standby notice while the agent worked. It now mirrors the playtest's server session — the log fills and the activity strip reacts live. One `RemoteEvent` carries it, in the running game only, one-way, never saved with the place.
+- `input` no longer suggests reusing a measured click offset: it holds under portrait emulation and with no device, but not in landscape.
+
+### Known issues
+- **A playtest opens the panel at the wrong size.** Studio does not restore plugin widget geometry in play mode — `HostWidgetWasRestored` reads false there — and a widget's size cannot be set from code. Studio → Settings → Test → "Load All Built-In Plugins in Test Mode" works around it. [Reported since 2023.](https://devforum.roblox.com/t/widgets-reset-when-playtesting-and-opening-a-new-studio/2946725)
+
 ## 0.3.5
 
 Search results stop reshuffling between calls, values written as text land as the right type, and the console panel gets eight colour presets.

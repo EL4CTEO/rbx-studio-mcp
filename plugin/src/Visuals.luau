@@ -270,11 +270,49 @@ local function step(delta: number)
 		velocity -- which stays stable at the frame times Studio actually hands us
 		rather than only at small ones.
 	]]
-	local integration = math.min(delta, 1 / 30)
-	runtime.scaleVelocity += (target - runtime.scale) * SPRING * integration
-	runtime.scaleVelocity -= runtime.scaleVelocity * DAMPING * integration
-	runtime.scale += runtime.scaleVelocity * integration
-	runtime.scale = math.clamp(runtime.scale, 0.55, 1.7)
+	--[[
+		Substepped rather than truncated.
+
+		`math.min(delta, 1/30)` kept the integration stable, but it also THREW
+		AWAY the rest of a long frame: at 20fps a third of every frame's motion
+		simply did not happen, so the spring ran slower in wall-clock time
+		exactly when Studio was busiest -- which is during a tool call, which is
+		when the spring is reacting to something. Stepping the leftover instead
+		keeps the reaction the same length whatever the frame rate, and the cap
+		on the number of steps stops a two-second hitch from paying it all back
+		in one frame.
+	]]
+	local remaining = math.min(delta, 0.25)
+	for _ = 1, 8 do
+		if remaining <= 0 then
+			break
+		end
+		local integration = math.min(remaining, 1 / 60)
+		remaining -= integration
+
+		runtime.scaleVelocity += (target - runtime.scale) * SPRING * integration
+		runtime.scaleVelocity -= runtime.scaleVelocity * DAMPING * integration
+		runtime.scale += runtime.scaleVelocity * integration
+
+		--[[
+			Clamping the position without killing the velocity is what made a
+			reply read as a jolt rather than a bounce. The reply impulse is
+			`scaleVelocity += 9`, which crosses the whole 0.55..1.7 range in
+			about two frames, so the scale pinned itself against the ceiling
+			while still carrying all that speed -- and then sat there, motionless
+			but not at rest, until the spring had spent the stored velocity. The
+			eye reads that as a snap, a stall, and a second snap.
+
+			Zeroing the component pushing into the rail turns it into a stop.
+		]]
+		if runtime.scale <= 0.55 then
+			runtime.scale = 0.55
+			runtime.scaleVelocity = math.max(runtime.scaleVelocity, 0)
+		elseif runtime.scale >= 1.7 then
+			runtime.scale = 1.7
+			runtime.scaleVelocity = math.min(runtime.scaleVelocity, 0)
+		end
+	end
 
 	--[[
 		Handed off. A preset that throws must not take the console's status
@@ -414,7 +452,19 @@ function Visuals.recordCall(milliseconds: number, ok: boolean, title: string)
 		way and knocks the axis with it.
 	]]
 	if ok then
-		runtime.scaleVelocity += 9
+		--[[
+			Sized to peak just under the clamp rather than against it.
+
+			At +9 the shove carried the scale into the 1.7 ceiling within about a
+			tenth of a second, so what should have been an arc became a rise, a
+			flat spot, and a drop -- and a burst of calls, each adding another 9
+			to a velocity that was already railed, held it pinned there for as
+			long as the burst lasted. +6 tops out around 1.55, which reads as the
+			same strike and stays on the curve. The accumulated case is capped
+			for the same reason: several calls at once should look busy, not
+			stuck.
+		]]
+		runtime.scaleVelocity = math.min(runtime.scaleVelocity + 6, 8)
 	else
 		runtime.scale = 0.8
 		runtime.scaleVelocity = -2

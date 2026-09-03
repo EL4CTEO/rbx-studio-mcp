@@ -21,6 +21,34 @@ local ChangeHistoryService = game:GetService("ChangeHistoryService")
 local Undo = {}
 
 --[[
+	Drops the redo entry a cancelled recording leaves behind.
+
+	`Cancel` reverts the values but Studio still files the recording on the REDO
+	stack, so a batch this server reported as "nothing was changed, the whole
+	batch was rolled back" was one Ctrl+Y away from coming back -- as exactly the
+	half-applied state the cancel existed to prevent. Measured: a `modify` that
+	set Material on two parts and then hit a bad Size left `GetCanRedo` true, and
+	a single redo re-applied both Materials.
+
+	There is no API to pop one redo entry, but an ordinary undo stack discards
+	the redo branch as soon as a new action is committed -- and an EMPTY
+	recording counts as that action while adding no undo step of its own
+	(measured: after the empty commit, one undo still reached the change made
+	before the cancelled batch). So the cheapest correct fix is to commit
+	nothing.
+]]
+local function dropRedo()
+	if not ChangeHistoryService:GetCanRedo() then
+		return
+	end
+	local identifier = ChangeHistoryService:TryBeginRecording("MCPFlushRedo", "MCP")
+	if identifier == nil then
+		return
+	end
+	ChangeHistoryService:FinishRecording(identifier, Enum.FinishRecordingOperation.Commit)
+end
+
+--[[
 	Runs `body` inside a named recording. Returns its result, and whether a
 	recording was actually opened.
 
@@ -47,6 +75,7 @@ function Undo.record<T>(name: string, displayName: string, body: () -> T): (T, b
 	end
 
 	ChangeHistoryService:FinishRecording(identifier, Enum.FinishRecordingOperation.Cancel)
+	dropRedo()
 	error(result, 0)
 end
 

@@ -44,6 +44,18 @@ Aurora.palette = {
 
 local rays: { Frame } = {}
 
+--[[
+	Accumulated wave phase, rather than wall time times a rate.
+
+	`ctx.clock * 1.6 * pace` looks harmless and is not: `pace` drops to 0.35 the
+	moment the session goes quiet, and multiplying a clock in the thousands by a
+	rate that changes RESHAPES the whole curtain in one frame -- the same class
+	of fault as Void's disc, just rarer, because this rate only moves twice per
+	idle cycle instead of every frame. Integrating it means going quiet slows the
+	curtain, which is what was meant.
+]]
+local phase = 0
+
 function Aurora.mount(cell: Frame)
 	rays = {}
 	for index = 1, RAYS do
@@ -63,10 +75,11 @@ function Aurora.mount(cell: Frame)
 end
 
 function Aurora.unmount()
+	phase = 0
 	rays = {}
 end
 
-function Aurora.paint(ctx: Theme.Context, _delta: number)
+function Aurora.paint(ctx: Theme.Context, delta: number)
 	local width = ctx.size
 	local spacing = width / (RAYS + 1)
 
@@ -79,6 +92,7 @@ function Aurora.paint(ctx: Theme.Context, _delta: number)
 	]]
 	local amplitude = 0.1 + math.clamp(ctx.activity, 0, 1) * 0.62 + ctx.energy * 0.16
 	local pace = if ctx.quiet > 20 then 0.35 else 1
+	phase += delta * pace
 
 	for index = 1, RAYS do
 		local ray = rays[index]
@@ -90,8 +104,8 @@ function Aurora.paint(ctx: Theme.Context, _delta: number)
 		-- Two travelling waves, incommensurate rates. Their beat is slow enough
 		-- that the curtain visibly reshapes over several seconds instead of
 		-- repeating on a cycle the eye can learn.
-		local wave = math.sin(across * 5.2 - ctx.clock * 1.6 * pace)
-			+ 0.6 * math.sin(across * 2.7 + ctx.clock * 0.9 * pace)
+		local wave = math.sin(across * 5.2 - phase * 1.6)
+			+ 0.6 * math.sin(across * 2.7 + phase * 0.9)
 		local normalised = (wave + 1.6) / 3.2
 
 		local height = math.max(2, math.floor(width * (0.12 + normalised * amplitude) * ctx.scale))

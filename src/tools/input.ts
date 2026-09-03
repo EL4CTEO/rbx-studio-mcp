@@ -17,6 +17,8 @@ interface InputResponse {
   steps: number;
   player: string;
   performed?: string[];
+  /** Steps that were delivered and still did nothing, in the client's words. */
+  notes?: string[];
 }
 
 /**
@@ -38,8 +40,19 @@ interface InputResponse {
  * An earlier version of this file claimed the error was the ratio between the
  * device resolution and the screenshot's, which is wrong, and wrong in a way
  * that happens to land close to correct in the middle of the screen where it
- * was first observed. Reporting the measurement retires the guesswork: aim
- * once, read the delta, correct.
+ * was first observed.
+ *
+ * Applying it automatically was tried and reverted. The translation is real
+ * with nothing emulated -- (0,-58), which is exactly GuiService:GetGuiInset()
+ * -- and on an iPhone 16 in portrait, measured equal at two points 215px apart.
+ * On the SAME phone in LandscapeRight it is not a translation at all: the
+ * horizontal term inverts and scales (seen.x fitted 919 - 1.4 * sent.x), so
+ * subtracting the measured constant moved the aim from 187px out to 449px out.
+ *
+ * Nor can a better fit be sampled. Synthetic MOVES report no position --
+ * InputChanged never fires for SendMousePosition -- so the map is observable
+ * only by clicking, and probe clicks press whatever they land on. Aim once,
+ * read the delta, correct.
  */
 function landingNote(landed: NonNullable<InputResponse["landed"]>): string {
   const dx = landed.seen.x - landed.sent.x;
@@ -50,7 +63,8 @@ function landingNote(landed: NonNullable<InputResponse["landed"]>): string {
   return (
     ` COORDINATES ARE OFFSET: the last click was aimed at (${landed.sent.x}, ${landed.sent.y}) and the client read it at (${landed.seen.x}, ${landed.seen.y}) — ` +
     `off by (${dx}, ${dy}). Add (${-dx}, ${-dy}) to coordinates taken from a \`screenshot\` to hit what you are aiming at. ` +
-    "The offset is constant across the viewport but changes with the device and orientation, so re-read it from this field after either changes."
+    "That correction is a constant translation with no device emulated and in portrait, but NOT in landscape emulation, where the horizontal term inverts — " +
+    "so under an emulated device treat it as one sample: click, read this field again, and correct from the newest one rather than reusing an earlier value."
   );
 }
 
@@ -89,7 +103,15 @@ export function registerInputTools(context: ToolContext): void {
         "get an error, not a success — check where things really are with " +
         "`character op=\"state\"`.\n\n" +
         "Mouse coordinates are viewport pixels from the top-left, so pair this " +
-        "with `screenshot` to see what is where before clicking it.",
+        "with `screenshot` to see what is where before clicking it. The client " +
+        "reads them at an offset the reply reports as `landed` — aim once, read " +
+        "where it actually landed, then correct. Under an emulated device that " +
+        "offset is large and stops being a simple translation, so re-read it " +
+        "after each click rather than reusing an earlier one.\n\n" +
+        "A `text` step types into the FOCUSED TextBox. Click the box in the same " +
+        "call, one step before the text, and the focus is taken for you; with no " +
+        "box to type into the step is reported as having done nothing rather " +
+        "than as delivered.",
       inputSchema: {
         steps: z
           .array(
@@ -123,7 +145,12 @@ export function registerInputTools(context: ToolContext): void {
                   .describe("click only: which button. Defaults to left."),
                 x: z.number().optional().describe("click/move only: viewport pixels from the left."),
                 y: z.number().optional().describe("click/move only: viewport pixels from the top."),
-                text: z.string().optional().describe("text only: the string to type."),
+                text: z
+                  .string()
+                  .optional()
+                  .describe(
+                    "text only: the string to type. Goes to the focused TextBox — click it first, in the same call.",
+                  ),
                 hold: z
                   .number()
                   .min(0)
@@ -204,6 +231,16 @@ export function registerInputTools(context: ToolContext): void {
         );
       } else {
         parts.push('Read the result with `character op="state"`, `console`, or `screenshot`.');
+      }
+      /*
+       * A step that ran and changed nothing is the failure this whole file
+       * exists to avoid reporting as success, so the client's own words about
+       * it go at the front where they cannot be skimmed past.
+       */
+      if (Array.isArray(response.notes)) {
+        for (const line of response.notes) {
+          parts.unshift(`WARNING: ${line}`);
+        }
       }
       const note = parts.join(" ");
       return json(response, note);

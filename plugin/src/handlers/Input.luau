@@ -56,6 +56,7 @@ local MAX_HOLD = 10
 local RELAY_SOURCE = [==[
 local UserInputService = game:GetService("UserInputService")
 local HttpService = game:GetService("HttpService")
+local Players = game:GetService("Players")
 
 local relay = script
 local report = relay:WaitForChild("Report", 10)
@@ -89,6 +90,18 @@ local performed = {}
 	landed, and corrects; that works on every device, in both orientations, and
 	with no device emulated at all, which no formula here has managed.
 
+	Applying it automatically was tried and REVERTED, because the "constant
+	translation" it relies on is not general. It holds with nothing emulated
+	(measured (0,-58), which is exactly GuiService:GetGuiInset()) and on an
+	iPhone 16 in portrait ((0,-117), the same at two points 215px apart). It does
+	NOT hold on the same phone in LandscapeRight: there the horizontal term
+	inverts and scales -- seen.x fitted 919 - 1.4 * sent.x across two samples --
+	so subtracting a translation moved the aim further away, from 187px out to
+	449px out. Sampling a better fit is not open either: synthetic MOVES report
+	no position at all (InputChanged never fires for SendMousePosition), so the
+	map can only be sampled by clicking, and probe clicks press whatever they
+	land on. Reporting the measurement is the honest ceiling here.
+
 	`InputBegan` rather than `GetMouseLocation`: the latter is frozen at the
 	last real click under touch emulation -- twenty samples across two sent
 	moves never changed it -- and is offset from `InputBegan.Position` by the
@@ -97,12 +110,48 @@ local performed = {}
 ]]
 local landed = nil
 local aimed = nil
+local seenAt = nil
 UserInputService.InputBegan:Connect(function(input)
 	local kind = input.UserInputType
 	if aimed ~= nil and (kind == Enum.UserInputType.MouseButton1 or kind == Enum.UserInputType.Touch) then
-		landed = { sent = aimed, seen = { x = input.Position.X, y = input.Position.Y } }
+		seenAt = { x = input.Position.X, y = input.Position.Y }
+		landed = { sent = aimed, seen = seenAt }
 	end
 end)
+
+-- Anything the caller has to be told about a step that was delivered and still
+-- did nothing. Silence would otherwise read as success.
+local notes = {}
+
+--[[
+	The TextBox under a point, if there is one.
+
+	`GetGuiObjectsAtPosition` answers in the same space `InputBegan` reports, so
+	it is asked with where the click was SEEN rather than where it was sent --
+	those differ by the offset above, and asking with the wrong one finds
+	whatever happens to sit an inset away from the target.
+]]
+local function textBoxAt(point)
+	if point == nil then
+		return nil
+	end
+	local playerGui = Players.LocalPlayer:FindFirstChildOfClass("PlayerGui")
+	if playerGui == nil then
+		return nil
+	end
+	local ok, hits = pcall(function()
+		return playerGui:GetGuiObjectsAtPosition(point.x, point.y)
+	end)
+	if not ok or typeof(hits) ~= "table" then
+		return nil
+	end
+	for _, object in hits do
+		if object:IsA("TextBox") then
+			return object
+		end
+	end
+	return nil
+end
 
 --[[
 	The on-screen pointer.
@@ -270,8 +319,9 @@ for _, step in plan do
 		virtual:SendMousePosition(Vector2.new(step.x, step.y))
 	elseif kind == "click" then
 		local button = Enum.UserInputType[step.button or "MouseButton1"]
-		local at = Vector2.new(step.x, step.y)
 		aimed = { x = step.x, y = step.y }
+		seenAt = nil
+		local at = Vector2.new(step.x, step.y)
 		-- Travel first, then click. Teleporting the pointer onto the target at
 		-- the same instant it fires looks like nothing happened at all.
 		moveCursor(step.x, step.y, 0.3)
@@ -283,7 +333,36 @@ for _, step in plan do
 			virtual:SendMouseButton(at, button, false, 0)
 		end
 	elseif kind == "text" then
-		virtual:SendTextInput(step.text)
+		--[[
+			`SendTextInput` types into the FOCUSED TextBox and does nothing at
+			all when there is none -- and a synthetic click does not focus one,
+			because Roblox drives TextBox focus from the real input path rather
+			than from InputBegan. Measured: clicking a TextBox and then sending
+			text left it empty, while CaptureFocus followed by the same call
+			typed correctly.
+
+			So the click is honoured as the aim and the focus is taken here. If
+			there is no TextBox to take it, that is said out loud: a `text` step
+			reported as delivered while nothing was typed is the worst of the
+			three outcomes.
+		]]
+		local box = UserInputService:GetFocusedTextBox()
+		if box == nil then
+			box = textBoxAt(seenAt) or textBoxAt(aimed)
+			if box ~= nil then
+				box:CaptureFocus()
+				task.wait(0.05)
+			end
+		end
+		if box == nil then
+			table.insert(
+				notes,
+				"nothing was typed: no TextBox had focus and none was found under the last click. "
+					.. "Click the box in the same call, one step before the text."
+			)
+		else
+			virtual:SendTextInput(step.text)
+		end
 	end
 	table.insert(performed, kind)
 	if step.after ~= nil and step.after > 0 then
@@ -297,7 +376,14 @@ if cursorGui ~= nil then
 	cursorGui:Destroy()
 end
 
-report:FireServer({ ok = true, performed = performed, landed = landed })
+report:FireServer({
+	ok = true,
+	performed = performed,
+	landed = landed,
+	-- Sent only when there is something to say: an empty Lua table crosses as
+	-- an object rather than an array, and a caller iterating it would trip.
+	notes = if #notes > 0 then notes else nil,
+})
 ]==]
 
 local function playerFor(name: string?): Player
@@ -433,6 +519,7 @@ function Input.send(params: { [string]: any }): { [string]: any }
 	relay.Source = RELAY_SOURCE
 	relay:SetAttribute("Plan", HttpService:JSONEncode(plan))
 	relay:SetAttribute("Cursor", params.cursor ~= false)
+
 	remote.Parent = relay
 
 	local answer: { [string]: any }? = nil
@@ -481,6 +568,9 @@ function Input.send(params: { [string]: any }): { [string]: any }
 		-- Where the client read the last click, against where it was aimed. See
 		-- the note in RELAY_SOURCE for why this is measured and not computed.
 		landed = result.landed,
+		-- Steps that were delivered and still did nothing. A `text` step with no
+		-- TextBox to type into is the one that matters.
+		notes = result.notes,
 	}
 end
 
