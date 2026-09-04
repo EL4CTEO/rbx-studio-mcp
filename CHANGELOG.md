@@ -2,6 +2,14 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.3.8
+
+Screenshots say when they came back black.
+
+### Changed
+- **A screenshot that is entirely black now says so.** It used to look like a valid picture of a dark scene, so an agent would read it and carry on. Usually it means Studio was not rendering — minimised, covered, or on another virtual desktop.
+- **Playtest screenshots wait for a rendered frame** before capturing, instead of shooting on the frame the capture script lands.
+
 ## 0.3.7
 
 The console log survives a playtest in both directions.

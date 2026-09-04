@@ -40,6 +40,37 @@ local COMPRESSION_LEVEL = 3
 
 local Capture = {}
 
+--[[
+	Channel value at or under which a byte counts as black.
+
+	Not zero. A capture that failed comes back at exactly zero, but so does a
+	frame that picked up a hair of dithering, and being off by one is not worth
+	an argument.
+]]
+local BLACK_LEVEL = 8
+
+--[[
+	Whether every pixel in the image is black.
+
+	A black screenshot is the one failure this tool cannot report by failing: the
+	call succeeds, the PNG is valid, and the agent reads it as "the game is dark"
+	and reasons on from there. So it is measured and said out loud instead.
+
+	Written to leave on the first byte that is not black, which is what makes it
+	free. A real frame -- even a night scene, which still has a skybox gradient,
+	a GUI or the topbar somewhere -- exits within the first handful of pixels.
+	The whole buffer is only ever walked when the answer is yes, and at that
+	point the walk has earned itself.
+]]
+local function isBlack(rgb: buffer): boolean
+	for offset = 0, buffer.len(rgb) - 1 do
+		if buffer.readu8(rgb, offset) > BLACK_LEVEL then
+			return false
+		end
+	end
+	return true
+end
+
 -- Only a content id comes back over the remote, so this is the time to start a
 -- LocalScript and take one shot, not to move any pixels.
 local CLIENT_TIMEOUT = 25
@@ -74,12 +105,22 @@ local CLIENT_TIMEOUT = 25
 ]]
 local CLIENT_SOURCE = [==[
 local CaptureService = game:GetService("CaptureService")
+local RunService = game:GetService("RunService")
 
 local relay = script
 local report = relay:WaitForChild("Report", 10)
 if report == nil then
 	return
 end
+
+-- One rendered frame before the shot. The RemoteEvent is already a child of
+-- this script when it lands, so `WaitForChild` returns at once and the capture
+-- would otherwise happen on the frame the relay arrived -- which is the frame
+-- least likely to have finished drawing. Roblox's own working repro for
+-- CaptureService waits on PreRender first, and it costs a sixtieth of a second.
+pcall(function()
+	RunService.PreRender:Wait()
+end)
 
 local contentId = nil
 local okShot, shotErr = pcall(function()
@@ -259,6 +300,7 @@ local function encode(contentId: string, width: number, context: string): { [str
 	end
 
 	local rgb, outWidth, outHeight = Png.downscaleToRgb(pixels, sourceWidth, sourceHeight, width)
+	local black = isBlack(rgb)
 
 	--[[
 		Raw pixels, compressed by the engine, assembled into a PNG by Node.
@@ -298,6 +340,7 @@ local function encode(contentId: string, width: number, context: string): { [str
 			rawBytes = buffer.len(rgb),
 			bytes = #(packed :: string),
 			context = context,
+			black = black,
 			device = Emulation.deviceId(),
 		}
 	end
@@ -313,6 +356,7 @@ local function encode(contentId: string, width: number, context: string): { [str
 		sourceHeight = sourceHeight,
 		bytes = buffer.len(png),
 		context = context,
+		black = black,
 		device = Emulation.deviceId(),
 	}
 end
