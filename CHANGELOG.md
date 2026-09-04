@@ -2,6 +2,13 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.3.7
+
+The console log survives a playtest in both directions.
+
+### Fixed
+- **The console emptied when a playtest started and again when it stopped.** Studio loads the plugin separately into the editor and into the playtest, each with its own blank log, and shows you whichever view is current — so the session you were watching appeared to be wiped, then the playtest's work vanished from the editor's log on Stop. The rows you had are now carried into the playtest, and calls made during it are carried back out.
+
 ## 0.3.6
 
 A rolled-back edit can no longer be redone, typing into a text box actually types, and the console keeps working while you playtest.

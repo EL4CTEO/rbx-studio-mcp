@@ -425,6 +425,66 @@ function Console.log(level: Level, message: string, detail: string?)
 	notify("log", { level, message, detail })
 end
 
+export type Row = {
+	level: string,
+	message: string,
+	detail: string?,
+	stamp: string,
+}
+
+--[[
+	The rows this console is holding, oldest first.
+
+	Handed out as copies of the table but not of the records themselves: nothing
+	outside this file writes to a record, and deep-copying three hundred of them
+	every two seconds to guard against a caller that does not exist is a cost for
+	nobody. See `History`, which is the only caller.
+]]
+function Console.snapshot(): { Row }
+	local rows: { Row } = {}
+	for _, record in state.records do
+		table.insert(rows, {
+			level = record.level :: string,
+			message = record.message,
+			detail = record.detail,
+			stamp = record.stamp,
+		})
+	end
+	return rows
+end
+
+--[[
+	Puts rows back, from before this copy of the plugin existed.
+
+	Their own timestamps come with them rather than being restamped: a restored
+	row happened when it happened, and stamping it "now" would make a log that is
+	being carried across a playtest look like a log that is repeating itself.
+
+	Refuses once anything has been logged. Restoring is a load-time act, and
+	splicing history under a running session would put old rows below new ones --
+	the one thing a chronological log may not do.
+]]
+function Console.restore(rows: { Row })
+	if #state.records > 0 then
+		return
+	end
+	for _, row in rows do
+		-- A level from disk names a colour and a sigil; an unknown one would
+		-- render as `info` silently, so it is normalised here instead.
+		local level: Level = if LEVELS[row.level] ~= nil then (row.level :: any) else "dim"
+		table.insert(state.records, {
+			level = level,
+			message = row.message,
+			detail = row.detail,
+			stamp = row.stamp,
+		})
+	end
+	while #state.records > MAX_RECORDS do
+		table.remove(state.records, 1)
+	end
+	redraw()
+end
+
 --[[
 	Announces a command as it starts -- everywhere except the log.
 

@@ -39,6 +39,40 @@ interface Pending {
   reject: (reason: ToolError) => void;
   timer: NodeJS.Timeout;
   op: string;
+  /** Trimmed copy of the request, kept only so peers can name what ran. */
+  params: Record<string, unknown>;
+  startedAt: number;
+}
+
+/**
+ * How deep and how wide a params copy is kept for the peer announcement.
+ *
+ * The peer frame exists so another Studio window on the same place can name a
+ * command in its console -- "Edit KillBrick", not "script.edit" -- and the
+ * plugin's phrasing reads short fields like `path`, `name` and `query`. It
+ * never reads a script's source, and a `script_create` carries a whole file of
+ * it, so sending the request untouched would push kilobytes down every peer's
+ * stream for a title that ignores them.
+ */
+const PEER_STRING = 160;
+const PEER_ITEMS = 8;
+const PEER_DEPTH = 3;
+
+function summarize(value: unknown, depth = 0): unknown {
+  if (typeof value === "string") {
+    return value.length > PEER_STRING ? `${value.slice(0, PEER_STRING)}…` : value;
+  }
+  if (value === null || typeof value !== "object") return value;
+  if (depth >= PEER_DEPTH) return undefined;
+  if (Array.isArray(value)) {
+    return value.slice(0, PEER_ITEMS).map((entry) => summarize(entry, depth + 1));
+  }
+  const out: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    const kept = summarize(entry, depth + 1);
+    if (kept !== undefined) out[key] = kept;
+  }
+  return out;
 }
 
 /** One connected Studio process, plus whatever it is using to receive commands. */
@@ -305,6 +339,8 @@ export class Bridge {
         reject,
         timer,
         op,
+        params: summarize(params) as Record<string, unknown>,
+        startedAt: Date.now(),
       });
       this.deliver(session, command);
     });
@@ -320,6 +356,7 @@ export class Bridge {
     if (!pending) return; // already timed out; the tool has moved on
     session.pending.delete(result.id);
     clearTimeout(pending.timer);
+    this.announceToPeers(session, pending, result.ok);
 
     if (result.ok) {
       pending.resolve(result.data);
@@ -409,6 +446,42 @@ export class Bridge {
    * a plugin that misses one of these has stale trim on its header, which is
    * not worth a retry queue.
    */
+  /**
+   * Tells the other Studio sessions on the same place what just ran.
+   *
+   * Pressing Play gives one place two connections -- the editor's and the
+   * playtest server's -- and commands go to whichever the agent addressed, so
+   * each console only ever saw half the session. The half you are looking at is
+   * decided by Studio: during a playtest it shows the play view, and the moment
+   * you stop it shows the editor's again, whose log has a hole exactly where
+   * the playtest was. The work did not disappear, it was recorded in a panel
+   * that is no longer on screen.
+   *
+   * So a completed call is announced to the place's other sessions and they log
+   * it too, tagged with where it ran. Both consoles then hold the whole session
+   * and stopping a playtest no longer erases what happened during it.
+   *
+   * Scoped to the place, because a bridge serves every Studio window the user
+   * has open and another place's traffic is not this place's history.
+   */
+  private announceToPeers(origin: Session, pending: Pending, ok: boolean): void {
+    const payload = `data: ${JSON.stringify({
+      event: "peer",
+      op: pending.op,
+      params: pending.params,
+      ok,
+      ms: Date.now() - pending.startedAt,
+      from: origin.identity.context ?? "another session",
+    })}
+
+`;
+    for (const [id, session] of this.sessions) {
+      if (id === origin.identity.studioId) continue;
+      if (session.identity.placeId !== origin.identity.placeId) continue;
+      if (session.stream && !session.stream.writableEnded) session.stream.write(payload);
+    }
+  }
+
   broadcast(frame: Record<string, unknown>): void {
     const payload = `data: ${JSON.stringify(frame)}\n\n`;
     for (const session of this.sessions.values()) {

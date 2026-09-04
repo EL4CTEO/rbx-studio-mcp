@@ -13,6 +13,7 @@ local RunService = game:GetService("RunService")
 local Config = require(script.Config)
 local Console = require(script.Console)
 local Dispatch = require(script.Dispatch)
+local History = require(script.History)
 local LogBuffer = require(script.LogBuffer)
 local Mirror = require(script.Mirror)
 local Phrase = require(script.Phrase)
@@ -323,6 +324,36 @@ if themeNeedsApplying then
 end
 
 --[[
+	The log, picked up where the last copy of this plugin left it.
+
+	Restored before the banner below rather than after it, so the carried rows
+	read as what they are -- what was on screen a moment ago -- with this
+	session's first line underneath them instead of buried in the middle.
+
+	Every session reads; only the editor writes. See `History` for why.
+]]
+History.attach(plugin, Console.snapshot)
+local carried = History.restore()
+if #carried > 0 then
+	Console.restore(carried)
+	Console.log(
+		"dim",
+		string.format("carried %d line%s over", #carried, if #carried == 1 then "" else "s"),
+		if RunService:IsEdit() then "from the last session" else "from the editor"
+	)
+end
+
+if RunService:IsEdit() then
+	History.start()
+	plugin.Unloading:Connect(function()
+		History.stop()
+		-- The loop cannot save what happens after it has stopped, and closing
+		-- Studio is exactly when the last few rows matter most.
+		History.flush()
+	end)
+end
+
+--[[
 	The playtest halves, joined.
 
 	The server half can reach the bridge and sees every command; the client half
@@ -334,11 +365,19 @@ end
 	events through the same `Console` functions, and if it were also observing
 	it would echo each one straight back into the channel.
 ]]
-if Mirror.isPlaytestServer() then
+if RunService:IsEdit() then
+	-- The only observer the edit session needs: every logged row marks the
+	-- stored copy stale, and the save loop above decides when to write it.
+	Console.setObserver(function()
+		History.touch()
+	end)
+elseif Mirror.isPlaytestServer() then
 	Mirror.startServer()
 	Console.setObserver(function(kind, arguments)
 		Mirror.send(kind, arguments)
 	end)
+	-- The channel itself stays shut until `onStatus` reports the connection;
+	-- see `Mirror.open`.
 elseif Mirror.isPlaytestClient() then
 	Console.setMirroring(true)
 	Mirror.startClient(function(kind, arguments)
@@ -385,6 +424,9 @@ local function onStatus(status: Transport.Status, detail: string?)
 			string.format("connected to 127.0.0.1:%d", Config.getPort()),
 			if detail then "(" .. detail .. ")" else nil
 		)
+		-- After the row, not before it: this session's own arrival is not news
+		-- to the client view, which announced its own a moment ago.
+		Mirror.open()
 	elseif status == "connecting" then
 		Console.log("dim", string.format("connecting to 127.0.0.1:%d...", Config.getPort()))
 	else
@@ -456,6 +498,21 @@ local function onCommand(id: string, op: string, params: { [string]: any }?)
 end
 
 --[[
+	Where a peer's call ran, in the width the detail column has.
+
+	The latency already lives there and only about fourteen characters fit
+	beside a message, so this is two letters and a space rather than "playtest
+	server". Which half of a playtest it was does not matter to someone reading
+	the editor's log afterwards; that it was not the editor does.
+]]
+local function peerTag(from: any): string
+	if typeof(from) ~= "string" then
+		return "peer"
+	end
+	return if from == "edit" then "edit" else "play"
+end
+
+--[[
 	Bridge news that is not a command.
 
 	Kept deliberately narrow: an unknown event is ignored rather than logged,
@@ -467,6 +524,33 @@ local function onEvent(event: { [string]: any })
 		Console.setClients(event.count)
 	elseif event.event == "agent" and event.state == "finished" then
 		Console.agentFinished()
+	elseif event.event == "peer" and typeof(event.op) == "string" then
+		--[[
+			A command another session on this place just finished.
+
+			Logged as if it had run here, because as far as the user is concerned
+			it did: they pressed Play, watched the agent work, pressed Stop, and
+			the panel that comes back is this one. Without this it comes back with
+			a hole in it exactly the length of the playtest.
+
+			The prism is bumped too -- `beginCall` then `recordCall`, back to
+			back -- so the trace carries a bar for the call and the session
+			counters count it. Nothing here reaches the transport, so a peer row
+			can never be announced onwards and two sessions cannot echo forever.
+		]]
+		local params = if typeof(event.params) == "table" then event.params else nil
+		local title = Phrase.of(event.op, params)
+		local milliseconds = if typeof(event.ms) == "number" then event.ms else 0
+		local ok = event.ok == true
+		local detail = string.format("%s %.0fms", peerTag(event.from), milliseconds)
+
+		Console.beginCall(title, Phrase.kindOf(event.op))
+		Console.recordCall(ok, milliseconds)
+		if ok then
+			Console.log("reply", title, detail)
+		else
+			Console.log("error", string.format("%s failed", title), detail)
+		end
 	end
 end
 

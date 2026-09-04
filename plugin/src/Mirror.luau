@@ -41,6 +41,25 @@ local Mirror = {}
 local remote: RemoteEvent? = nil
 
 --[[
+	Held shut until the server session has finished introducing itself.
+
+	Both halves of a playtest log their own banner, place and status, so a
+	channel that is open from the start delivers the server's copy of all of it
+	to a client that has already written its own -- the panel comes up saying
+	"rbx-studio v0.3.6" and "place: Game" twice, a line apart, which reads as a
+	glitch because it is one.
+
+	Opened on the server's "connected" row rather than after a fixed wait: that
+	is the exact point where its startup ends and the session's real activity
+	begins, and everything after it is news the client does not already have.
+]]
+local open = false
+
+function Mirror.open()
+	open = true
+end
+
+--[[
 	True only in the half of a playtest that can reach the bridge.
 
 	`IsRunning` separates a playtest from the editor, and `IsServer` separates
@@ -88,7 +107,7 @@ end
 ]]
 function Mirror.send(kind: string, arguments: { any })
 	local event = remote
-	if event == nil then
+	if event == nil or not open then
 		return
 	end
 	pcall(function()
