@@ -37,6 +37,14 @@ local Api = require(script.handlers.Api)
 local Scripts = require(script.handlers.Scripts)
 local Session = require(script.handlers.Session)
 
+--[[
+	How long a closed panel has to stay closed before that is written down.
+
+	Long enough to outlast Studio tearing a place down, short enough that a user
+	who closes the panel and quits immediately still has it remembered.
+]]
+local WIDGET_CLOSE_GRACE = 1
+
 local SETTING_PORT = "port"
 local SETTING_AUTOCONNECT = "autoConnect"
 local SETTING_FORCE_POLL = "forcePoll"
@@ -243,10 +251,40 @@ if RunService:IsEdit() then
 		unloading = true
 	end)
 
+	--[[
+		Only a close the user actually asked for is remembered.
+
+		Opening is recorded at once -- there is no teardown that opens a panel,
+		so a `true` is always the user. A `false` is not: Studio disables the
+		widget on its way out of a place, and `plugin.Unloading` is not
+		guaranteed to have fired by then, so the `unloading` flag alone lost the
+		race often enough that people found the panel closed on their next
+		launch with no memory of closing it. That is the "it does not open any
+		more" report, and it was self-inflicted and permanent -- once `false` is
+		stored, nothing writes `true` again until the panel is opened by hand.
+
+		So a close has to survive a moment before it counts. A teardown never
+		does: the DataModel is gone long before the delay is up, taking the
+		pending write with it. A user clicking the X does, and a user who
+		re-opens within the delay cancels it, which is also correct.
+	]]
+	local closeGeneration = 0
 	widget:GetPropertyChangedSignal("Enabled"):Connect(function()
-		if not unloading then
-			plugin:SetSetting(SETTING_WIDGET_OPEN, widget.Enabled)
+		if unloading then
+			return
 		end
+		closeGeneration += 1
+		if widget.Enabled then
+			plugin:SetSetting(SETTING_WIDGET_OPEN, true)
+			return
+		end
+		local generation = closeGeneration
+		task.delay(WIDGET_CLOSE_GRACE, function()
+			if unloading or generation ~= closeGeneration or widget.Enabled then
+				return
+			end
+			plugin:SetSetting(SETTING_WIDGET_OPEN, false)
+		end)
 	end)
 
 	-- Only a real, sane size, and only while the panel is up: a hidden or

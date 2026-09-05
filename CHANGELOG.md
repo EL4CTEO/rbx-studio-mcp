@@ -2,6 +2,15 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.4.2
+
+### Fixed
+- The panel stopped opening on its own. Studio disables the widget while closing a place, and that was recorded as the user having closed it. A close now has to last a second before it counts.
+- The plugin sometimes did not load at all. The installer overwrote the file in place while Studio was reading it. It now writes beside it and renames over.
+
+### Changed
+- Dependency and GitHub Action versions bumped.
+
 ## 0.4.1
 
 ### Fixed
