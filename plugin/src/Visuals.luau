@@ -84,17 +84,52 @@ local TRACE_HEIGHT = 26
 	that draws history as rising points draws the wave as an arc of points, and
 	nobody had to tell it to.
 ]]
--- Columns in the wave. Fixed, and positioned by scale rather than by stride, so
--- the wave spans the trace at any panel width off a pool built once at mount.
-local WAVE_COLUMNS = 48
+--[[
+	ONE GRID, shared with the history. This is the whole trick.
+
+	The wave used to sit on its own grid -- a fixed count of columns spread by
+	scale across the trace -- and history sits on a stride grid anchored to the
+	right edge. Two grids in one strip is two instruments in one strip: on a
+	reconnect the wave's columns landed between and behind the bars at a
+	different spacing, which read as interference rather than as one surface.
+
+	So the trace is now a single row of BAR_STRIDE-spaced slots, numbered 1 at
+	the right edge and rising leftwards. History fills slots 1..n. The wave
+	fills every slot LEFT of those and never one of them, so the two can no
+	longer overlap by construction rather than by draw order. And because they
+	share the numbering, the same swell that lifts a wave column also lifts the
+	bars it rolls over -- the history rides the wave instead of standing still
+	in the middle of it.
+]]
+-- The most slots the wave will ever fill, which bounds the pool a very wide
+-- panel can ask for.
+local WAVE_MAX = 160
 -- Seconds for one swell to cross the trace.
 local WAVE_PERIOD = 1.8
 -- The swell's width as a fraction of the trace. Narrow enough to read as a
 -- pulse travelling along it rather than as the whole trace breathing.
 local WAVE_SPREAD = 0.2
--- A finer ripple riding on the swell, in cycles across the trace, so the crest
--- reads as strips moving rather than as one solid hump sliding past.
-local WAVE_RIPPLE = 2.5
+--[[
+	The fine ripple riding on the swell, as SLOTS PER CYCLE rather than cycles
+	per trace.
+
+	Fixed cycles made the texture a function of the panel's width: the same wave
+	was a coarse comb in a narrow dock and a smooth featureless hump in a wide
+	one. Per-slot keeps a ripple the same physical size at any width, which is
+	what makes it read as strips moving at all.
+]]
+local WAVE_RIPPLE_STRIDE = 16
+--[[
+	How far the swell lifts a history bar, against the headroom that bar has
+	left.
+
+	Additive and proportional, not a replacement. A bar already near the top of
+	the trace barely moves and a stub moves nearly the full amount, so the wave
+	is visible across the history without flattening the profile that history is
+	there to show. The hover readout reports the recorded milliseconds either
+	way -- what the wave changes is the drawing, never the reading.
+]]
+local WAVE_LIFT = 0.8
 -- Fade rates, in and out. Out is the slower of the two: an attempt that fails
 -- immediately should ebb rather than blink off.
 local WAVE_IN = 7
@@ -508,141 +543,6 @@ local function defaultSlot(slot: Themes.Slot, ctx: Themes.Context)
 end
 
 --[[
-	Runs the connecting wave for one frame.
-
-	Cheap when nothing is connecting: the ramp settles at zero, the columns are
-	hidden once, and every later frame leaves after two comparisons.
-]]
-function stepWave(delta: number)
-	if #runtime.wave == 0 then
-		return
-	end
-
-	runtime.cheer = math.max(0, runtime.cheer - delta / CHEER_TIME)
-
-	runtime.waveHold = math.max(0, runtime.waveHold - delta)
-	local target = if runtime.waveWanted or runtime.waveHold > 0 then 1 else 0
-	local rate = if target > runtime.waveLevel then WAVE_IN else WAVE_OUT
-	runtime.waveLevel += (target - runtime.waveLevel) * math.min(1, delta * rate)
-
-	--[[
-		Two sources, one opacity.
-
-		They overlap for a moment at every connection -- the status goes green,
-		which drops `waveWanted`, while the flourish is only just starting -- and
-		taking the louder of the two is what carries the handover without a dip
-		between the search ending and the arrival beginning.
-	]]
-	local celebration = math.min(1, runtime.cheer * CHEER_FADE)
-	local strength = math.max(runtime.waveLevel, celebration)
-
-	if strength <= 0.01 then
-		-- Hidden once on the way down rather than every frame afterwards, so a
-		-- connected session pays nothing for an animation it is not running.
-		if runtime.waveShown then
-			runtime.waveShown = false
-			runtime.waveLevel = 0
-			for _, column in runtime.wave do
-				column.Visible = false
-			end
-		end
-		return
-	end
-	runtime.waveShown = true
-
-	local ctx = context()
-	local painter = Themes.active().paintSlot or defaultSlot
-	local phase = ctx.clock / WAVE_PERIOD
-	local crest = phase % 1
-	-- The flourish runs on its own progress rather than on the clock, so it is
-	-- the same length however long the connection took to land.
-	local arriving = runtime.cheer > 0
-	local progress = 1 - runtime.cheer
-
-	for index, column in runtime.wave do
-		-- 0 at the left edge of the trace, 1 at the right.
-		local x = (index - 0.5) / WAVE_COLUMNS
-
-		local weight: number
-		local age: number
-
-		if arriving then
-			--[[
-				Struck, not swept. `since` is how long ago the front passed this
-				column: negative means it has not arrived, and the column waits
-				flat and dark rather than anticipating it.
-			]]
-			local since = progress - x * CHEER_SWEEP
-			if since < 0 then
-				weight = WAVE_FLOOR
-				age = 1
-			else
-				-- One envelope for both height and brightness, so a column is
-				-- at its tallest exactly when it is at its brightest.
-				local settle = math.exp(-since * CHEER_DECAY)
-				local bounce = 0.5 + 0.5 * math.cos(since * CHEER_RING * math.pi * 2)
-				weight = math.clamp(WAVE_FLOOR + settle * bounce * 0.95, WAVE_FLOOR, 1)
-				age = math.clamp(1 - settle, 0, 1)
-			end
-		else
-			--[[
-				Distance to the crest, wrapped around the ends, so the swell
-				leaves the right edge and re-enters at the left instead of
-				jumping back across a trace it has just crossed.
-			]]
-			local distance = math.abs(x - crest)
-			distance = math.min(distance, 1 - distance)
-			local swell = math.exp(-(distance * distance) / (2 * WAVE_SPREAD * WAVE_SPREAD))
-			local ripple = 0.5 + 0.5 * math.sin((x * WAVE_RIPPLE - phase * 2) * math.pi * 2)
-
-			--[[
-				A floor everywhere and a hump at the crest. Away from the swell
-				the columns sit just off the baseline, which keeps the trace
-				reading as an instrument at rest rather than as forty bars of
-				invented data.
-			]]
-			weight = math.clamp(WAVE_FLOOR + swell * (0.55 + 0.45 * ripple) * 0.9, WAVE_FLOOR, 1)
-			--[[
-				Freshness follows the swell rather than position. Every preset
-				fades a slot by how recent it is, so handing the crest an age of
-				zero lights it and leaves the rest of the trace resting -- one
-				number, and eight presets brighten the same part of the wave.
-			]]
-			age = math.clamp(1 - swell, 0, 1)
-		end
-
-		local slot: Themes.Slot = {
-			frame = column,
-			-- Kept agreeing with the height, since that is the pair every
-			-- painter is written against, even though none of them reads it.
-			milliseconds = weight * SLOW_MS,
-			ok = true,
-			title = if arriving then "connected" else "connecting",
-			age = age,
-			weight = weight,
-		}
-
-		-- Set before the painter runs: every painter preserves the X it is
-		-- given and decides the rest.
-		column.Position = UDim2.new(x, 0, 1, 0)
-		if not pcall(painter, slot, ctx) then
-			-- Silent, unlike the history path. A preset that throws here would
-			-- throw sixty times a second, and `relayout` will have said so once
-			-- already the next time a call lands.
-			defaultSlot(slot, ctx)
-		end
-
-		--[[
-			Faded as one thing, after whoever drew it. The ramp belongs to the
-			wave and not to any preset, and applying it to the transparency the
-			painter chose keeps each theme's own weighting intact.
-		]]
-		column.BackgroundTransparency = 1 - (1 - column.BackgroundTransparency) * strength
-		column.Visible = true
-	end
-end
-
---[[
 	Whether the transport is currently reaching for the bridge.
 
 	Told rather than inferred, because "connecting" is the transport's word and
@@ -680,33 +580,296 @@ end
 	set here and the preset is expected to keep it -- everything else about the
 	bar is the preset's to decide.
 ]]
-local function relayout()
+--[[
+	Where slot `number` sits, counting 1 at the right edge and rising leftwards.
+
+	The one place the trace's spacing is decided. Both the history and the wave
+	call it, which is what guarantees they land on the same grid rather than on
+	two that merely look similar.
+]]
+local function slotOffset(number: number): number
+	return -(number - 0.5) * BAR_STRIDE
+end
+
+--[[
+	Re-places every bar and hands each to the active preset to draw.
+
+	Laid out right to left so the newest bar is always at the same edge and the
+	trace reads as scrolling rather than reshuffling. The horizontal position is
+	set here and the preset is expected to keep it -- everything else about the
+	bar is the preset's to decide.
+
+	`modulate` is the wave, when one is running. It is handed a bar's slot
+	number and its true height and freshness, and returns what to draw instead,
+	so the history is lifted by the same swell that lifts the empty slots beside
+	it. Absent, every bar is drawn from its own recorded timing, which is what
+	restores the true trace the moment a wave ends.
+]]
+local function relayout(modulate: ((number, number, number) -> (number, number))?)
 	local ctx = context()
 	local painter = Themes.active().paintSlot or defaultSlot
 	local total = #runtime.bars
 
 	for index, item in runtime.bars do
 		local fromRight = total - index
-		local offset = -(fromRight + 1) * BAR_STRIDE + BAR_STRIDE / 2
+		local number = fromRight + 1
+		local offset = slotOffset(number)
 
 		item.frame.Position = UDim2.new(1, offset, 1, 0)
 		item.hit.Position = UDim2.new(1, offset, 1, 0)
+
+		-- 0 for the newest, rising toward 1 for the oldest still shown.
+		local age = if TRACE > 1 then fromRight / (TRACE - 1) else 0
+		local weight = math.clamp(item.milliseconds / SLOW_MS, 0.06, 1)
+		if modulate ~= nil then
+			weight, age = modulate(number, weight, age)
+		end
 
 		local slot: Themes.Slot = {
 			frame = item.frame,
 			milliseconds = item.milliseconds,
 			ok = item.ok,
 			title = item.title,
-			-- 0 for the newest, rising toward 1 for the oldest still shown.
-			age = if TRACE > 1 then fromRight / (TRACE - 1) else 0,
-			weight = math.clamp(item.milliseconds / SLOW_MS, 0.06, 1),
+			age = age,
+			weight = weight,
 		}
 		local ok, err = pcall(painter, slot, ctx)
 		if not ok then
 			-- One bad slot must not leave the other thirty-nine unplaced.
 			defaultSlot(slot, ctx)
-			warn(string.format("[rbx-studio] theme %q failed on a slot: %s", Themes.activeId(), tostring(err)))
+			--[[
+				Silent under a wave. This runs sixty times a second while one is
+				playing, and a preset that throws would fill the log faster than
+				anyone could read it -- the unmodulated path below still says so
+				once the next call lands.
+			]]
+			if modulate == nil then
+				warn(string.format("[rbx-studio] theme %q failed on a slot: %s", Themes.activeId(), tostring(err)))
+			end
 		end
+	end
+end
+
+--[[
+	How many slots the trace has room for, at the shared stride.
+
+	Read from the live width rather than fixed, because the dock is resizable and
+	a wave that stops halfway across a widened panel is worse than no wave.
+]]
+local function slotsAcross(): number
+	local trace = runtime.trace
+	if trace == nil then
+		return 0
+	end
+	return math.clamp(math.floor(trace.AbsoluteSize.X / BAR_STRIDE), 0, WAVE_MAX)
+end
+
+--[[
+	Makes sure the wave has a column for every slot up to `count`.
+
+	Grown on demand and never shrunk. The pool only ever reaches the width the
+	panel actually had, it is built the first time a connection is attempted
+	rather than at mount, and a column costs nothing while it is hidden.
+]]
+local function growWave(count: number)
+	local trace = runtime.trace
+	if trace == nil then
+		return
+	end
+	for _ = #runtime.wave + 1, count do
+		local column = Instance.new("Frame")
+		column.Name = "Wave"
+		column.AnchorPoint = Vector2.new(0.5, 1)
+		column.Size = UDim2.fromOffset(2, 1)
+		column.BackgroundColor3 = Themes.palette().violet
+		column.BorderSizePixel = 0
+		column.Visible = false
+		-- Under the bars and the hover highlight. They never share a slot, but
+		-- depth should not be the thing standing between them if that changes.
+		column.ZIndex = 1
+		column.Parent = trace
+
+		-- Presets draw points as well as bars, same as the history slots.
+		local round = Instance.new("UICorner")
+		round.CornerRadius = UDim.new(0, 1)
+		round.Parent = column
+
+		table.insert(runtime.wave, column)
+	end
+end
+
+--[[
+	Runs the connecting wave for one frame.
+
+	Cheap when nothing is connecting: the ramp settles at zero, the columns are
+	hidden once, the true trace is restored once, and every later frame leaves
+	after two comparisons.
+]]
+function stepWave(delta: number)
+	runtime.cheer = math.max(0, runtime.cheer - delta / CHEER_TIME)
+
+	runtime.waveHold = math.max(0, runtime.waveHold - delta)
+	local target = if runtime.waveWanted or runtime.waveHold > 0 then 1 else 0
+	local rate = if target > runtime.waveLevel then WAVE_IN else WAVE_OUT
+	runtime.waveLevel += (target - runtime.waveLevel) * math.min(1, delta * rate)
+
+	--[[
+		Two sources, one opacity.
+
+		They overlap for a moment at every connection -- the status goes green,
+		which drops `waveWanted`, while the flourish is only just starting -- and
+		taking the louder of the two is what carries the handover without a dip
+		between the search ending and the arrival beginning.
+	]]
+	local celebration = math.min(1, runtime.cheer * CHEER_FADE)
+	local strength = math.max(runtime.waveLevel, celebration)
+
+	if strength <= 0.01 then
+		if runtime.waveShown then
+			runtime.waveShown = false
+			runtime.waveLevel = 0
+			for _, column in runtime.wave do
+				column.Visible = false
+			end
+			-- The bars were being drawn lifted. Put the real timings back, once,
+			-- rather than leaving the history frozen mid-swell.
+			relayout()
+		end
+		return
+	end
+	runtime.waveShown = true
+
+	local slots = slotsAcross()
+	if slots == 0 then
+		return
+	end
+	growWave(slots)
+
+	local ctx = context()
+	local painter = Themes.active().paintSlot or defaultSlot
+	local phase = ctx.clock / WAVE_PERIOD
+	local crest = phase % 1
+	local ripple = slots / WAVE_RIPPLE_STRIDE
+	-- The flourish runs on its own progress rather than on the clock, so it is
+	-- the same length however long the connection took to land.
+	local arriving = runtime.cheer > 0
+	local progress = 1 - runtime.cheer
+
+	--[[
+		The wave itself, as a pure function of where a slot is.
+
+		Taking a slot number rather than a column is what lets the history use it
+		too: a bar at slot 6 and an empty column at slot 7 are handed the same
+		swell, so the surface is continuous across the join instead of stopping
+		where the data starts.
+	]]
+	local function shape(number: number): (number, number)
+		-- 0 at the left edge of the trace, 1 at the right.
+		local x = 1 - (number - 0.5) / slots
+
+		if arriving then
+			--[[
+				Struck, not swept. `since` is how long ago the front passed this
+				slot: negative means it has not arrived, and the column waits
+				flat and dark rather than anticipating it.
+			]]
+			local since = progress - x * CHEER_SWEEP
+			if since < 0 then
+				return WAVE_FLOOR, 1
+			end
+			-- One envelope for both height and brightness, so a column is at its
+			-- tallest exactly when it is at its brightest.
+			local settle = math.exp(-since * CHEER_DECAY)
+			local bounce = 0.5 + 0.5 * math.cos(since * CHEER_RING * math.pi * 2)
+			return math.clamp(WAVE_FLOOR + settle * bounce * 0.95, WAVE_FLOOR, 1),
+				math.clamp(1 - settle, 0, 1)
+		end
+
+		--[[
+			Distance to the crest, wrapped around the ends, so the swell leaves
+			the right edge and re-enters at the left instead of jumping back
+			across a trace it has just crossed.
+		]]
+		local distance = math.abs(x - crest)
+		distance = math.min(distance, 1 - distance)
+		local swell = math.exp(-(distance * distance) / (2 * WAVE_SPREAD * WAVE_SPREAD))
+		local texture = 0.5 + 0.5 * math.sin((x * ripple - phase * 2) * math.pi * 2)
+
+		--[[
+			A floor everywhere and a hump at the crest. Away from the swell the
+			columns sit just off the baseline, which keeps the trace reading as
+			an instrument at rest rather than as a screenful of invented data.
+		]]
+		return math.clamp(WAVE_FLOOR + swell * (0.55 + 0.45 * texture) * 0.9, WAVE_FLOOR, 1),
+			-- Freshness follows the swell rather than position. Every preset
+			-- fades a slot by how recent it is, so handing the crest an age of
+			-- zero lights it and leaves the rest of the trace resting.
+			math.clamp(1 - swell, 0, 1)
+	end
+
+	--[[
+		The history, riding the same swell.
+
+		Lifted against its own headroom and brightened to whichever of the two is
+		fresher, so a bar keeps its shape and its colour and simply moves with
+		the wave rolling under it.
+	]]
+	local barCount = #runtime.bars
+	if barCount > 0 then
+		relayout(function(number: number, weight: number, age: number): (number, number)
+			local lift, lightness = shape(number)
+			--[[
+				Both channels scale with the ramp, which is what makes the wave
+				let go of the history rather than drop it. At full strength a bar
+				is lifted and lit by the swell; as the ramp falls it slides back
+				onto its own timing and its own age, and the last frame of the
+				wave and the first frame without one are the same picture.
+			]]
+			local raised = weight + (lift - WAVE_FLOOR) * (1 - weight) * WAVE_LIFT * strength
+			local lit = age + (math.min(age, lightness) - age) * strength
+			return math.clamp(raised, weight, 1), lit
+		end)
+	end
+
+	for number, column in runtime.wave do
+		if number > slots or number <= barCount then
+			--[[
+				Past the panel's edge, or a slot the history owns. Either way the
+				wave has no business drawing here -- this is what keeps the two
+				from ever landing on the same five pixels.
+			]]
+			column.Visible = false
+			continue
+		end
+
+		local weight, age = shape(number)
+		local slot: Themes.Slot = {
+			frame = column,
+			-- Kept agreeing with the height, since that is the pair every
+			-- painter is written against, even though none of them reads it.
+			milliseconds = weight * SLOW_MS,
+			ok = true,
+			title = if arriving then "connected" else "connecting",
+			age = age,
+			weight = weight,
+		}
+
+		-- Set before the painter runs, off the same helper the bars use: every
+		-- painter preserves the X it is given and decides the rest.
+		column.Position = UDim2.new(1, slotOffset(number), 1, 0)
+		if not pcall(painter, slot, ctx) then
+			-- Silent, for the same reason the modulated history path is: a
+			-- preset that throws here would throw sixty times a second.
+			defaultSlot(slot, ctx)
+		end
+
+		--[[
+			Faded as one thing, after whoever drew it. The ramp belongs to the
+			wave and not to any preset, and applying it to the transparency the
+			painter chose keeps each theme's own weighting intact.
+		]]
+		column.BackgroundTransparency = 1 - (1 - column.BackgroundTransparency) * strength
+		column.Visible = true
 	end
 end
 
@@ -755,6 +918,10 @@ function Visuals.recordCall(milliseconds: number, ok: boolean, title: string)
 	local bar = Instance.new("Frame")
 	bar.AnchorPoint = Vector2.new(0.5, 1)
 	bar.BorderSizePixel = 0
+	-- Above the wave's columns and the hover highlight. A plugin widget draws
+	-- with ZIndexBehavior.Global, so depth is stated rather than inherited from
+	-- the order things happened to be built in.
+	bar.ZIndex = 2
 	bar.Parent = trace
 	-- Presets draw points as well as bars, and a square point is not a point.
 	local corner = Instance.new("UICorner")
@@ -1050,34 +1217,6 @@ function Visuals.mount(parent: Instance)
 	baseline.BorderSizePixel = 0
 	baseline.Parent = trace
 	runtime.baseline = baseline
-
-	--[[
-		The connecting wave's columns, built once and hidden until an attempt
-		needs them.
-
-		Created here -- before the highlight and long before any bar -- because
-		draw order among siblings is creation order, and the wave must sit under
-		both. It is what the trace does while it has no history; it must never
-		be drawn over the history it was standing in for.
-	]]
-	for index = 1, WAVE_COLUMNS do
-		local column = Instance.new("Frame")
-		column.Name = "Wave"
-		column.AnchorPoint = Vector2.new(0.5, 1)
-		column.Position = UDim2.new((index - 0.5) / WAVE_COLUMNS, 0, 1, 0)
-		column.Size = UDim2.fromOffset(2, 1)
-		column.BackgroundColor3 = palette.violet
-		column.BorderSizePixel = 0
-		column.Visible = false
-		column.Parent = trace
-
-		-- Presets draw points as well as bars, same as the history slots.
-		local round = Instance.new("UICorner")
-		round.CornerRadius = UDim.new(0, 1)
-		round.Parent = column
-
-		runtime.wave[index] = column
-	end
 
 	--[[
 		Built once and moved, and created BEFORE the bars exist so it sits under

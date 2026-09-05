@@ -2,6 +2,14 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.4.0
+
+The connecting wave and the call history share one grid.
+
+### Fixed
+- **The wave overlapped the bars already in the trace.** It sat on its own spacing, so on a reconnect its columns landed between and behind the history at a different pitch. Both now use the same slots: history fills from the right, the wave fills only what is left of it.
+- **The history stood still while the wave rolled past it.** The bars are now lifted by the same swell, against the height each one has left, so the strip moves as one surface. Hover still reports the recorded time.
+
 ## 0.3.9
 
 The console shows what it is doing while it connects.
