@@ -6,6 +6,7 @@ import type { CommandResult, StudioIdentity } from "../lib/protocol.js";
 import { Bridge } from "./rpc.js";
 import { LocalBridge, type StudioBridge } from "./api.js";
 import { probeOwner, RemoteBridge } from "./remote.js";
+import { FailoverBridge, type ClaimedPort } from "./failover.js";
 
 /** Default loopback port. Deliberately not 58741 — that is drgost1's server. */
 export const DEFAULT_PORT = 44755;
@@ -45,12 +46,79 @@ export interface BridgeServer {
  *   POST /bye      clean disconnect on plugin unload
  *   GET  /latency  times N round trips to a connected plugin; measurement only
  */
-export function startBridgeServer(
+export async function startBridgeServer(
   options: BridgeServerOptions = {},
 ): Promise<BridgeServer> {
-  const bridge = options.bridge ?? new Bridge();
   const port = options.port ?? DEFAULT_PORT;
 
+  const mine = await claimPort(port, options.bridge);
+  if (mine !== null) {
+    return { bridge: mine.bridge, port, owner: true, close: mine.close };
+  }
+
+  // Somebody holds the port. Overwhelmingly that is a second copy of this
+  // server -- a stale process, or the same server registered in two MCP
+  // clients -- and fighting over the plugin's one connection is not the answer:
+  // the second, third and tenth become clients of the first, and any number of
+  // agents drive one Studio.
+  const existing = await probeOwner(port);
+  if (existing === null) {
+    throw new Error(
+      `Port ${port} is in use by something that is not roblox-studio-mcp. ` +
+        `Stop it, or start this one with --port <other> and set the matching ` +
+        `port in the Studio plugin widget.`,
+    );
+  }
+
+  // Borrowed, not surrendered. If the holder exits, this one takes the port
+  // rather than proxying forever to a socket nobody is listening on.
+  const bridge = new FailoverBridge(new RemoteBridge(port, existing), () =>
+    claimPort(port),
+  );
+  return {
+    bridge,
+    port,
+    // A getter, because the answer changes the moment a handover happens and a
+    // snapshot taken at startup would go quietly stale.
+    get owner(): boolean {
+      return bridge.isOwner;
+    },
+    close: () => bridge.close(),
+  };
+}
+
+/**
+ * Tries to become the process that owns the port, and sets up shop if it wins.
+ *
+ * Returns null when the port is taken. The bind attempt is the whole test:
+ * asking first and binding after leaves a window in which two processes both
+ * see a free port, where `listen` is atomic and exactly one of them wins.
+ */
+async function claimPort(
+  port: number,
+  seed?: Bridge,
+): Promise<ClaimedPort | null> {
+  const bridge = seed ?? new Bridge();
+  const server = createBridgeHttpServer(bridge);
+
+  const failure = await listen(server, port);
+  if (failure !== null) {
+    if (failure.code === "EADDRINUSE") return null;
+    throw failure;
+  }
+
+  const reaper = setInterval(() => bridge.reapStale(), 30_000);
+  reaper.unref();
+  announceClients(bridge);
+
+  return {
+    bridge: new LocalBridge(bridge),
+    close: () => closeServer(server, reaper),
+  };
+}
+
+/** Builds the HTTP endpoint, ready to listen but not listening yet. */
+function createBridgeHttpServer(bridge: Bridge): Server {
   const server = createServer((req, res) => {
     void handle(bridge, req, res);
   });
@@ -66,13 +134,23 @@ export function startBridgeServer(
    */
   server.on("connection", (socket) => socket.setNoDelay(true));
 
-  /**
-   * Tells every streaming plugin how many agents now share it, and says so
-   * plainly when one leaves.
-   *
-   * The departure is the only moment this server can state that a session
-   * ended rather than paused, so it is the only thing it phrases as a fact.
-   */
+  // Long-poll requests park for POLL_HOLD_MS; Node's 2-minute default would be
+  // fine, but SSE streams must never be reaped by the server itself.
+  server.headersTimeout = 0;
+  server.requestTimeout = 0;
+  server.keepAliveTimeout = 0;
+
+  return server;
+}
+
+/**
+ * Tells every streaming plugin how many agents now share it, and says so
+ * plainly when one leaves.
+ *
+ * The departure is the only moment this server can state that a session
+ * ended rather than paused, so it is the only thing it phrases as a fact.
+ */
+function announceClients(bridge: Bridge): void {
   let knownClients = bridge.clientCount();
   bridge.watchClients((count) => {
     const left = count < knownClients;
@@ -80,66 +158,29 @@ export function startBridgeServer(
     bridge.broadcast({ event: "clients", count });
     if (left) bridge.broadcast({ event: "agent", state: "finished" });
   });
+}
 
-  // Long-poll requests park for POLL_HOLD_MS; Node's 2-minute default would be
-  // fine, but SSE streams must never be reaped by the server itself.
-  server.headersTimeout = 0;
-  server.requestTimeout = 0;
-  server.keepAliveTimeout = 0;
-
-  const reaper = setInterval(() => bridge.reapStale(), 30_000);
-  reaper.unref();
-
-  return new Promise((resolve, reject) => {
-    server.once("error", (cause: NodeJS.ErrnoException) => {
-      // Overwhelmingly the cause is a second copy of this server (a stale
-      // process, or the same server configured in two MCP clients). Both would
-      // fight over the plugin's connection, so say so plainly instead of
-      // surfacing a bare EADDRINUSE.
-      if (cause.code === "EADDRINUSE") {
-        // Almost always another copy of this server, which is not a failure:
-        // the plugin can only connect to one port, so the right answer is to
-        // share that one connection rather than fight for it. Any number of MCP
-        // clients can then drive one Studio.
-        void probeOwner(port).then((existing) => {
-          if (existing) {
-            clearInterval(reaper);
-            const remote = new RemoteBridge(port, existing);
-            resolve({
-              bridge: remote,
-              port,
-              owner: false,
-              // The owner is a different process and outlives this one, so
-              // saying goodbye is the only way it learns this agent has gone.
-              close: async () => {
-                clearInterval(reaper);
-                await remote.goodbye();
-              },
-            });
-            return;
-          }
-          reject(
-            new Error(
-              `Port ${port} is in use by something that is not roblox-studio-mcp. ` +
-                `Stop it, or start this one with --port <other> and set the matching ` +
-                `port in the Studio plugin widget.`,
-            ),
-          );
-        });
-        return;
-      }
-      reject(cause);
-    });
+/**
+ * Binds loopback, resolving with the error instead of throwing one.
+ *
+ * A taken port is an ordinary outcome here -- it is how a second agent learns
+ * to proxy, and how a peer learns it is not yet the owner's turn to be taken
+ * over -- so it comes back as a value to branch on rather than an exception.
+ */
+function listen(server: Server, port: number): Promise<NodeJS.ErrnoException | null> {
+  return new Promise((resolve) => {
+    const onError = (cause: NodeJS.ErrnoException): void => {
+      server.removeListener("listening", onListening);
+      resolve(cause);
+    };
+    const onListening = (): void => {
+      server.removeListener("error", onError);
+      resolve(null);
+    };
+    server.once("error", onError);
+    server.once("listening", onListening);
     // Loopback only: nothing on the network should be able to drive Studio.
-    server.listen(port, "127.0.0.1", () => {
-      server.removeListener("error", reject);
-      resolve({
-        bridge: new LocalBridge(bridge),
-        port,
-        owner: true,
-        close: () => closeServer(server, reaper),
-      });
-    });
+    server.listen(port, "127.0.0.1");
   });
 }
 

@@ -345,6 +345,7 @@ function Transport.start(id: string, callbacks: Callbacks)
 		while running do
 			callbacks.onStatus("connecting")
 
+			local startedAt = os.clock()
 			local streamed = not forcePoll and supportsWebStream() and runStream(callbacks)
 			local upgrading = false
 			if running and not streamed then
@@ -363,13 +364,29 @@ function Transport.start(id: string, callbacks: Callbacks)
 				continue
 			end
 
-			task.wait(delay)
-			delay = math.min(delay * 2, Config.MAX_RECONNECT_DELAY)
-			-- A connection that lasted long enough to do real work resets the
-			-- backoff; only repeated fast failures should slow retries down.
-			if activeStream ~= nil then
+			--[[
+				A connection that lasted long enough to do real work is not a
+				failure, so the next retry starts from the bottom again. Only
+				repeated fast failures should slow reconnects down.
+
+				Measured, because the check this replaces could never be true:
+				it asked whether `activeStream` was still set, and `runStream`
+				clears that before it returns. So the delay only ever doubled.
+				Studio caps a stream at thirty minutes and the bridge restarts
+				whenever an agent does, which makes reconnects routine -- and
+				after a handful of them the console sat out the full 30 second
+				cap between attempts that were all succeeding. Reported as a
+				console that spent most of its time saying DISCONNECTED.
+
+				Reset before the wait rather than after, so the connection that
+				just worked is what decides how long this pause is.
+			]]
+			if os.clock() - startedAt >= Config.HEALTHY_CONNECTION then
 				delay = Config.RECONNECT_DELAY
 			end
+
+			task.wait(delay)
+			delay = math.min(delay * 2, Config.MAX_RECONNECT_DELAY)
 		end
 	end)
 end

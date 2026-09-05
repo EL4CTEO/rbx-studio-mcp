@@ -9,7 +9,7 @@
 
 local Config = {}
 
-Config.PLUGIN_VERSION = "0.4.0"
+Config.PLUGIN_VERSION = "0.4.1"
 
 -- Fingerprint of plugin/src, stamped in by scripts/build-plugin.mjs. The server
 -- computes the same hash from its own copy of the sources and compares, so a
@@ -28,6 +28,12 @@ Config.CLIENT_HEADER = "x-roblox-studio-mcp"
 -- connections at the 30 minute mark, so reconnects are routine, not exceptional.
 Config.RECONNECT_DELAY = 1
 Config.MAX_RECONNECT_DELAY = 30
+
+-- How long a connection has to last before it counts as having worked, rather
+-- than as one more failure to back off from. Comfortably longer than a failed
+-- handshake against a dead port, which resolves in milliseconds, and far shorter
+-- than any connection that carried a single command.
+Config.HEALTHY_CONNECTION = 10
 
 -- How long a healthy long-poll session runs before standing aside so streaming
 -- can be tried again. Long enough that a Studio which genuinely cannot stream

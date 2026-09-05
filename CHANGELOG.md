@@ -2,6 +2,12 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.4.1
+
+### Fixed
+- The console showed DISCONNECTED while the agent was working. Reconnect backoff never reset after a good connection, so it waited the full 30s between attempts that were succeeding.
+- Closing the server that held the port killed the connection for every other one. Another now takes the port over in a few seconds.
+
 ## 0.4.0
 
 The connecting wave and the call history share one grid.

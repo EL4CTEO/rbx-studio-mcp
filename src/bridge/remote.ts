@@ -142,7 +142,8 @@ export class RemoteBridge implements StudioBridge {
       `The roblox-studio-mcp instance holding port ${this.port} (pid ${this.owner.pid}) ` +
         `stopped answering: ${cause instanceof Error ? cause.message : String(cause)}`,
       "That process owns the Studio connection and this one borrows it. It has most " +
-        "likely exited — restart this MCP server and it will take the port itself.",
+        "likely exited, in which case this server takes the port over within a few " +
+        "seconds — try the call again.",
     );
   }
 
