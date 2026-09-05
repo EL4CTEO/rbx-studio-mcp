@@ -18,11 +18,48 @@
 	Instances, and colour spans do the same job in a fraction of the code.
 ]]
 
+local TweenService = game:GetService("TweenService")
+
 local ThemePicker = require(script.Parent.ThemePicker)
 local Themes = require(script.Parent.Themes)
 local Visuals = require(script.Parent.Visuals)
 
 local Console = {}
+
+--[[
+	The clear wipe: an old CRT being switched off.
+
+	A button that empties the screen and leaves no trace is indistinguishable
+	from one that crashed the panel. The receipt row answers that in words; this
+	answers it in the two hundred milliseconds before anyone has read the words.
+
+	It is an OVERLAY and nothing else. The log is cleared for real at the same
+	instant, underneath, so nothing about the console's state waits on an
+	animation -- a line that arrives mid-wipe lands in the fresh log and is
+	simply revealed when the overlay goes. What collapses is a still copy of the
+	text that was on screen, which is the honest thing to animate: it is a
+	picture of what was erased.
+
+	Three phases, and the timings are the whole effect. The picture holds and
+	then whips shut to a line; the line sits a moment; the line whips to a point
+	and is gone. Easing into each collapse rather than out of it is what makes it
+	read as a tube discharging rather than as a panel being resized.
+]]
+local CRT_COLLAPSE = 0.16
+local CRT_HOLD = 0.07
+local CRT_BLINK = 0.17
+local CRT_SHUT = TweenInfo.new(CRT_COLLAPSE, Enum.EasingStyle.Quart, Enum.EasingDirection.In)
+local CRT_SETTLE = TweenInfo.new(0.05, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+local CRT_OUT = TweenInfo.new(CRT_BLINK, Enum.EasingStyle.Quart, Enum.EasingDirection.In)
+
+--[[
+	Explicit depths, because a plugin widget draws with ZIndexBehavior.Global
+	and a child does not inherit its parent's. Above the log, the band and the
+	hover readout; below the preset drawer, which must stay clickable.
+]]
+local Z_CRT = 20
+local Z_CRT_TEXT = 21
+local Z_CRT_LINE = 22
 
 --[[
 	Ring buffer bound, counted in logged rows rather than in rendered lines.
@@ -209,6 +246,24 @@ type State = {
 	clients: number,
 	-- Set while a repaint is already scheduled for the end of this frame.
 	dirty: boolean,
+
+	--[[
+		The clear wipe's overlay: an unclipped shell over the log region, the
+		collapsing screen inside it, a fixed window holding the still copy of
+		the text, and the bright line the picture discharges into.
+	]]
+	crt: Frame?,
+	crtScreen: Frame?,
+	crtWindow: Frame?,
+	crtGhost: TextLabel?,
+	crtLine: Frame?,
+	--[[
+		Bumped by every wipe, so the delayed halves of an earlier one know they
+		have been superseded and do nothing. `task.delay` hands back no handle to
+		cancel, and clearing twice inside four hundred milliseconds is a click
+		away.
+	]]
+	crtGeneration: number,
 }
 
 local state: State = {
@@ -232,6 +287,12 @@ local state: State = {
 	generation = 0,
 	clients = 1,
 	dirty = false,
+	crt = nil,
+	crtScreen = nil,
+	crtWindow = nil,
+	crtGhost = nil,
+	crtLine = nil,
+	crtGeneration = 0,
 }
 
 -- How long the session must be silent before the console says so. Long enough
@@ -656,7 +717,121 @@ function Console.setClients(count: number)
 	end
 end
 
+--[[
+	Plays the wipe over whatever is on screen right now.
+
+	Must be called BEFORE the log is emptied: the still copy it collapses is
+	read straight off the live label, scroll offset and all, so what discharges
+	is exactly the text the user was looking at rather than a re-render of it.
+
+	Silent when there is nothing to play it on -- a widget dragged down to a
+	sliver has no room for a picture to collapse, and a flourish that plays in
+	four pixels is a flicker, not an effect.
+]]
+local function crtWipe()
+	local shell = state.crt
+	local screen = state.crtScreen
+	local window = state.crtWindow
+	local ghost = state.crtGhost
+	local line = state.crtLine
+	local scroller = state.scroller
+	local label = state.label
+	if
+		shell == nil
+		or screen == nil
+		or window == nil
+		or ghost == nil
+		or line == nil
+		or scroller == nil
+		or label == nil
+	then
+		return
+	end
+
+	local height = scroller.AbsoluteSize.Y
+	if height < 24 then
+		return
+	end
+
+	state.crtGeneration += 1
+	local generation = state.crtGeneration
+
+	-- Read at play time rather than tracked, so the overlay lands on the log
+	-- wherever the band toggle and the widget's size have left it.
+	shell.Position = scroller.Position
+	shell.Size = scroller.Size
+
+	--[[
+		The still copy, offset by exactly as far as the log is scrolled.
+
+		A TextLabel cannot scroll its own text, so the window is a fixed-height
+		clip and the label inside it is pushed up by the canvas offset. That is
+		what makes the copy line up with the real log to the pixel instead of
+		snapping to the top of the buffer the moment the wipe starts.
+	]]
+	window.Size = UDim2.new(1, 0, 0, height)
+	ghost.Position = UDim2.new(0, 12, 0, 8 - scroller.CanvasPosition.Y)
+	ghost.Size = UDim2.new(1, -24, 0, 0)
+	ghost.TextColor3 = PALETTE.text
+	ghost.Text = label.Text
+
+	screen.BackgroundColor3 = PALETTE.background
+	screen.Size = UDim2.new(1, 0, 1, 0)
+	screen.Visible = true
+
+	line.BackgroundColor3 = PALETTE.text
+	line.Size = UDim2.new(1, 0, 0, 2)
+	line.BackgroundTransparency = 1
+	line.Visible = false
+
+	shell.Visible = true
+
+	-- The picture, whipping shut around its own middle.
+	TweenService:Create(screen, CRT_SHUT, { Size = UDim2.new(1, 0, 0, 2) }):Play()
+
+	task.delay(CRT_COLLAPSE, function()
+		if state.crtGeneration ~= generation then
+			return
+		end
+
+		--[[
+			The handover. The screen goes and the line arrives in the same frame,
+			a little over-thick, and settles -- which is the flash. Fading one
+			into the other instead just looks like a crossfade of two rectangles.
+		]]
+		screen.Visible = false
+		line.BackgroundTransparency = 0
+		line.Size = UDim2.new(1, 0, 0, 3)
+		line.Visible = true
+		TweenService:Create(line, CRT_SETTLE, { Size = UDim2.new(1, 0, 0, 2) }):Play()
+
+		task.delay(CRT_HOLD, function()
+			if state.crtGeneration ~= generation then
+				return
+			end
+
+			TweenService:Create(line, CRT_OUT, {
+				Size = UDim2.new(0, 0, 0, 2),
+				BackgroundTransparency = 0.35,
+			}):Play()
+
+			task.delay(CRT_BLINK, function()
+				if state.crtGeneration ~= generation then
+					return
+				end
+				shell.Visible = false
+				line.Visible = false
+				screen.Visible = true
+			end)
+		end)
+	end)
+end
+
 function Console.clear()
+	-- Before anything is emptied: the wipe collapses a copy of what is on
+	-- screen, and a moment later there is nothing on screen to copy.
+	crtWipe()
+
 	--[[
 		Says what it did, with a timestamp, like everything else in here.
 
@@ -691,6 +866,9 @@ end
 	visible without scrolling, however long the session has run.
 ]]
 function Console.setStatus(status: string, meta: string)
+	-- Read before it is overwritten: the arrival flourish below is the one thing
+	-- here that cares whether this is a change or a repeat.
+	local previous = state.status
 	state.status = status
 	state.statusMeta = meta
 
@@ -718,6 +896,23 @@ function Console.setStatus(status: string, meta: string)
 	-- The wireframe takes the same colour as the status light, so the panel
 	-- reads as disconnected at a glance even with the header off screen.
 	Visuals.setTint(color)
+
+	-- The trace has no calls to plot until a session exists, so it waves while
+	-- the transport is reaching for one rather than sitting as a dead baseline
+	-- at exactly the moment somebody is watching to see whether it is alive.
+	Visuals.setConnecting(status == "connecting")
+
+	--[[
+		And it celebrates when the session finally lands.
+
+		Only on the transition. `setStatus` is also how a theme switch and a
+		port change repaint the header, and both replay the current status --
+		which would fire the flourish again for an event that already happened,
+		several times a session, until it read as noise rather than as news.
+	]]
+	if status == "connected" and previous ~= "connected" then
+		Visuals.celebrate()
+	end
 end
 
 --[[
@@ -957,6 +1152,84 @@ function Console.mount(parent: Instance, handlers: Handlers)
 	label.Text = ""
 	label.Parent = scroller
 	state.label = label
+
+	--[[
+		The clear wipe's overlay, built once and hidden.
+
+		Four nested pieces, and each one earns its place. `crt` is unclipped and
+		covers the log region, so the line can stay full width while the screen
+		inside it closes. `screen` is the clip that actually collapses, anchored
+		to its own middle so it shuts toward the centre rather than rolling up
+		from the top. `window` is a fixed-height clip that does not move with it,
+		which is what holds the copied text still while the screen closes over
+		it. `ghost` is the copy.
+	]]
+	local crt = Instance.new("Frame")
+	crt.Name = "ClearWipe"
+	crt.BackgroundTransparency = 1
+	crt.BorderSizePixel = 0
+	crt.Visible = false
+	crt.ZIndex = Z_CRT
+	crt.Parent = root
+	state.crt = crt
+
+	local crtScreen = Instance.new("Frame")
+	crtScreen.Name = "Screen"
+	crtScreen.AnchorPoint = Vector2.new(0.5, 0.5)
+	crtScreen.Position = UDim2.fromScale(0.5, 0.5)
+	crtScreen.Size = UDim2.new(1, 0, 1, 0)
+	themed(crtScreen, "BackgroundColor3", "background")
+	crtScreen.BorderSizePixel = 0
+	crtScreen.ClipsDescendants = true
+	crtScreen.ZIndex = Z_CRT
+	crtScreen.Parent = crt
+	state.crtScreen = crtScreen
+
+	local crtWindow = Instance.new("Frame")
+	crtWindow.Name = "Window"
+	crtWindow.AnchorPoint = Vector2.new(0.5, 0.5)
+	crtWindow.Position = UDim2.fromScale(0.5, 0.5)
+	crtWindow.Size = UDim2.new(1, 0, 1, 0)
+	crtWindow.BackgroundTransparency = 1
+	crtWindow.BorderSizePixel = 0
+	crtWindow.ClipsDescendants = true
+	crtWindow.ZIndex = Z_CRT_TEXT
+	crtWindow.Parent = crtScreen
+	state.crtWindow = crtWindow
+
+	-- Every text property the log's own label has, because the copy has to be
+	-- indistinguishable from it for the frame before it starts moving.
+	local crtGhost = Instance.new("TextLabel")
+	crtGhost.Name = "Ghost"
+	crtGhost.BackgroundTransparency = 1
+	crtGhost.Font = Enum.Font.Code
+	crtGhost.TextSize = 12
+	crtGhost.LineHeight = 1.25
+	themed(crtGhost, "TextColor3", "text")
+	crtGhost.RichText = true
+	crtGhost.TextWrapped = true
+	crtGhost.AutomaticSize = Enum.AutomaticSize.Y
+	crtGhost.Size = UDim2.new(1, -24, 0, 0)
+	crtGhost.TextXAlignment = Enum.TextXAlignment.Left
+	crtGhost.TextYAlignment = Enum.TextYAlignment.Top
+	crtGhost.Text = ""
+	crtGhost.ZIndex = Z_CRT_TEXT
+	crtGhost.Parent = crtWindow
+	state.crtGhost = crtGhost
+
+	-- The line the picture discharges into. Outside `screen`, so it keeps its
+	-- width while the screen closes to nothing behind it.
+	local crtLine = Instance.new("Frame")
+	crtLine.Name = "Line"
+	crtLine.AnchorPoint = Vector2.new(0.5, 0.5)
+	crtLine.Position = UDim2.fromScale(0.5, 0.5)
+	crtLine.Size = UDim2.new(1, 0, 0, 2)
+	themed(crtLine, "BackgroundColor3", "text")
+	crtLine.BorderSizePixel = 0
+	crtLine.Visible = false
+	crtLine.ZIndex = Z_CRT_LINE
+	crtLine.Parent = crt
+	state.crtLine = crtLine
 
 	-- Status bar ------------------------------------------------------------
 	local footer = Instance.new("Frame")

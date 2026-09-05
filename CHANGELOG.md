@@ -2,6 +2,17 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.3.9
+
+The console shows what it is doing while it connects.
+
+### Added
+- **The activity trace waves while the plugin is connecting.** It used to sit as a bare baseline, which looks the same as a panel that has died.
+- **A flourish when a session lands.** A bright front runs across the trace on connect, once per real connection.
+- **The clear button switches the log off like a CRT.** The picture collapses to a bright line, flashes, and blinks out.
+
+All three are drawn by whichever preset is active, so each of the eight has its own.
+
 ## 0.3.8
 
 Screenshots say when they came back black.
