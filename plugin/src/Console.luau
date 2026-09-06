@@ -203,6 +203,21 @@ type Record = {
 	stamp: string,
 }
 
+--[[
+	One MCP client sharing this bridge, as the server describes it.
+
+	`name` is what the agent calls itself in the MCP handshake, so it is
+	"claude-code" or "codex" rather than anything the bridge guessed. A client
+	that never introduced itself arrives as "unknown", which is honest: it is
+	connected, we just do not know what it is.
+]]
+export type Client = {
+	name: string,
+	version: string,
+	pid: number,
+	connectedAt: number,
+}
+
 type State = {
 	records: { Record },
 	-- The last status reported, replayed after a theme switch. Without it the
@@ -227,7 +242,7 @@ type State = {
 	statusText: TextLabel?,
 	metaText: TextLabel?,
 	countersText: TextLabel?,
-	clientsChip: TextLabel?,
+	clientsChip: TextButton?,
 	pinned: boolean,
 	calls: number,
 	errors: number,
@@ -244,6 +259,24 @@ type State = {
 	generation: number,
 	-- How many MCP clients share this bridge. Only ever displayed above one.
 	clients: number,
+	--[[
+		Whether the count above was learned from this connection or the last.
+
+		The bridge sends the roster the moment a stream opens, so the first
+		frame after every reconnect looks exactly like an agent arriving. It is
+		not: the same agents were there a second ago, and the connect itself has
+		already played its flourish. Cleared whenever the transport leaves
+		"connected", so only a genuine arrival mid-session celebrates.
+	]]
+	clientsKnown: boolean,
+	--[[
+		Who those clients are, newest last, as the bridge last reported them.
+
+		Kept even at one client, unlike the badge: the roster is what answers
+		"is this extra one a problem?", and the moment it becomes worth asking
+		is the moment a second appears -- too late to start recording.
+	]]
+	clientList: { Client },
 	-- Set while a repaint is already scheduled for the end of this frame.
 	dirty: boolean,
 
@@ -286,6 +319,8 @@ local state: State = {
 	running = nil,
 	generation = 0,
 	clients = 1,
+	clientsKnown = false,
+	clientList = {},
 	dirty = false,
 	crt = nil,
 	crtScreen = nil,
@@ -294,6 +329,11 @@ local state: State = {
 	crtLine = nil,
 	crtGeneration = 0,
 }
+
+-- Declared ahead of its definition: `setClients` calls it and is written
+-- above it, and a plain `function layoutHeader()` there would have quietly
+-- become a global.
+local layoutHeader: () -> ()
 
 -- How long the session must be silent before the console says so. Long enough
 -- that an agent pausing to think is not announced as having stopped.
@@ -681,13 +721,30 @@ end
 	badge -- a permanent "1 client connected" is a label, not a signal, and the
 	header has better uses for the width.
 ]]
-function Console.setClients(count: number)
+function Console.setClients(count: number, list: { Client }?)
 	local previous = state.clients
+	local known = state.clientsKnown
 	state.clients = count
+	state.clientsKnown = true
+	if list ~= nil then
+		state.clientList = list
+	end
+
+	--[[
+		An agent joining gets the same flourish as a session landing.
+
+		It is the same kind of news -- something that can now drive this Studio
+		has arrived -- and the trace is where this panel says so. Guarded on
+		`known` because the bridge re-sends the roster on every reconnect, and
+		replaying the arrival of agents that never left would fire it several
+		times a session until it stopped meaning anything.
+	]]
+	if known and count > previous then
+		Visuals.celebrate()
+	end
 
 	local chip = state.clientsChip
 	if chip then
-		chip.Visible = count > 1
 		-- Pluralised even though the badge hides at one. A string that is only
 		-- ever correct because nobody can see it is a trap for whoever changes
 		-- the visibility rule later.
@@ -698,10 +755,7 @@ function Console.setClients(count: number)
 		)
 	end
 
-	local meta = state.metaText
-	if meta then
-		meta.Size = UDim2.new(1, if count > 1 then -486 else -394, 1, 0)
-	end
+	layoutHeader()
 
 	--[[
 		Only the arrival is worth a row.
@@ -713,8 +767,152 @@ function Console.setClients(count: number)
 		reports it; the count coming down is already covered twice over.
 	]]
 	if count > 1 and previous <= 1 then
-		Console.log("info", string.format("%d MCP clients connected", count))
+		--[[
+			Named, not just counted.
+
+			"3 MCP clients connected" is the line people bring to us asking
+			whether something is wrong, because a number cannot say whether the
+			extra ones are agents they started or processes they forgot. The
+			names can, so they are in the row that raises the question rather
+			than only in a panel the reader has to know to hover.
+		]]
+		Console.log(
+			"info",
+			string.format("%d MCP clients connected", count),
+			Console.clientSummary()
+		)
 	end
+end
+
+--[[
+	The roster on one line, for the caption and the arrival row.
+
+	Names only, deduplicated by name with a count where it repeats: two Codex
+	windows are "codex x2", not "codex, codex". The interesting fact is which
+	tools are attached, and a list that repeats a name reads as a mistake.
+]]
+--[[
+	Places the header's right-hand controls, and gives the meta line what is left.
+
+	One function rather than each control minding its own position, because the
+	clients badge comes and goes: it only appears above one client. With the
+	positions written at each call site, the meta line's width had to encode
+	every combination as a constant, and the two had to be kept in step by hand.
+
+	Laid out right to left from the buttons, each control claiming its width
+	plus a gap. The meta line then ends a fixed distance further left, which is
+	the rule it always followed -- it just no longer has to be told the answer.
+]]
+local BUTTONS_WIDTH = 244
+local HEADER_GAP = 8
+local CHIP_WIDTH = 84
+local META_CLEARANCE = 150
+
+layoutHeader = function()
+	local edge = BUTTONS_WIDTH
+
+	local chip = state.clientsChip
+	if chip then
+		chip.Visible = state.clients > 1
+		if chip.Visible then
+			edge += HEADER_GAP
+			chip.Position = UDim2.new(1, -edge, 0.5, 0)
+			edge += CHIP_WIDTH
+		end
+	end
+
+	local meta = state.metaText
+	if meta then
+		meta.Size = UDim2.new(1, -(edge + META_CLEARANCE), 1, 0)
+	end
+end
+
+
+
+
+function Console.clientSummary(): string
+	local list = state.clientList
+	if #list == 0 then
+		return ""
+	end
+	local order: { string } = {}
+	local seen: { [string]: number } = {}
+	for _, client in list do
+		local name = if client.name ~= "" then client.name else "unknown"
+		if seen[name] == nil then
+			seen[name] = 0
+			table.insert(order, name)
+		end
+		seen[name] += 1
+	end
+	local parts: { string } = {}
+	for _, name in order do
+		local total = seen[name]
+		table.insert(parts, if total > 1 then string.format("%s x%d", name, total) else name)
+	end
+	return table.concat(parts, ", ")
+end
+
+--[[
+	The roster in full, one row per client, written into the log.
+
+	In the log rather than a hover panel because that is where this console puts
+	facts it wants the user to be able to scroll back to -- and because a list
+	that only exists while the pointer is on it cannot be read and acted on at
+	the same time.
+]]
+function Console.reportClients()
+	local list = state.clientList
+	if #list == 0 then
+		--[[
+			An empty roster beside a count above one is not "nobody is here",
+			it is a server too old to say who. Worth distinguishing: the first
+			reading sends someone looking for a connection problem that does
+			not exist, and the fix -- restart the MCP server -- is not one
+			anybody guesses from "no client has introduced itself".
+		]]
+		if state.clients > 0 then
+			Console.log(
+				"dim",
+				string.format("%d connected, but this bridge did not say which", state.clients),
+				"restart the MCP server"
+			)
+		else
+			Console.log("dim", "no MCP client is connected")
+		end
+		return
+	end
+	Console.log("info", string.format("%d MCP client%s on this bridge", #list, if #list == 1 then "" else "s"))
+	local now = os.time()
+	for _, client in list do
+		local name = if client.name ~= "" then client.name else "unknown"
+		local version = if client.version ~= "" then " " .. client.version else ""
+		-- Seconds since the epoch on both sides, so this is a real elapsed time
+		-- and not a guess: the bridge and Studio are the same machine.
+		local since = math.max(0, now - math.floor(client.connectedAt / 1000))
+		Console.log(
+			"dim",
+			string.format("   %s%s", name, version),
+			string.format("pid %d  %s", client.pid, Console.humanDuration(since))
+		)
+	end
+end
+
+--[[
+	A duration a person reads at a glance, not a precise one.
+
+	Rounded down deliberately: "2m" for anything in that minute is what someone
+	scanning a list wants, and a ticking "2m 47s" invites the reader to watch it
+	rather than to read past it.
+]]
+function Console.humanDuration(seconds: number): string
+	if seconds < 60 then
+		return string.format("%ds", seconds)
+	end
+	if seconds < 3600 then
+		return string.format("%dm", math.floor(seconds / 60))
+	end
+	return string.format("%dh %dm", math.floor(seconds / 3600), math.floor(seconds % 3600 / 60))
 end
 
 --[[
@@ -913,6 +1111,11 @@ function Console.setStatus(status: string, meta: string)
 	if status == "connected" and previous ~= "connected" then
 		Visuals.celebrate()
 	end
+
+	-- A roster learned on the old connection says nothing about this one.
+	if status ~= "connected" then
+		state.clientsKnown = false
+	end
 end
 
 --[[
@@ -1054,7 +1257,7 @@ function Console.mount(parent: Instance, handlers: Handlers)
 		connection facts live. `meta` gives up the width when it appears; see
 		`Console.setClients`.
 	]]
-	local clientsChip = Instance.new("TextLabel")
+	local clientsChip = Instance.new("TextButton")
 	clientsChip.Name = "Clients"
 	clientsChip.AnchorPoint = Vector2.new(1, 0.5)
 	clientsChip.Position = UDim2.new(1, -252, 0.5, 0)
@@ -1065,9 +1268,30 @@ function Console.mount(parent: Instance, handlers: Handlers)
 	clientsChip.TextSize = 11
 	themed(clientsChip, "TextColor3", "cyan")
 	clientsChip.Text = ""
+	clientsChip.AutoButtonColor = false
 	clientsChip.Visible = false
 	clientsChip.Parent = header
 	state.clientsChip = clientsChip
+
+	--[[
+		A count raises a question the count cannot answer.
+
+		"3 clients" is the exact thing users bring to us asking whether it is a
+		problem, and it never is answerable from a number: three agents they
+		started and three processes they forgot look identical. Hovering names
+		them in the caption -- cheap, no click, no panel to dismiss -- and
+		clicking writes the full roster into the log, where it can be scrolled
+		back to and acted on.
+	]]
+	clientsChip.MouseEnter:Connect(function()
+		Visuals.showNote(Console.clientSummary())
+	end)
+	clientsChip.MouseLeave:Connect(function()
+		Visuals.clearNote()
+	end)
+	clientsChip.Activated:Connect(function()
+		Console.reportClients()
+	end)
 
 	local chipCorner = Instance.new("UICorner")
 	chipCorner.CornerRadius = UDim.new(0, 3)

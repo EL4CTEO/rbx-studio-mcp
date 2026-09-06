@@ -152,10 +152,10 @@ function createBridgeHttpServer(bridge: Bridge): Server {
  */
 function announceClients(bridge: Bridge): void {
   let knownClients = bridge.clientCount();
-  bridge.watchClients((count) => {
+  bridge.watchClients((count, list) => {
     const left = count < knownClients;
     knownClients = count;
-    bridge.broadcast({ event: "clients", count });
+    bridge.broadcast({ event: "clients", count, list });
     if (left) bridge.broadcast({ event: "agent", state: "finished" });
   });
 }
@@ -232,8 +232,21 @@ async function handle(
       case "POST /call":
         return await handlePeerCall(bridge, req, res);
       case "GET /sessions": {
+        //[[ Reading the roster does not put you in it.
+        //
+        // This used to call `noteClient`, which meant any one-shot GET
+        // registered a client for the 90 seconds until the reaper swept it.
+        // `doctor` is exactly that: it fetches /sessions, sends no peer header,
+        // and so arrived as `anonymous-peer` -- a nameless entry with pid 0 that
+        // pushed the console to "2 MCP clients connected" and stayed there long
+        // enough to look permanent. Measured, and mistaken for a real client
+        // that had already been closed.
+        //
+        // Nothing is lost by dropping it. A peer registers on POST /hello at
+        // startup and again every 30s on its keepalive, and the owner's own
+        // client registers in-process, so every real client is still counted.
+        //]]
         const clientId = peerId(req);
-        bridge.noteClient(clientId);
         return send(res, 200, {
           list: bridge.list(),
           activeId: bridge.activeId(clientId),
@@ -247,8 +260,7 @@ async function handle(
       case "POST /hello":
         // Registers a peer, and refreshes one already known. Peers call this on
         // startup and on a keepalive, so it must be idempotent.
-        bridge.noteClient(peerId(req));
-        return send(res, 200, { ok: true, clients: bridge.clientCount() });
+        return await handlePeerHello(bridge, req, res);
       case "POST /goodbye":
         bridge.forgetClient(peerId(req));
         return send(res, 200, { ok: true, clients: bridge.clientCount() });
@@ -399,7 +411,13 @@ async function handleEvents(
   // Sent on connect, not only on change: a plugin that reconnects -- Studio
   // caps a stream at thirty minutes, so every long session does -- would
   // otherwise show a stale badge until the next agent came or went.
-  res.write(`data: ${JSON.stringify({ event: "clients", count: bridge.clientCount() })}\n\n`);
+  res.write(
+    `data: ${JSON.stringify({
+      event: "clients",
+      count: bridge.clientCount(),
+      list: bridge.clientList(),
+    })}\n\n`,
+  );
   const heartbeat = setInterval(() => {
     if (res.writableEnded) return;
     res.write(": ping\n\n");
@@ -431,7 +449,12 @@ async function handlePoll(
   // ignores repeats, and a session parked through a change would otherwise
   // never learn of it.
   const clients = bridge.clientCount();
-  send(res, 200, command ? { command, clients } : { idle: true, clients });
+  const clientList = bridge.clientList();
+  send(
+    res,
+    200,
+    command ? { command, clients, clientList } : { idle: true, clients, clientList },
+  );
 }
 
 async function handleResult(
@@ -515,6 +538,41 @@ function send(res: ServerResponse, status: number, body: unknown): void {
  * rejected: an older instance proxying to a newer one still works, it simply
  * shares a target with any other peer that also predates the header.
  */
+/**
+ * Registers a peer and records what it says about itself.
+ *
+ * The description is optional and unverified, which is the right trade here:
+ * it is a label in a console panel on loopback, and every process that can
+ * reach this route can already drive Studio. Length is capped anyway, because
+ * an unbounded string from any local process ends up in a Studio TextLabel and
+ * in a log line, and neither wants a megabyte.
+ */
+async function handlePeerHello(
+  bridge: Bridge,
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
+  let about: { name?: string; version?: string; pid?: number } = {};
+  try {
+    const body = await readBody(req);
+    if (body.length > 0) about = JSON.parse(body) as typeof about;
+  } catch {
+    // A peer that sends nothing useful is still a peer. Registering it matters;
+    // labelling it does not.
+  }
+  bridge.noteClient(peerId(req), {
+    name: label(about.name),
+    version: label(about.version),
+    pid: typeof about.pid === "number" ? about.pid : 0,
+  });
+  return send(res, 200, { ok: true, clients: bridge.clientCount() });
+}
+
+/** Trims a self-reported label to something a header chip can hold. */
+function label(value: unknown): string {
+  return typeof value === "string" ? value.slice(0, 64) : "";
+}
+
 function peerId(req: IncomingMessage): string {
   const sent = req.headers[PEER_HEADER];
   const value = Array.isArray(sent) ? sent[0] : sent;

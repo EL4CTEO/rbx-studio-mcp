@@ -18,6 +18,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { startBridgeServer } from "../dist/bridge/server.js";
 import { CLIENT_HEADER } from "../dist/lib/protocol.js";
+import { PEER_HEADER } from "../dist/bridge/remote.js";
 
 const PORT = 44799;
 
@@ -90,6 +91,46 @@ function handshake(port, studioId) {
     "posting Luau at an unknown server is never the right move",
   );
   await new Promise((resolve) => stranger.close(resolve));
+}
+
+//[[ Reading the roster does not join it.
+//
+// `GET /sessions` used to register whoever asked, so a one-shot read put a
+// nameless client on the roster for the 90 seconds until the reaper swept it.
+// `doctor` does exactly that read, which meant running a health check made the
+// console say "2 MCP clients connected" and name one of them "unknown" with
+// pid 0 -- indistinguishable from an agent the user had already closed, and
+// duly reported as a bug.
+//]]
+{
+  const owner = await startBridgeServer({ port: PORT });
+
+  // The count comes back on /hello, so the whole check runs over the wire --
+  // which is the only place the bug ever existed.
+  const hello = async () => {
+    const sent = await fetch(`http://127.0.0.1:${PORT}/hello`, {
+      method: "POST",
+      headers: {
+        [CLIENT_HEADER]: "test",
+        [PEER_HEADER]: "peer-counted",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ name: "peer", version: "1", pid: 1234 }),
+    });
+    return (await sent.json()).clients;
+  };
+
+  const before = await hello();
+
+  const read = await fetch(`http://127.0.0.1:${PORT}/sessions`, {
+    headers: { [CLIENT_HEADER]: "doctor" },
+  });
+  assert.equal(read.status, 200, "the roster is still readable");
+  await read.json();
+
+  assert.equal(await hello(), before, "reading /sessions does not add a client");
+
+  await owner.close();
 }
 
 process.stdout.write("failover: ok\n");

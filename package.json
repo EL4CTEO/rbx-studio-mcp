@@ -1,6 +1,6 @@
 {
   "name": "@el4cteo/rbx-studio-mcp",
-  "version": "0.4.2",
+  "version": "0.4.5",
   "description": "MCP server for Roblox Studio. 29 tools, push-based SSE bridge, editor-safe script edits, one-step undo.",
   "type": "module",
   "license": "MIT",
@@ -28,6 +28,7 @@
     "build:all": "npm run build && npm run build:plugin",
     "install:plugin": "node scripts/install-plugin.mjs",
     "check:plugin": "node scripts/check-plugin.mjs",
+    "doctor": "node dist/index.js doctor",
     "prepack": "npm run build"
   },
   "keywords": [

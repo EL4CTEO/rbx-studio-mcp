@@ -1,6 +1,6 @@
 # Roblox Studio MCP
 
-Let an AI agent drive Roblox Studio: read your place, edit scripts, run playtests, take screenshots. 29 tools. MIT.
+Let an AI agent drive Roblox Studio: read your place, edit scripts, run playtests, take screenshots. 30 tools. MIT.
 
 ![The Studio MCP panel: a live activity band, a call log with latencies, and the theme drawer open](docs/rbx-studio.png)
 
@@ -147,7 +147,7 @@ Each agent keeps its own target, so two agents can work on two open places. Suba
 | **Discover** | `tree` `inspect` `find` `api` |
 | **Scripts** | `script_read` `script_edit` `script_grep` `script_create` |
 | **Instances** | `create` `modify` `delete` `move` |
-| **World** | `geometry` `assets` `collision` `undo` |
+| **World** | `geometry` `generate` `assets` `collision` `undo` |
 | **Run & debug** | `playtest` `execute_luau` `character` `input` `console` `debug` `performance` |
 | **Look** | `screenshot` `viewport` `device` |
 

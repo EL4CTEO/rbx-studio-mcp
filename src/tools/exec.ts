@@ -12,6 +12,18 @@ interface ExecResponse {
   note?: string;
 }
 
+interface TextBoundsResponse {
+  width: number;
+  height: number;
+  size: number;
+  font: string;
+  wrappedAt?: number;
+  box?: string;
+  fits?: boolean;
+  overflowX?: number;
+  overflowY?: number;
+}
+
 interface RaycastResponse {
   hit: boolean;
   path?: string;
@@ -141,13 +153,20 @@ export function registerExecTools(context: ToolContext): void {
         "hits, with position, surface normal, distance and material. This answers " +
         "'what occupies this space', which the data model alone cannot: use it to " +
         "find the ground under a spawn point, or check whether a gap is clear " +
-        "before placing something.",
+        "before placing something.\n\n" +
+        "`textbounds` measures how big a piece of text actually renders. Point " +
+        "it at a TextLabel, TextButton or TextBox with `path` and it reads that " +
+        "label's own text, font, size and width and answers whether the text " +
+        "fits inside it. Give `text` and `size` directly and it just measures. " +
+        "There is no other honest way to answer 'will this label overflow' — " +
+        "character counts ignore the font, and font size is not a width.",
       inputSchema: {
         op: z
-          .enum(["select", "raycast", "focus", "camera"])
+          .enum(["select", "raycast", "focus", "camera", "textbounds"])
           .describe(
             "'focus' points the camera at something and frames it, 'camera' sets " +
-              "it explicitly, 'select' changes the Studio selection, 'raycast' " +
+              "it explicitly, 'select' changes the Studio selection, 'textbounds' "
+              + "measures rendered text, 'raycast' " +
               "queries the world.",
           ),
         path: z
@@ -204,6 +223,29 @@ export function registerExecTools(context: ToolContext): void {
           .array(z.string())
           .optional()
           .describe("raycast only: instances the ray passes through."),
+        text: z
+          .string()
+          .optional()
+          .describe("textbounds only: the string to measure. Defaults to the label's own text."),
+        textSize: z
+          .number()
+          .min(1)
+          .max(200)
+          .optional()
+          .describe("textbounds only: font size in pixels. Defaults to the label's."),
+        font: z
+          .string()
+          .optional()
+          .describe('textbounds only: an Enum.Font name, e.g. "GothamMedium". Defaults to the label\'s.'),
+        wrapWidth: z
+          .number()
+          .min(0)
+          .optional()
+          .describe("textbounds only: wrap at this width. 0 means do not wrap. Defaults to the label's width."),
+        richText: z
+          .boolean()
+          .optional()
+          .describe("textbounds only: treat the text as rich text. Defaults to the label's setting."),
         studioId: z.string().optional().describe("Target Studio; omit for the active one."),
       },
       destructive: false,
@@ -229,6 +271,33 @@ export function registerExecTools(context: ToolContext): void {
           { studioId: args.studioId },
         );
         return json(response);
+      }
+
+      if (args.op === "textbounds") {
+        const measured = await bridge.call<TextBoundsResponse>(
+          "viewport.textbounds",
+          {
+            path: args.path,
+            text: args.text,
+            size: args.textSize,
+            font: args.font,
+            width: args.wrapWidth,
+            richText: args.richText,
+          },
+          { studioId: args.studioId },
+        );
+        const lines = [`${measured.width} x ${measured.height} px  (${measured.font}, ${measured.size}px)`];
+        if (measured.wrappedAt) {
+          lines.push(`Wrapped at ${measured.wrappedAt}px.`);
+        }
+        if (measured.box) {
+          lines.push(
+            measured.fits
+              ? `Fits inside ${measured.box}.`
+              : `DOES NOT FIT in ${measured.box} — over by ${measured.overflowX}px wide, ${measured.overflowY}px tall.`,
+          );
+        }
+        return text(lines.join("\n"));
       }
 
       if (args.op === "raycast") {

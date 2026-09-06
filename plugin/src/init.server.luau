@@ -24,6 +24,7 @@ local Assets = require(script.handlers.Assets)
 local Capture = require(script.handlers.Capture)
 local Character = require(script.handlers.Character)
 local Geometry = require(script.handlers.Geometry)
+local Generate = require(script.handlers.Generate)
 local World = require(script.handlers.World)
 local Discover = require(script.handlers.Discover)
 local Exec = require(script.handlers.Exec)
@@ -37,20 +38,17 @@ local Api = require(script.handlers.Api)
 local Scripts = require(script.handlers.Scripts)
 local Session = require(script.handlers.Session)
 
---[[
-	How long a closed panel has to stay closed before that is written down.
-
-	Long enough to outlast Studio tearing a place down, short enough that a user
-	who closes the panel and quits immediately still has it remembered.
-]]
-local WIDGET_CLOSE_GRACE = 1
-
 local SETTING_PORT = "port"
 local SETTING_AUTOCONNECT = "autoConnect"
 local SETTING_FORCE_POLL = "forcePoll"
 local SETTING_THEME = "theme"
 local SETTING_WIDGET_OPEN = "widgetOpen"
 local SETTING_WIDGET_SIZE = "widgetSize"
+local SETTING_WIDGET_TRACE = "widgetTrace"
+
+-- Enough to cover a close and the launch after it, without growing forever.
+local TRACE_LIMIT = 24
+
 
 --[[
 	A fresh id per plugin load, which in practice means one per Studio window.
@@ -158,6 +156,7 @@ Capture.register()
 Assets.register()
 Character.register()
 Geometry.register()
+Generate.register()
 World.register()
 Exec.register()
 Viewport.register()
@@ -245,46 +244,94 @@ widget.Title = "rbx-studio"
 	"closed" the user never asked for -- reintroducing the bug through the back
 	door.
 ]]
+--[[
+	Whether the panel is being closed BY THE USER, as opposed to by Studio.
+
+	Set only for the moment the toolbar button toggles the widget, which is the
+	one close this plugin can attribute with certainty.
+]]
+local closingByHand = false
+
+--[[
+	A breadcrumb trail across sessions, so this stops being guesswork.
+
+	Two fixes for "the panel does not open any more" were shipped on inference
+	rather than observation, and this is what finally settled it. Closing a place
+	traces as:
+
+		load open=true / enabled=false / plugin.Unloading / widget.Destroying
+
+	all within the same second. So both teardown signals DO fire, and promptly --
+	the opposite of what the second fix was written to work around.
+
+	The reason that fix looked like it failed is duller and worth remembering: a
+	`false` written by an older build is sticky. Nothing writes `true` again
+	until the panel is opened by hand, so a stored close outlives the bug that
+	stored it and makes the next fix look broken too.
+
+	The trail is kept because this bug has now been misdiagnosed twice, and
+	twenty-four rows is a cheap price for never having to guess at it again. It
+	also shows the X could be honoured through Unloading -- deliberately not
+	done, since attribution cannot regress and inference has twice.
+]]
+local function trace(what: string)
+	local ok, existing = pcall(function()
+		return plugin:GetSetting(SETTING_WIDGET_TRACE)
+	end)
+	local rows: { string } = if ok and typeof(existing) == "table" then existing :: { string } else {}
+	table.insert(rows, string.format("%d %s", os.time(), what))
+	while #rows > TRACE_LIMIT do
+		table.remove(rows, 1)
+	end
+	pcall(function()
+		plugin:SetSetting(SETTING_WIDGET_TRACE, rows)
+	end)
+end
+
 if RunService:IsEdit() then
-	local unloading = false
+	trace(string.format("load open=%s", tostring(storedOpen)))
+
 	plugin.Unloading:Connect(function()
-		unloading = true
+		trace("plugin.Unloading")
+	end)
+	widget.Destroying:Connect(function()
+		trace("widget.Destroying")
 	end)
 
 	--[[
-		Only a close the user actually asked for is remembered.
+		Only a close this plugin performed is remembered.
 
-		Opening is recorded at once -- there is no teardown that opens a panel,
-		so a `true` is always the user. A `false` is not: Studio disables the
-		widget on its way out of a place, and `plugin.Unloading` is not
-		guaranteed to have fired by then, so the `unloading` flag alone lost the
-		race often enough that people found the panel closed on their next
-		launch with no memory of closing it. That is the "it does not open any
-		more" report, and it was self-inflicted and permanent -- once `false` is
-		stored, nothing writes `true` again until the panel is opened by hand.
+		Opening is recorded at once -- nothing but a user opens a panel, so a
+		`true` is always genuine. A `false` is the dangerous one, because Studio
+		disables the widget while tearing a place down and that is
+		indistinguishable, from in here, from the user clicking the X. Guessing
+		wrong writes a close nobody performed, and once `false` is stored the
+		panel never opens again until it is opened by hand -- which is exactly
+		the bug people report, twice now after a "fix".
 
-		So a close has to survive a moment before it counts. A teardown never
-		does: the DataModel is gone long before the delay is up, taking the
-		pending write with it. A user clicking the X does, and a user who
-		re-opens within the delay cancels it, which is also correct.
+		So the guessing is over. The toolbar button is the one close this code
+		performs itself, and it is the only one written down. Closing the panel
+		with the X is not persisted, so it will be back on the next launch.
+		That is a deliberate trade: a panel that reappears when you did not want
+		it is a small annoyance, and a panel that never appears again reads as a
+		broken plugin.
+
+		The trace above is what would let the X be honoured too -- if it shows a
+		teardown signal that reliably beats the disable, this can use it.
 	]]
-	local closeGeneration = 0
 	widget:GetPropertyChangedSignal("Enabled"):Connect(function()
-		if unloading then
-			return
-		end
-		closeGeneration += 1
 		if widget.Enabled then
+			trace("enabled=true -> save true")
 			plugin:SetSetting(SETTING_WIDGET_OPEN, true)
 			return
 		end
-		local generation = closeGeneration
-		task.delay(WIDGET_CLOSE_GRACE, function()
-			if unloading or generation ~= closeGeneration or widget.Enabled then
-				return
-			end
+		if closingByHand then
+			trace("enabled=false byHand -> save false")
 			plugin:SetSetting(SETTING_WIDGET_OPEN, false)
-		end)
+			return
+		end
+		-- Studio's doing, or the X. Either way, not written down.
+		trace("enabled=false ignored")
 	end)
 
 	-- Only a real, sane size, and only while the panel is up: a hidden or
@@ -559,7 +606,7 @@ end
 ]]
 local function onEvent(event: { [string]: any })
 	if event.event == "clients" and typeof(event.count) == "number" then
-		Console.setClients(event.count)
+		Console.setClients(event.count, if typeof(event.list) == "table" then event.list else nil)
 	elseif event.event == "agent" and event.state == "finished" then
 		Console.agentFinished()
 	elseif event.event == "peer" and typeof(event.op) == "string" then
@@ -611,7 +658,11 @@ function connect()
 end
 
 button.Click:Connect(function()
+	-- Flagged around the toggle so the Enabled handler knows this close is the
+	-- user's, and is safe to remember. See closingByHand.
+	closingByHand = widget.Enabled
 	widget.Enabled = not widget.Enabled
+	closingByHand = false
 end)
 
 plugin.Unloading:Connect(function()

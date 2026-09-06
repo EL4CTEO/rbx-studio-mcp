@@ -16,7 +16,17 @@
 ]]
 
 local ChangeHistoryService = game:GetService("ChangeHistoryService")
-local PhysicsService = game:GetService("PhysicsService")
+
+--[[
+	Collision groups are read and written through the Workspace, not PhysicsService.
+
+	Roblox moved collision group management onto WorldRoot in September 2026 and
+	deprecated the PhysicsService methods in the same announcement. Both still
+	work today -- checked against Studio 0.737 -- so this is a migration ahead of
+	a removal rather than a fix. The move also means a WorldModel gets its own
+	groups instead of sharing the Workspace's, which is the point of it.
+]]
+local CollisionGroups = workspace
 
 local Dispatch = require(script.Parent.Parent.Dispatch)
 local Paths = require(script.Parent.Parent.Paths)
@@ -95,7 +105,7 @@ function World.collision(params: { [string]: any }): { [string]: any }
 	if action == "list" then
 		local groups: { { [string]: any } } = {}
 		local ok, registered = pcall(function()
-			return PhysicsService:GetRegisteredCollisionGroups()
+			return CollisionGroups:GetRegisteredCollisionGroups()
 		end)
 		if ok and typeof(registered) == "table" then
 			for _, group in registered :: { any } do
@@ -112,7 +122,7 @@ function World.collision(params: { [string]: any }): { [string]: any }
 
 	if action == "create" then
 		local ok, err = pcall(function()
-			PhysicsService:RegisterCollisionGroup(name)
+			CollisionGroups:RegisterCollisionGroup(name)
 		end)
 		if not ok then
 			-- Already existing is the common case and is not a failure worth
@@ -158,7 +168,7 @@ function World.collision(params: { [string]: any }): { [string]: any }
 			has existed the whole time; it was just never wired up.
 		]]
 		local ok, err = pcall(function()
-			PhysicsService:UnregisterCollisionGroup(name)
+			CollisionGroups:UnregisterCollisionGroup(name)
 		end)
 		if not ok then
 			Dispatch.fail("COLLISION_FAILED", string.format("Could not remove %q: %s", name, tostring(err)))
@@ -173,7 +183,7 @@ function World.collision(params: { [string]: any }): { [string]: any }
 		end
 		local collidable = params.collidable ~= false
 		local ok, err = pcall(function()
-			PhysicsService:CollisionGroupSetCollidable(name, other, collidable)
+			CollisionGroups:CollisionGroupSetCollidable(name, other, collidable)
 		end)
 		if not ok then
 			Dispatch.fail("COLLISION_FAILED", string.format("Could not set collidability: %s", tostring(err)))

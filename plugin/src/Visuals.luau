@@ -232,6 +232,15 @@ type Runtime = {
 	highlight: Frame?,
 	readout: TextLabel?,
 	caption: TextLabel?,
+	--[[
+		What the caption said before a note took it over.
+
+		Nil means no note is showing, which is why this is the flag as well as
+		the storage: a second `showNote` while one is up must not overwrite the
+		text being held, or clearing would restore a note instead of the
+		caption.
+	]]
+	noted: string?,
 	bars: { Bar },
 	connection: RBXScriptConnection?,
 
@@ -289,6 +298,7 @@ local runtime: Runtime = {
 	highlight = nil,
 	readout = nil,
 	caption = nil,
+	noted = nil,
 	bars = {},
 	connection = nil,
 	spin = Vector3.new(0.18, 0.27, 0.11),
@@ -1012,9 +1022,44 @@ end
 ]]
 function Visuals.setCaption(title: string)
 	runtime.lastTitle = title
+	-- A note is holding the caption's real text for later. Update what will be
+	-- restored, not what is on screen, or the note is wiped by the next command
+	-- and clearing it would put back a line that is already out of date.
+	if runtime.noted ~= nil then
+		runtime.noted = title
+		return
+	end
 	if runtime.caption then
 		runtime.caption.Text = title
 	end
+end
+
+--[[
+	Borrows the caption to answer something the user is pointing at.
+
+	The caption is the band's one line of prose, so a note goes there rather
+	than into a floating panel: there is exactly one place on this widget that
+	explains what you are looking at, and two would be one too many. Whatever
+	the caption was saying is put back by `clearNote`, so a note never costs the
+	user the line they were reading.
+]]
+function Visuals.showNote(text: string)
+	if runtime.caption == nil or text == "" then
+		return
+	end
+	if runtime.noted == nil then
+		runtime.noted = runtime.caption.Text
+	end
+	runtime.caption.Text = text
+end
+
+function Visuals.clearNote()
+	local held = runtime.noted
+	if held == nil or runtime.caption == nil then
+		return
+	end
+	runtime.noted = nil
+	runtime.caption.Text = held
 end
 
 --[[
@@ -1028,9 +1073,15 @@ function Visuals.setIdle()
 	if runtime.caption == nil then
 		return
 	end
-	runtime.caption.Text = if runtime.lastTitle ~= nil
+	local text = if runtime.lastTitle ~= nil
 		then "last: " .. runtime.lastTitle
 		else "waiting for a command"
+	-- Same rule as setCaption: a note owns the line until it is cleared.
+	if runtime.noted ~= nil then
+		runtime.noted = text
+		return
+	end
+	runtime.caption.Text = text
 end
 
 --[[

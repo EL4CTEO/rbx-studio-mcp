@@ -52,7 +52,15 @@ Cost: one `terrain` tool with an `op` discriminator, following the shape
 `CustomLuaState` and returns two large multidimensional arrays — a raw voxel
 read must be summarised before it crosses the wire, never returned whole.
 
-### 2. GenerationService — 4D / mesh generation
+### 2. GenerationService — 4D / mesh generation — **BUILT**
+
+Shipped as the `generate` tool: `GenerateModelAsync` and `SegmentMeshAsync`,
+240s deadline, moderation and rate-limit failures translated to hints.
+`GenerateMeshAsync` was deliberately left out, being on the way to removal.
+Still unused and still worth a look: `ExportMeshToGlbAsync` and
+`LoadModelFromGlbAsync` are `RobloxScriptSecurity`, so they are out of reach.
+
+The notes the decision was made on:
 
 `GenerateModelAsync`, `GenerateMeshAsync`, `LoadGeneratedMeshAsync`,
 `SegmentMeshAsync`, `ExportMeshToGlbAsync`, `LoadModelFromGlbAsync`. All
@@ -68,21 +76,26 @@ Clears bar 1. Real caveats before building it: generation is slow (well past the
 does at 120s), it is metered per creator, and it can fail for content reasons
 that need to reach the agent as a hint rather than a stack trace.
 
-### 3. GeometryService — the parts not used yet
+### 3. GeometryService — the parts not used yet — **PARTLY BUILT**
 
 The `geometry` tool covers `UnionAsync`, `SubtractAsync`, `IntersectAsync` and
 `FragmentAsync`. Untouched and security `None`:
 
-- **`SweepPartAsync`** — the volume a part sweeps through a motion. Genuinely
-  hard to do any other way, and the natural answer to "does this door clip the
-  wall when it opens".
+- **`SweepPartAsync`** — BUILT, as `geometry op="sweep"`. The volume a part
+  sweeps through a motion: genuinely hard to do any other way, and the natural
+  answer to "does this door clip the wall when it opens". The overlap check was
+  added on top, since building the volume was never the actual question.
 - **`CreateSolidPrimitive`** — primitives as `PartOperation`s.
 - **`GenerateFragmentSites`** — fracture points without committing the fracture.
 
-Cheapest of the three to add: new ops on the tool that already exists, so the
-schema cost is a few lines rather than a tool.
+The remaining two are new ops on a tool that already exists, so the schema cost
+is a few lines rather than a tool.
 
-### 4. AssetService — publishing
+### 4. AssetService — publishing — **PARTLY BUILT**
+
+`CreateDataModelContentAsync` shipped as `assets op="bake"`. It stays inside the
+place and uploads nothing, so it does not raise the question the rest of this
+section does. `CreateAssetAsync` is still deliberately unbuilt:
 
 `CreateAssetAsync` / `CreateAssetVersionAsync` (security `None`) let a plugin
 upload an asset. `CreateMeshPartAsync` and `CreateEditableMeshAsync` build
@@ -93,7 +106,10 @@ machine — it publishes to their Roblox account. That deserves a deliberate
 decision rather than a default, and probably an explicit opt-in, which is a
 product question before it is an implementation one.
 
-### 5. TextService — `GetTextBoundsAsync`
+### 5. TextService — `GetTextBoundsAsync` — **BUILT**
+
+Shipped as `viewport op="textbounds"`, which also reads a label and answers
+whether the text fits inside it.
 
 Security `None`, `Yields`. Measures rendered text. Small and dull, and the only
 honest answer to "will this label fit"; every alternative is a guess. Worth it

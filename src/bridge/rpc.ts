@@ -9,6 +9,7 @@ import {
   ToolError,
 } from "../lib/errors.js";
 import type {
+  ClientView,
   Command,
   CommandResult,
   StudioIdentity,
@@ -33,6 +34,22 @@ const STALE_AFTER_MS = 90_000;
  * remember, and there is no reason for them to differ.
  */
 const CLIENT_STALE_AFTER_MS = 90_000;
+
+/**
+ * One MCP client, as far as this bridge can tell.
+ *
+ * `connectedAt` is set once and never refreshed, unlike `lastSeenAt`: a
+ * keepalive proves a client is still here, it does not make it new. The console
+ * shows how long each has been connected, and a number that resets every thirty
+ * seconds would answer a different question than the one being asked.
+ */
+interface ClientRecord {
+  lastSeenAt: number;
+  connectedAt: number;
+  name: string;
+  version: string;
+  pid: number;
+}
 
 interface Pending {
   resolve: (value: unknown) => void;
@@ -109,10 +126,10 @@ export class Bridge {
    * that leak and makes the count reportable, which is the thing a user sharing
    * one Studio between two agents actually wants to see.
    */
-  private readonly clients = new Map<string, { lastSeenAt: number }>();
+  private readonly clients = new Map<string, ClientRecord>();
 
-  /** Called whenever the client count changes, so the plugin can be told. */
-  private onClientsChanged: ((count: number) => void) | null = null;
+  /** Called whenever the client roster changes, so the plugin can be told. */
+  private onClientsChanged: ((count: number, list: ClientView[]) => void) | null = null;
 
   /**
    * Which Studio each connected client chose, keyed by client.
@@ -204,15 +221,46 @@ export class Bridge {
   // --- clients -----------------------------------------------------------
 
   /** Records a client as present, or refreshes one already known. */
-  noteClient(clientId: string): void {
+  noteClient(clientId: string, about?: Partial<ClientView>): void {
     if (clientId.length === 0) return;
-    const known = this.clients.has(clientId);
-    this.clients.set(clientId, { lastSeenAt: Date.now() });
-    if (!known) this.announceClients();
+    const known = this.clients.get(clientId);
+    const named = about?.name !== undefined && about.name.length > 0;
+    this.clients.set(clientId, {
+      lastSeenAt: Date.now(),
+      // Set once. See ClientRecord: a keepalive is not a new connection.
+      connectedAt: known?.connectedAt ?? Date.now(),
+      name: about?.name ?? known?.name ?? "unknown",
+      version: about?.version ?? known?.version ?? "",
+      pid: about?.pid ?? known?.pid ?? 0,
+    });
+    // Announced when a client arrives, and when one finally says who it is: the
+    // MCP handshake lands after the process has already registered, so the
+    // first roster is nameless and the second is the useful one.
+    if (known === undefined || (named && known.name !== about?.name)) {
+      this.announceClients();
+    }
   }
 
   clientCount(): number {
     return this.clients.size;
+  }
+
+  /**
+   * Every client currently sharing this bridge, oldest first.
+   *
+   * Ordered by arrival rather than by name so the list reads as a history: the
+   * one that has been here longest is the one the user most likely started on
+   * purpose, and a newcomer appears at the end instead of shuffling the rest.
+   */
+  clientList(): ClientView[] {
+    return [...this.clients.values()]
+      .map((client) => ({
+        name: client.name,
+        version: client.version,
+        pid: client.pid,
+        connectedAt: client.connectedAt,
+      }))
+      .sort((left, right) => left.connectedAt - right.connectedAt);
   }
 
   /**
@@ -222,12 +270,12 @@ export class Bridge {
    * owns sessions and requests, and what a *change* should cause -- an SSE
    * frame, a log line, nothing at all -- belongs to whoever wired it up.
    */
-  watchClients(listener: (count: number) => void): void {
+  watchClients(listener: (count: number, list: ClientView[]) => void): void {
     this.onClientsChanged = listener;
   }
 
   private announceClients(): void {
-    this.onClientsChanged?.(this.clients.size);
+    this.onClientsChanged?.(this.clients.size, this.clientList());
   }
 
   /**

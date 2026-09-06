@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { DEFAULT_PORT, startBridgeServer } from "./bridge/server.js";
+import { runDoctor } from "./doctor.js";
 import type { ToolContext } from "./lib/tool.js";
 import { registerDiscoverTools } from "./tools/discover.js";
 import { registerInstanceTools } from "./tools/instances.js";
@@ -14,6 +15,7 @@ import { registerPerfTools } from "./tools/perf.js";
 import { registerPlaytestTools } from "./tools/playtest.js";
 import { registerScreenshotTools } from "./tools/screenshot.js";
 import { registerWorldTools } from "./tools/world.js";
+import { registerGenerateTools } from "./tools/generate.js";
 import { registerCharacterTools } from "./tools/character.js";
 import { registerScriptTools } from "./tools/scripts.js";
 import { registerSessionTools } from "./tools/session.js";
@@ -70,6 +72,14 @@ async function main(): Promise<void> {
     return;
   }
 
+  // Before the bridge starts, because half of what it reports is about whether
+  // a bridge is already running -- and binding the port ourselves would make
+  // that question answer itself.
+  if (process.argv.includes("doctor") || process.argv.includes("--doctor")) {
+    await runDoctor(parsePort(process.argv));
+    return;
+  }
+
   const bridgeServer = await startBridgeServer({ port: parsePort(process.argv) });
 
   const server = new McpServer(
@@ -108,6 +118,7 @@ async function main(): Promise<void> {
   registerDeviceTools(context);
   registerApiTools(context);
   registerWorldTools(context);
+  registerGenerateTools(context);
   registerCharacterTools(context);
   registerResources(context);
 
@@ -196,6 +207,26 @@ async function main(): Promise<void> {
     }, ORPHAN_CHECK_MS);
     orphanWatch.unref();
   }
+
+  /*
+   * Names this process once the MCP client has introduced itself.
+   *
+   * The bridge is listening before a client has said a word -- it has to be,
+   * because the plugin may already be connected -- so every process registers
+   * itself nameless and fills the name in here. `oninitialized` is the first
+   * moment `getClientVersion` has an answer.
+   *
+   * Best effort in the strictest sense: this decides a label in a console
+   * panel. A client that sends no implementation info stays "unknown", which is
+   * the truth, and nothing about the connection depends on it.
+   */
+  server.server.oninitialized = (): void => {
+    const client = server.server.getClientVersion();
+    void bridgeServer.bridge.describe({
+      name: client?.name ?? "unknown",
+      version: client?.version ?? "",
+    });
+  };
 
   // stdout belongs to the MCP transport from here on; nothing else may write to it.
   await server.connect(new StdioServerTransport());

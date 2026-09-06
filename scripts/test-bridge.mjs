@@ -209,3 +209,59 @@ function twoStudios() {
   owner.goodbye();
   assert.equal(bridge.clientCount(), 0, "goodbye still drops it");
 }
+
+
+/**
+ * The console asks "who is connected", not just "how many".
+ *
+ * A bare count is the thing users bring to us asking whether something is
+ * wrong -- three agents they started and three processes they forgot read
+ * identically. The roster is what answers it, so the ordering, the naming and
+ * the "connected at" all have to survive a keepalive.
+ */
+{
+  const bridge = new Bridge();
+  const alice = new LocalBridge(bridge);
+  const bob = new LocalBridge(bridge);
+
+  // Nameless until the MCP handshake lands, and honest about it.
+  assert.deepEqual(
+    bridge.clientList().map((client) => client.name),
+    ["unknown", "unknown"],
+    "a client that has not introduced itself is not guessed at",
+  );
+
+  alice.describe({ name: "claude-code", version: "2.0" });
+  bob.describe({ name: "codex", version: "1.0" });
+
+  const named = bridge.clientList();
+  assert.deepEqual(
+    named.map((client) => client.name),
+    ["claude-code", "codex"],
+    "the roster is ordered by arrival, not by name",
+  );
+  assert.equal(named[0].version, "2.0");
+  assert.ok(named[0].pid > 0, "a client reports which process it is");
+
+  // A keepalive proves a client is still here. It does not make it new.
+  const arrived = bridge.clientList()[0].connectedAt;
+  const real = Date.now;
+  Date.now = () => real() + 60_000;
+  try {
+    await alice.sessions();
+  } finally {
+    Date.now = real;
+  }
+  assert.equal(bridge.clientList()[0].connectedAt, arrived, "working does not reset the clock");
+  assert.equal(bridge.clientList()[0].name, "claude-code", "working does not forget the name");
+
+  // Learning a name is news, so the plugin is told; a repeat is not.
+  let announced = 0;
+  bridge.watchClients(() => {
+    announced += 1;
+  });
+  alice.describe({ name: "claude-code", version: "2.0" });
+  assert.equal(announced, 0, "re-stating the same name announces nothing");
+  alice.describe({ name: "cursor", version: "1.0" });
+  assert.equal(announced, 1, "a client that changes its name is announced");
+}

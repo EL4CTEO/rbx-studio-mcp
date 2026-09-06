@@ -41,8 +41,23 @@ export interface StudioBridge {
 
   notePlaceName(studioId: string, placeName: string, context?: string): Promise<void>;
 
+  /**
+   * Says which MCP client is driving this process.
+   *
+   * Called after the MCP handshake rather than at startup, because that is when
+   * the answer exists: the bridge is up before a client has said a word, so
+   * every process registers itself nameless and names itself a moment later.
+   */
+  describe(about: ClientDescription): void | Promise<void>;
+
   /** True when this process owns the port; false when it proxies to one that does. */
   readonly isOwner: boolean;
+}
+
+/** What a process knows about the agent driving it. */
+export interface ClientDescription {
+  name: string;
+  version: string;
 }
 
 export interface SessionsView {
@@ -119,5 +134,9 @@ export class LocalBridge implements StudioBridge {
 
   async notePlaceName(studioId: string, placeName: string, context?: string): Promise<void> {
     this.inner.notePlaceName(studioId, placeName, context);
+  }
+
+  describe(about: ClientDescription): void {
+    this.inner.noteClient(this.clientId, { ...about, pid: process.pid });
   }
 }

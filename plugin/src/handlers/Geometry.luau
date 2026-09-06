@@ -53,6 +53,17 @@ local function carryAppearance(source: BasePart, target: BasePart)
 	end
 end
 
+local function parseVector(text: any): Vector3?
+	if typeof(text) ~= "string" or text == "" then
+		return nil
+	end
+	local x, y, z = string.match(text, "^%s*(-?[%d%.]+)%s*,%s*(-?[%d%.]+)%s*,%s*(-?[%d%.]+)%s*$")
+	if x == nil then
+		return nil
+	end
+	return Vector3.new(tonumber(x) :: number, tonumber(y) :: number, tonumber(z) :: number)
+end
+
 local function resolveParts(paths: any, what: string): { BasePart }
 	if typeof(paths) ~= "table" or #(paths :: { any }) == 0 then
 		Dispatch.fail("BAD_PARAMS", string.format("geometry needs %s.", what))
@@ -270,10 +281,169 @@ function Geometry.fragment(params: { [string]: any }): { [string]: any }
 	return { created = created, pieces = #produced, undoable = undoable }
 end
 
+--[[
+	Builds the motion to sweep along, as a list of CFrames.
+
+	Three ways to say it, in the order they are checked. `positions` is the
+	escape hatch; `to` is a slide; `spin` is a hinge, which is the case worth
+	having -- a door, a hatch, a drawbridge. All three are sampled rather than
+	solved, so `steps` trades accuracy for time: the volume is the hull of the
+	samples, and too few of them on a wide arc cuts the corners off the swing.
+]]
+local function motionOf(subject: BasePart, params: { [string]: any }): { CFrame }
+	local start = subject.CFrame
+	local steps = math.clamp(tonumber(params.steps) or 12, 2, 64)
+
+	local positions = params.positions
+	if typeof(positions) == "table" and #(positions :: { any }) > 0 then
+		local frames: { CFrame } = {}
+		for _, entry in positions :: { any } do
+			local at = parseVector(entry)
+			if at == nil then
+				Dispatch.fail("BAD_PARAMS", string.format("%q is not an \"x, y, z\" position.", tostring(entry)))
+			end
+			table.insert(frames, start.Rotation + (at :: Vector3))
+		end
+		return frames
+	end
+
+	local spin = tonumber(params.spin)
+	if spin ~= nil and spin ~= 0 then
+		local axis = parseVector(params.axis) or Vector3.yAxis
+		if axis.Magnitude == 0 then
+			Dispatch.fail("BAD_PARAMS", "`axis` cannot be zero.")
+		end
+		-- The pivot is the hinge. Defaulting it to the part's own centre makes
+		-- the part spin in place, which is right for a wheel and wrong for a
+		-- door -- so a door has to name its hinge edge.
+		local pivot = parseVector(params.pivot) or subject.Position
+		local frames: { CFrame } = {}
+		for index = 0, steps - 1 do
+			local angle = math.rad(spin) * (index / (steps - 1))
+			local turn = CFrame.fromAxisAngle(axis.Unit, angle)
+			table.insert(frames, CFrame.new(pivot) * turn * CFrame.new(-pivot) * start)
+		end
+		return frames
+	end
+
+	local destination = parseVector(params.to)
+	if destination == nil then
+		Dispatch.fail(
+			"BAD_PARAMS",
+			"sweep needs a motion.",
+			"Give `to` for a slide, `spin` (with `pivot`) for a hinge, or `positions` for a path."
+		)
+	end
+
+	local frames: { CFrame } = {}
+	for index = 0, steps - 1 do
+		local alpha = index / (steps - 1)
+		table.insert(frames, start:Lerp(start.Rotation + (destination :: Vector3), alpha))
+	end
+	return frames
+end
+
+--[[
+	The volume a part passes through as it moves.
+
+	The question this answers -- "does the door hit the wall when it opens" --
+	has no good answer from the data model. Positions and sizes describe where
+	things are, not where something will be on its way somewhere else, and the
+	usual workaround is to move the part in steps and test at each one, which
+	misses anything thin enough to sit between two samples.
+
+	`checkAgainst` is why this is worth calling rather than just building the
+	volume: the swept solid is put in the world for a moment and asked what it
+	overlaps. Left on (`keep`) it stays as a part; turned off it is destroyed
+	once measured, so a clearance check leaves nothing behind.
+]]
+function Geometry.sweep(params: { [string]: any }): { [string]: any }
+	local subject = resolveParts({ params.path }, "a `path`")[1]
+	local frames = motionOf(subject, params)
+
+	local ok, volume = pcall(function()
+		return (GeometryService :: any):SweepPartAsync(subject, frames, {
+			CollisionFidelity = Enum.CollisionFidelity[tostring(params.collisionFidelity or "Default")]
+				or Enum.CollisionFidelity.Default,
+		})
+	end)
+	if not ok or typeof(volume) ~= "Instance" then
+		Dispatch.fail(
+			"GEOMETRY_FAILED",
+			string.format("SweepPartAsync refused: %s", tostring(volume)),
+			"The part must be a solid Studio can sweep. Terrain and some mesh shapes are refused."
+		)
+	end
+
+	local swept = volume :: BasePart
+	local parent = if typeof(params.parent) == "string" and params.parent ~= ""
+		then Paths.resolve(params.parent)
+		else subject.Parent
+	local keep = params.keep ~= false
+
+	local hits: { string } = {}
+	local path = ""
+
+	local _, undoable = Undo.record("MCPSweep", "MCP sweep", function()
+		carryAppearance(subject, swept)
+		swept.Name = if typeof(params.name) == "string" and params.name ~= ""
+			then params.name
+			else subject.Name .. "_Sweep"
+		swept.Anchored = true
+		swept.CanCollide = false
+		swept.Transparency = tonumber(params.transparency) or 0.5
+		swept.Parent = parent
+
+		--[[
+			Measured while the volume is in the world, because that is the only
+			state the spatial query can read. The subject is excluded: a part
+			always overlaps its own swept volume, and reporting that would bury
+			the answer under the one hit nobody asked about.
+		]]
+		local against = params.checkAgainst
+		if against ~= nil then
+			local overlap = OverlapParams.new()
+			overlap.MaxParts = 100
+			local named = if typeof(against) == "table" then against :: { any } else {}
+			if #named > 0 then
+				-- A named list is the question "does it hit THESE", so anything
+				-- else in the way is not an answer.
+				local only, _missing = Paths.resolveMany(named :: { string })
+				overlap.FilterType = Enum.RaycastFilterType.Include
+				overlap.FilterDescendantsInstances = only
+			else
+				overlap.FilterType = Enum.RaycastFilterType.Exclude
+				overlap.FilterDescendantsInstances = { subject, swept }
+			end
+			for _, found in workspace:GetPartsInPart(swept, overlap) do
+				if found ~= subject and found ~= swept then
+					table.insert(hits, Paths.of(found))
+				end
+			end
+		end
+
+		if keep then
+			path = Paths.of(swept)
+		else
+			swept:Destroy()
+		end
+	end)
+
+	return {
+		created = if keep then { path } else {},
+		hits = hits,
+		checked = params.checkAgainst ~= nil,
+		frames = #frames,
+		kept = keep,
+		undoable = undoable,
+	}
+end
+
 function Geometry.register()
 	Dispatch.registerAll("geometry", {
 		combine = Geometry.combine,
 		fragment = Geometry.fragment,
+		sweep = Geometry.sweep,
 	})
 end
 

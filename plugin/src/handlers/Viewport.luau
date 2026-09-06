@@ -15,6 +15,7 @@
 
 local RunService = game:GetService("RunService")
 local Selection = game:GetService("Selection")
+local TextService = game:GetService("TextService")
 local Workspace = game:GetService("Workspace")
 
 local Dispatch = require(script.Parent.Parent.Dispatch)
@@ -290,8 +291,121 @@ function Viewport.camera(params: { [string]: any }): { [string]: any }
 	}
 end
 
+--[[
+	How big a piece of text actually renders.
+
+	Every alternative to asking the engine is a guess. Character counts do not
+	account for the font, font size does not give you a width, and "it looked
+	fine on my screen" is not a measurement -- so a label that overflows is
+	normally found by a human looking at it, which is exactly the loop an agent
+	cannot close on its own.
+
+	Pointed at an existing label (`path`) it reads that label's own text, font,
+	size and width and answers whether the text fits inside it. Given the values
+	directly it just measures. The first form is the useful one: it turns "will
+	this fit" into a yes or no instead of two numbers the caller has to compare
+	against the right box.
+]]
+function Viewport.textbounds(params: { [string]: any }): { [string]: any }
+	local text = if typeof(params.text) == "string" then params.text else ""
+	local size = tonumber(params.size) or 14
+	local width = tonumber(params.width) or 0
+	local richText = params.richText == true
+	local fontFace: Font? = nil
+
+	local subject: GuiObject? = nil
+	if typeof(params.path) == "string" and params.path ~= "" then
+		local instance = Paths.resolve(params.path)
+		if not instance:IsA("TextLabel") and not instance:IsA("TextButton") and not instance:IsA("TextBox") then
+			Dispatch.fail(
+				"NOT_TEXT",
+				string.format("%s is a %s, which has no text.", params.path, instance.ClassName),
+				"Point at a TextLabel, TextButton or TextBox."
+			)
+		end
+		local label = instance :: any
+		subject = instance :: GuiObject
+		if text == "" then
+			text = label.Text
+		end
+		if params.size == nil then
+			--[[
+				`TextSize` is meaningless while `TextScaled` is on -- the engine
+				picks a size per frame -- so the rendered height is read off
+				`AbsoluteSize` instead of a property that is not being used.
+			]]
+			size = if label.TextScaled then (instance :: GuiObject).AbsoluteSize.Y else label.TextSize
+		end
+		if params.richText == nil then
+			richText = label.RichText
+		end
+		if params.width == nil then
+			width = (instance :: GuiObject).AbsoluteSize.X
+		end
+		fontFace = label.FontFace
+	end
+
+	if fontFace == nil then
+		local name = tostring(params.font or "SourceSans")
+		local chosen = (Enum.Font :: any)[name]
+		if chosen == nil then
+			Dispatch.fail(
+				"BAD_PARAMS",
+				string.format("unknown font %q", name),
+				"Use an Enum.Font name, e.g. \"Gotham\", \"GothamMedium\", \"SourceSans\"."
+			)
+		end
+		fontFace = Font.fromEnum(chosen)
+	end
+
+	if text == "" then
+		Dispatch.fail("BAD_PARAMS", "textbounds needs `text`, or a `path` to something holding it.")
+	end
+
+	local request = Instance.new("GetTextBoundsParams")
+	request.Text = text
+	request.Size = size
+	request.Font = fontFace :: Font
+	request.RichText = richText
+	-- Zero means "do not wrap", which is what the engine wants for an unbounded
+	-- measurement; a negative width would be read as a very narrow column.
+	request.Width = math.max(width, 0)
+
+	local ok, bounds = pcall(function()
+		return TextService:GetTextBoundsAsync(request)
+	end)
+	if not ok then
+		Dispatch.fail("MEASURE_FAILED", string.format("GetTextBoundsAsync refused: %s", tostring(bounds)))
+	end
+
+	local measured = bounds :: Vector2
+	local report: { [string]: any } = {
+		width = math.ceil(measured.X),
+		height = math.ceil(measured.Y),
+		text = if #text > 120 then string.sub(text, 1, 117) .. "..." else text,
+		size = size,
+		-- `Family` is a content URI -- "rbxasset://fonts/families/GothamSSm.json"
+		-- -- which is the path to the font and not the name of it. The stem is
+		-- what a caller recognises and what they would type back.
+		font = string.match(tostring((fontFace :: Font).Family), "([^/]+)%.json$")
+			or tostring((fontFace :: Font).Family),
+		wrappedAt = if width > 0 then math.floor(width) else nil,
+	}
+
+	if subject then
+		local box = (subject :: GuiObject).AbsoluteSize
+		report.box = string.format("%d x %d", math.floor(box.X), math.floor(box.Y))
+		report.fits = measured.X <= box.X and measured.Y <= box.Y
+		report.overflowX = math.max(math.ceil(measured.X - box.X), 0)
+		report.overflowY = math.max(math.ceil(measured.Y - box.Y), 0)
+	end
+
+	return report
+end
+
 function Viewport.register()
 	Dispatch.registerAll("viewport", {
+		textbounds = Viewport.textbounds,
 		raycast = Viewport.raycast,
 		select = Viewport.select,
 		focus = Viewport.focus,

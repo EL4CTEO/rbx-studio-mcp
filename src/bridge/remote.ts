@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { CLIENT_HEADER, PROTOCOL_VERSION } from "../lib/protocol.js";
 import { ToolError } from "../lib/errors.js";
-import type { SessionsView, StudioBridge } from "./api.js";
+import type { ClientDescription, SessionsView, StudioBridge } from "./api.js";
 
 /** How the port owner identifies itself, so we never proxy to a stranger. */
 export interface OwnerIdentity {
@@ -64,6 +64,17 @@ export class RemoteBridge implements StudioBridge {
   private readonly clientId = randomUUID();
   private keepalive: NodeJS.Timeout | null = null;
 
+  /*
+   * Sent on every hello, not once on arrival.
+   *
+   * The owner can be replaced under us -- see FailoverBridge -- and the process
+   * that takes over starts with an empty client list. Repeating the description
+   * with each keepalive means a peer re-introduces itself to a new owner within
+   * one interval, where announcing once would leave it listed as "unknown" for
+   * the rest of the session.
+   */
+  private about: ClientDescription | null = null;
+
   constructor(
     private readonly port: number,
     readonly owner: OwnerIdentity,
@@ -79,10 +90,19 @@ export class RemoteBridge implements StudioBridge {
   /** Best effort: failing to register costs a badge, never a call. */
   private async hello(): Promise<void> {
     try {
-      await this.post("/hello", {}, 5_000);
+      await this.post(
+        "/hello",
+        { name: this.about?.name, version: this.about?.version, pid: process.pid },
+        5_000,
+      );
     } catch {
       /* ignored */
     }
+  }
+
+  describe(about: ClientDescription): void {
+    this.about = about;
+    void this.hello();
   }
 
   async goodbye(): Promise<void> {

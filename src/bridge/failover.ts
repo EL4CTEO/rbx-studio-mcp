@@ -1,5 +1,5 @@
 import { ToolError } from "../lib/errors.js";
-import type { SessionsView, StudioBridge } from "./api.js";
+import type { ClientDescription, SessionsView, StudioBridge } from "./api.js";
 import type { RemoteBridge } from "./remote.js";
 
 /**
@@ -43,6 +43,14 @@ export class FailoverBridge implements StudioBridge {
   private claiming = false;
   private stopped = false;
 
+  /*
+   * Remembered so a handover does not forget who we are. The MCP handshake
+   * happens once, at startup; taking the port over happens whenever the holder
+   * exits, which can be long after. Without this the new owner would list
+   * itself as "unknown" for the rest of the session.
+   */
+  private about: ClientDescription | null = null;
+
   constructor(
     private readonly peer: RemoteBridge,
     private readonly claim: () => Promise<ClaimedPort | null>,
@@ -82,6 +90,7 @@ export class FailoverBridge implements StudioBridge {
       await this.peer.goodbye();
       this.claimed = port;
       this.current = port.bridge;
+      if (this.about !== null) void port.bridge.describe(this.about);
       this.stopWatching();
       // stdout belongs to the MCP transport, so this goes to stderr. Worth
       // saying: a handover explains a Studio reconnect and a lost target
@@ -154,5 +163,10 @@ export class FailoverBridge implements StudioBridge {
 
   notePlaceName(studioId: string, placeName: string, context?: string): Promise<void> {
     return this.current.notePlaceName(studioId, placeName, context);
+  }
+
+  describe(about: ClientDescription): void | Promise<void> {
+    this.about = about;
+    return this.current.describe(about);
   }
 }

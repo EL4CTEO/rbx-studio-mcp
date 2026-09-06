@@ -45,6 +45,7 @@ type Callbacks = {
 
 local running = false
 local studioId: string = ""
+
 local activeStream: any = nil
 local mode: "sse" | "poll" = "sse"
 
@@ -283,7 +284,11 @@ local function runPolling(callbacks: Callbacks): boolean
 					command would otherwise never hear about it.
 				]]
 				if typeof(payload.clients) == "number" then
-					callbacks.onEvent({ event = "clients", count = payload.clients })
+					callbacks.onEvent({
+						event = "clients",
+						count = payload.clients,
+						list = payload.clientList,
+					})
 				end
 			end
 		end

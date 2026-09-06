@@ -2,6 +2,27 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.4.5
+
+3D generation, one tool for every mesh operation, and a panel that opens.
+
+### Added
+- **`generate`** - 3D models from a text prompt, through Roblox's Cube model. `Body1` for props, `Car5` for a body and four named wheels a script can drive, or your own part names.
+- **`geometry`** now covers every mesh operation: the boolean ops plus `fragment`, `segment` (cut a mesh into parts you name) and `sweep` (the volume a part moves through, and what it would hit on the way).
+- **`script_edit` can refuse a stale write.** `script_read` prints a `rev`; pass it back and an edit is refused if the script changed since you read it.
+- **`npx rbx-studio-mcp doctor`** - a health check with a fix on every line.
+- **The clients badge says who is connected**, by name, with process id and uptime. Hover it, or click for the full list.
+- **`assets op="bake"`** converts editable mesh and image data to static content, and **`viewport op="textbounds"`** answers whether text fits its label.
+
+### Fixed
+- **The panel stopped opening on its own.** A close is now only remembered when the toolbar button did it, so Studio closing a place can no longer be recorded as you closing the panel. Closing with the X is not remembered, so the panel comes back next launch.
+- Running `doctor` appeared as a second connected client for 90 seconds. Reading the roster no longer joins it.
+- Segmenting a mesh lost its scale and its texture.
+- Collision groups go through `Workspace` instead of the deprecated `PhysicsService`.
+
+### Known limits
+- Generated meshes are edit-mode only. Their content reads as empty inside a playtest, and `bake` cannot convert it.
+
 ## 0.4.2
 
 ### Fixed

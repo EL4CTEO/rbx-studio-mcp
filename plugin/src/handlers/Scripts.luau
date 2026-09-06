@@ -61,6 +61,44 @@ end
 	inclusive, matching the numbers script_edit takes back, so a read and a write
 	need no off-by-one conversion between them.
 ]]
+--[[
+	A short fingerprint of a script's source, for detecting that it moved.
+
+	Handed out by `read` and passed back to `edit`, which refuses to write when
+	the live source no longer matches. That is the only thing standing between
+	two agents on one place and a silent overwrite: a line-range edit computed
+	against source somebody has since changed still applies cleanly, it just
+	applies to the wrong lines, and nothing anywhere reports it.
+
+	FNV-1a over the whole string, with the length appended. Not a security
+	hash and does not need to be -- it is guarding against ordinary concurrent
+	editing, not against someone constructing a collision. The length is there
+	because it is free and rules out the whole class of same-length accidents.
+
+	The multiply is split into 16-bit halves on purpose. `hash * 16777619` with
+	a 32-bit hash reaches 2^56, past the 2^53 where doubles stop being exact,
+	so the low bits -- the ones that carry the mixing -- would be quietly
+	rounded away.
+]]
+local function fingerprint(source: string): string
+	local hash = 2166136261
+	local length = #source
+	local index = 1
+	while index <= length do
+		local last = math.min(index + 511, length)
+		local chunk = { string.byte(source, index, last) }
+		for _, byte in chunk do
+			hash = bit32.bxor(hash, byte)
+			local low = bit32.band(hash, 0xFFFF)
+			local high = bit32.rshift(hash, 16)
+			-- 16777619 == 0x01000193, so 0x0193 is 403 and 0x0100 is 256.
+			hash = bit32.band(low * 403 + bit32.lshift(bit32.band(high * 403 + low * 256, 0xFFFF), 16), 0xFFFFFFFF)
+		end
+		index = last + 1
+	end
+	return string.format("%08x-%x", hash, length)
+end
+
 function Scripts.read(params: { [string]: any }): { [string]: any }
 	local paths = params.paths
 	if typeof(paths) ~= "table" or #paths == 0 then
@@ -98,7 +136,8 @@ function Scripts.read(params: { [string]: any }): { [string]: any }
 		end
 
 		local target = resolved :: LuaSourceContainer
-		local lines = TextEdit.toLines(ScriptEdit.read(target))
+		local whole = ScriptEdit.read(target)
+		local lines = TextEdit.toLines(whole)
 		local askedStart = if windowed and entry.startLine ~= nil
 			then tonumber(entry.startLine)
 			else tonumber(params.startLine)
@@ -118,6 +157,10 @@ function Scripts.read(params: { [string]: any }): { [string]: any }
 			startLine = startLine,
 			endLine = askedEnd,
 			source = table.concat(window, "\n"),
+			-- Of the whole file, never of the window: `edit` compares it against
+			-- the live source, and a fingerprint of forty lines out of four
+			-- hundred would call an edit safe that it is not.
+			revision = fingerprint(whole),
 		})
 	end
 
@@ -171,6 +214,41 @@ function Scripts.edit(params: { [string]: any }): { [string]: any }
 	local pending: { Pending } = {}
 	for _, target in order do
 		local before = ScriptEdit.read(target)
+		--[[
+			Refuse before transforming, not after.
+
+			An edit that names the revision it was written against is asking to
+			be applied to that exact text. If the file has moved on, the honest
+			answer is to stop: a line range still applies cleanly to changed
+			source, it just lands on the wrong lines, and a `source` edit throws
+			away everything written since it was read. Both look like success.
+
+			Checked here so the whole batch fails with nothing written, which is
+			the promise every other phase-one failure already makes.
+		]]
+		local live: string? = nil
+		for _, edit in grouped[target] :: { TextEdit.Edit } do
+			local stated = (edit :: any).revision
+			if typeof(stated) ~= "string" or stated == "" then
+				continue
+			end
+			live = live or fingerprint(before)
+			if stated ~= live then
+				Dispatch.fail(
+					"STALE_SCRIPT",
+					string.format(
+						"%s changed since it was read (expected %s, found %s).",
+						target:GetFullName(),
+						stated,
+						live :: string
+					),
+					"Somebody else edited it -- another agent, or the user typing in the "
+						.. "editor. Read it again with script_read and rebuild the edit "
+						.. "against what is there now."
+				)
+			end
+		end
+
 		local after = TextEdit.apply(target:GetFullName(), before, grouped[target] :: { TextEdit.Edit })
 		table.insert(pending, { target = target, before = before, after = after })
 	end

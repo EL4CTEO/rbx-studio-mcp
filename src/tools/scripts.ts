@@ -20,6 +20,8 @@ interface ReadResponse {
     /** The end line that was asked for, absent when the read ran to the end. */
     endLine?: number;
     source: string;
+    /** Fingerprint of the whole file, handed back to script_edit. */
+    revision?: string;
   }>;
   failures: string[];
 }
@@ -182,7 +184,11 @@ export function registerScriptTools(context: ToolContext): void {
           shown === item.lineCount
             ? `${item.lineCount} lines`
             : `lines ${item.startLine}-${item.startLine + shown - 1} of ${item.lineCount}`;
-        return `${item.path}  (${item.className}, ${range})\n${numbered(item.source, item.startLine)}`;
+        // The revision rides in the header rather than in a block of its own, so
+        // it is impossible to read the source without also being handed the
+        // token that makes editing it safe.
+        const stamp = item.revision !== undefined ? `, rev ${item.revision}` : "";
+        return `${item.path}  (${item.className}, ${range}${stamp})\n${numbered(item.source, item.startLine)}`;
       });
 
       if (response.failures.length > 0) {
@@ -221,6 +227,15 @@ export function registerScriptTools(context: ToolContext): void {
         "are applied bottom-up so they do not shift each other.\n" +
         "  source — replaces the whole script. Only for small files or a rewrite; " +
         "it discards anything the user changed since you read it.\n\n" +
+        "Pass `revision` on every edit. `script_read` prints it as `rev` beside " +
+        "each file, and sending it back makes the write conditional: if the " +
+        "script changed since you read it the batch is refused with " +
+        "STALE_SCRIPT and nothing is written. Without it the edit is applied " +
+        "blind, which matters most for the two modes that cannot notice: a line " +
+        "range still applies cleanly to source somebody else moved, it just " +
+        "lands on the wrong lines, and `source` discards their work entirely. " +
+        "Another agent editing the same place, or the user typing in the " +
+        "editor, is enough.\n\n" +
         "Writes go through `ScriptEditorService:UpdateSourceAsync`, so an open " +
         "editor tab updates in place and unsaved work is preserved. Undo for " +
         "source changes is the script editor's own, per script — Ctrl+Z in a " +
@@ -273,6 +288,14 @@ export function registerScriptTools(context: ToolContext): void {
                 .string()
                 .optional()
                 .describe("Complete new source for the script, replacing everything."),
+              revision: z
+                .string()
+                .optional()
+                .describe(
+                  "The `rev` value script_read printed for this file. Pass it and the " +
+                    "edit is refused if the script changed since you read it, instead " +
+                    "of being applied to source you have not seen.",
+                ),
             }),
           )
           .min(1)
