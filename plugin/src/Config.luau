@@ -9,7 +9,7 @@
 
 local Config = {}
 
-Config.PLUGIN_VERSION = "0.5.0"
+Config.PLUGIN_VERSION = "0.5.1"
 
 -- Fingerprint of plugin/src, stamped in by scripts/build-plugin.mjs. The server
 -- computes the same hash from its own copy of the sources and compares, so a
