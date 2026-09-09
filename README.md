@@ -12,6 +12,8 @@ Let an AI agent drive Roblox Studio: read your place, edit scripts, build geomet
 npx -y @el4cteo/rbx-studio-mcp --install-plugin
 ```
 
+Or drop `StudioMCP.rbxmx` from [Releases](https://github.com/EL4CTEO/rbx-studio-mcp/releases) into your Studio plugins folder.
+
 **2. The server**
 
 ```bash
@@ -62,8 +64,6 @@ opencode (`opencode.json`):
 Something wrong? Run `npx -y @el4cteo/rbx-studio-mcp doctor` — it says what is broken and how to fix it.
 
 Port is **44755**, loopback only. Change it with `--port` and match it in the plugin.
-
-Only `debug` needs anything extra: **Debugger Luau API** in File → Beta Features, then restart Studio.
 
 ## Tools
 
