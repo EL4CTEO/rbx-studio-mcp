@@ -559,6 +559,12 @@ function send(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, {
     "Content-Type": "application/json",
     "Content-Length": Buffer.byteLength(payload),
+    // Every route through here answers one request and is done. Keeping the
+    // socket alive only lets a client's fetch pool hold a connection to a
+    // server that may be closing -- after a handover, or between the short-lived
+    // instances the tests spin up -- and the next call on that pooled socket
+    // fails with "other side closed" instead of reaching the new owner.
+    Connection: "close",
   });
   res.end(payload);
 }

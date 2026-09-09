@@ -2,6 +2,11 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.5.6
+
+### Fixed
+- **CI was red since 0.5.0: a bridge reply kept its socket alive.** One-shot JSON responses now close the connection, so a client's `fetch` pool can't reuse a socket to a server that has since closed and fail with "other side closed".
+
 ## 0.5.5
 
 ### Fixed
