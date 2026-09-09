@@ -2,6 +2,11 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.5.5
+
+### Fixed
+- **A raw `TypeError: fetch failed` during a bridge handover.** When the server holding the port exits mid-reply, the borrower now reports `OWNER_GONE` and says to retry, instead of surfacing a Node socket error. Only the network call was guarded; reading the reply was not.
+
 ## 0.5.4
 
 - README cut to half its length: install, tools, panel, done.

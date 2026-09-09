@@ -138,9 +138,23 @@ export class RemoteBridge implements StudioBridge {
   }
 
   private async post<T>(path: string, body: unknown, timeoutMs: number): Promise<T> {
-    let response: Response;
+    //[[ The body read is inside the try, and that is the whole point of it.
+    //
+    // Only the fetch used to be guarded. But the owner does not always die
+    // before answering -- it dies while answering, which is exactly what a
+    // handover looks like: headers arrive, the process exits, and the socket
+    // closes mid-body. `response.json()` then throws its own raw
+    // "TypeError: fetch failed / SocketError: other side closed", outside the
+    // catch, and the user is handed a Node network error where OWNER_GONE
+    // belongs -- with none of the "try again in a few seconds" that makes it
+    // actionable.
+    //
+    // Reported as an error appearing right below the takeover notice, which is
+    // the one moment this is guaranteed to happen.
+    //]]
+    let payload: { ok: boolean; data?: T; error?: { code: string; message: string } };
     try {
-      response = await fetch(`${this.base}${path}`, {
+      const response = await fetch(`${this.base}${path}`, {
         method: "POST",
         headers: this.headers,
         body: JSON.stringify(body),
@@ -148,15 +162,11 @@ export class RemoteBridge implements StudioBridge {
         // its diagnosis reaches the caller, rather than being cut off by ours.
         signal: AbortSignal.timeout(timeoutMs + 10_000),
       });
+      payload = (await response.json()) as typeof payload;
     } catch (cause) {
       throw this.unreachable(cause);
     }
 
-    const payload = (await response.json()) as {
-      ok: boolean;
-      data?: T;
-      error?: { code: string; message: string };
-    };
     if (!payload.ok) {
       const error = payload.error ?? { code: "PEER_ERROR", message: "the bridge owner refused" };
       throw new ToolError(error.code, error.message);

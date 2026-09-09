@@ -180,4 +180,55 @@ function handshake(port, studioId) {
   await owner.close();
 }
 
+// An owner that dies WHILE answering is still OWNER_GONE, not a raw Node error.
+//
+// The shipped bug: only the fetch was guarded, so a socket cut after the
+// headers threw "TypeError: fetch failed / SocketError: other side closed"
+// straight past the catch. It surfaced right under the takeover notice, which
+// is the exact moment a handover cuts a live response.
+//
+// The fake owner declares a Content-Length it never delivers, then hangs up.
+// That distinction is the whole test: a socket destroyed BEFORE the headers
+// makes Node reject the fetch itself, which the old code already caught -- the
+// bug only shows when the reply has started and stops halfway. Two earlier
+// versions of this test cut the socket too early, passed with the bug present,
+// and proved nothing.
+{
+  const halfDead = createServer((req, res) => {
+    if (req.url === "/identity") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ server: "roblox-studio-mcp", protocolVersion: 1, pid: 1 }));
+      return;
+    }
+    res.writeHead(200, { "Content-Type": "application/json", "Content-Length": "5000" });
+    res.write('{"ok":true,"data":"' + "x".repeat(100));
+    setTimeout(() => res.socket.destroy(), 150);
+  });
+  await new Promise((resolve) => halfDead.listen(PORT, "127.0.0.1", resolve));
+
+  const peer = await startBridgeServer({ port: PORT });
+  assert.equal(peer.owner, false, "the peer proxies to whatever holds the port");
+
+  let raised;
+  try {
+    await peer.bridge.call("studio.status", {});
+  } catch (cause) {
+    raised = cause;
+  }
+
+  assert.ok(raised, "a truncated answer must not resolve as success");
+  assert.equal(
+    raised.code,
+    "OWNER_GONE",
+    `a body cut short is the owner going away, not a raw ${raised?.name}`,
+  );
+  assert.ok(
+    /try the call again/.test(raised.hint ?? ""),
+    "and says what to do about it, which a raw socket error never does",
+  );
+
+  await peer.close();
+  await new Promise((resolve) => halfDead.close(resolve));
+}
+
 process.stdout.write("failover: ok\n");
