@@ -133,4 +133,51 @@ function handshake(port, studioId) {
   await owner.close();
 }
 
+// POST /hello carries the panel's spawned marker all the way to the roster.
+//
+// The shipped bug: every layer marked the agent the panel starts -- the spawn's
+// environment, the MCP config handed to the agent, the hello body -- and this
+// route typed the body with three fields and dropped the fourth. So the panel
+// said "2 MCP clients connected" on every prompt and kept a stopped agent in
+// `clients` until the stale sweep. Tested at the route, because the route is
+// the layer that was wrong while the bridge underneath it was right.
+{
+  const owner = await startBridgeServer({ port: PORT });
+
+  const hello = async (id, body) => {
+    const sent = await fetch(`http://127.0.0.1:${PORT}/hello`, {
+      method: "POST",
+      headers: {
+        [CLIENT_HEADER]: "test",
+        [PEER_HEADER]: id,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+    return (await sent.json()).clients;
+  };
+
+  const alone = await hello("a-stranger", { name: "codex", version: "1", pid: 1 });
+  const withAgent = await hello("panel-agent", {
+    name: "claude-code",
+    version: "1",
+    pid: 2,
+    spawned: true,
+  });
+  assert.equal(withAgent, alone, "an agent the panel started is not another client");
+  // A second stranger does count, or the filter would be hiding everyone.
+  const withStranger = await hello("another-stranger", { name: "opencode", pid: 3 });
+  assert.equal(withStranger, alone + 1, "a client nobody asked for still counts");
+
+  // A keepalive that says nothing must not erase what the first hello said, and
+  // must not re-announce the client as if it had just arrived.
+  assert.equal(
+    await hello("a-stranger", { pid: 1 }),
+    withStranger,
+    "a nameless keepalive is not a new client",
+  );
+
+  await owner.close();
+}
+
 process.stdout.write("failover: ok\n");

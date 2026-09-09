@@ -287,6 +287,24 @@ type Runtime = {
 	-- The arrival flourish: 1 the instant a session connects, down to 0 over
 	-- CHEER_TIME. Overrides the connecting wave's shape while it runs.
 	cheer: number,
+
+	--[[
+		True while an agent the panel started is working.
+
+		Everything else here is driven by events: a tool call arrives, the cell
+		is struck, and the strike decays. That is the right model for an agent
+		being driven from a terminal, where the gaps between calls are the user
+		reading. It is the wrong one for an agent this panel started, because the
+		longest gaps are the model thinking -- which is the part that takes the
+		time, produces no call, and left the strip winding down to "stopped" in
+		the middle of the work it was supposed to be reporting.
+
+		So this is the one piece of state that is a CONDITION rather than an
+		event, and the only thing it does is hold a floor under the decay. A real
+		call still spikes above it and still falls back; it just falls back to
+		"working" instead of to "nothing is happening".
+	]]
+	thinking: boolean,
 }
 
 local runtime: Runtime = {
@@ -322,6 +340,7 @@ local runtime: Runtime = {
 	waveHold = 0,
 	waveShown = false,
 	cheer = 0,
+	thinking = false,
 }
 
 --[[
@@ -372,6 +391,29 @@ local function step(delta: number)
 	runtime.activity = math.max(0, runtime.activity - delta * 0.28)
 	runtime.flare = math.max(0, runtime.flare - delta * 3)
 	runtime.quiet += delta
+
+	--[[
+		The floor an agent's thinking holds under all of that.
+
+		A pulse rather than a constant, and the difference is the whole point: a
+		fixed floor produces a cell frozen mid-swell, which reads as a hung
+		panel rather than a working one. The sine is slow -- about a three second
+		period -- so it is unmistakably a breath and never competes with the
+		sharp strike of a real call landing on top of it.
+
+		Applied after the decay and before anything reads these values, so the
+		ordinary event path above is untouched: it still decays exactly as it
+		did, it simply cannot fall below this while an agent is running. `quiet`
+		is pinned too, or the wind-down at QUIET_AFTER would draw the cell in
+		and slow its spin during the longest thinking pauses -- the precise
+		moment this exists to cover.
+	]]
+	if runtime.thinking then
+		local pulse = 0.34 + math.sin(os.clock() * 2.1) * 0.13
+		runtime.energy = math.max(runtime.energy, pulse)
+		runtime.activity = math.max(runtime.activity, 0.4)
+		runtime.quiet = 0
+	end
 	--[[
 		Two colours, blended by how recently something happened.
 
@@ -1085,6 +1127,34 @@ function Visuals.setIdle()
 end
 
 --[[
+	Says whether an agent started from the prompt is currently working.
+
+	One call on each edge rather than a stream of keepalives: the state is a
+	condition with two ends, and a heartbeat that has to keep arriving is a
+	heartbeat that eventually does not -- leaving the strip pulsing at a
+	conversation that finished.
+
+	Starting re-aims the spin, so the turn visibly changes axis at the moment the
+	agent picks the work up. Stopping does nothing but drop the floor: what is
+	left decays on its own, which is the honest picture of work that has just
+	ended rather than work that was cut off.
+]]
+function Visuals.setThinking(thinking: boolean)
+	if runtime.thinking == thinking then
+		return
+	end
+	runtime.thinking = thinking
+	if thinking then
+		runtime.quiet = 0
+		runtime.spin = Vector3.new(
+			0.10 + math.random() * 0.14,
+			0.16 + math.random() * 0.20,
+			0.05 + math.random() * 0.10
+		)
+	end
+end
+
+--[[
 	Winds the cell down, because the session has stopped rather than paused.
 
 	The strip already decays on its own, but decay bottoms out at "idle and
@@ -1093,6 +1163,13 @@ end
 	agree.
 ]]
 function Visuals.setQuiet()
+	-- Not while an agent is mid-run. This is called when a client disconnects,
+	-- and an agent that finishes one turn and is about to be asked another
+	-- would otherwise wind the strip fully down between two halves of the same
+	-- conversation.
+	if runtime.thinking then
+		return
+	end
 	runtime.quiet = QUIET_AFTER + 1
 	runtime.activity = 0
 end

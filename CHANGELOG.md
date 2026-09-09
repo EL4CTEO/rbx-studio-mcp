@@ -2,6 +2,33 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.5.0
+
+A command line in the console panel, and terrain.
+
+### Added
+- **A prompt row at the bottom of the panel.** Type a command, or type a sentence. History on the arrows, Tab completion, and it shows what you have selected.
+- **Commands:** `help`, `doctor`, `status`, `version`, `place`, `clients`, `studios`, `use`, `theme`, `visuals`, `log`, `clear`, `copy`, `port`, `reconnect`, `agent`, `stop`.
+- **Anything that is not a command goes to a coding agent.** The bridge starts whichever one is on PATH — Claude Code, Codex, opencode, Gemini, Cursor, dsh — and its work streams into the log. `stop` cancels it.
+- **DeepSeek Harness (dsh) support**, both ways: this server registers as a dsh plugin, and dsh can run your prompts.
+- **`terrain`** — `fill` (block, ball, cylinder, wedge, one undo step), `replace` a material in place, `clear`, `stats`. Fill with `Air` to carve caves.
+- The activity cell keeps moving while an agent thinks.
+
+### Fixed
+- **Script edits could be lost silently.** A write to a just-opened editor tab reported success and was then overwritten by the editor finishing its load. Writes are read back now.
+- **Screenshots said nothing when nothing was rendered** — a script tab in front of the 3D view returned a flat rectangle, reported as an ordinary picture.
+- **An agent started from the panel is no longer counted as a stranger.** It logged "2 MCP clients connected" on every prompt and lingered after `stop`.
+- **Panel prompts say they come from Studio**, so "create a script" no longer sends the agent to the filesystem.
+- Log lines wrap under themselves, render markdown, and no longer chop a message to fit the note beside it.
+- `copy` writes the log as comments. `stop` kills the agent's whole process tree.
+
+### Changed
+- Dependencies bumped; `hono` to 4.13.7, clearing a moderate advisory reached through the MCP SDK.
+
+## 0.4.6
+
+Same as 0.4.5, republished so the npm package matches. README rewritten and brought up to date.
+
 ## 0.4.5
 
 3D generation, one tool for every mesh operation, and a panel that opens.

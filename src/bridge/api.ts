@@ -60,6 +60,22 @@ export interface ClientDescription {
   version: string;
 }
 
+/**
+ * Whether this process is serving an agent a console panel started.
+ *
+ * Read from the environment at load, and read HERE rather than travelling with
+ * the client description, because the description does not exist yet at the
+ * moment that matters. A process registers the instant it starts and only
+ * learns its client's name at the MCP handshake, so the arrival -- the thing
+ * the panel logs and badges -- is announced first and described second. Sending
+ * the flag with the description meant it always arrived one announcement too
+ * late, and every prompt still flashed "2 MCP clients connected".
+ *
+ * The variable is set by `harness.run` on the agent CLI it spawns, and reaches
+ * here because that CLI starts this server as its own child.
+ */
+export const SPAWNED_BY_PANEL = process.env["RBX_STUDIO_MCP_SPAWNED"] === "1";
+
 export interface SessionsView {
   list: StudioSession[];
   activeId: string | null;
@@ -98,8 +114,11 @@ export class LocalBridge implements StudioBridge {
     // this class carries a client id at all: the process holding the port is
     // one agent among however many are connected, and it is connected from the
     // moment it starts, not from the moment it happens to ask for something.
-    inner.noteClient(this.clientId);
-    this.keepalive = setInterval(() => inner.noteClient(this.clientId), KEEPALIVE_MS);
+    inner.noteClient(this.clientId, { spawned: SPAWNED_BY_PANEL });
+    this.keepalive = setInterval(
+      () => inner.noteClient(this.clientId, { spawned: SPAWNED_BY_PANEL }),
+      KEEPALIVE_MS,
+    );
     this.keepalive.unref();
   }
 
@@ -137,6 +156,10 @@ export class LocalBridge implements StudioBridge {
   }
 
   describe(about: ClientDescription): void {
-    this.inner.noteClient(this.clientId, { ...about, pid: process.pid });
+    this.inner.noteClient(this.clientId, {
+      ...about,
+      pid: process.pid,
+      spawned: SPAWNED_BY_PANEL,
+    });
   }
 }

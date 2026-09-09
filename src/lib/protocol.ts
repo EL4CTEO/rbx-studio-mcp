@@ -42,6 +42,16 @@ export interface ClientView {
   version: string;
   pid: number;
   connectedAt: number;
+  /**
+   * True for an agent the console panel started itself.
+   *
+   * Such a client is not news. The panel asked for it, printed the request, and
+   * is printing its every step -- so announcing its arrival and departure as
+   * though a stranger had joined the bridge says nothing the reader does not
+   * already know, three times per prompt. Counted separately for that reason
+   * alone; in every other respect it is an ordinary client.
+   */
+  spawned?: boolean;
 }
 
 /** Identity a plugin declares when it opens its stream. */

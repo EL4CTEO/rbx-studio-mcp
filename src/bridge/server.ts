@@ -7,6 +7,7 @@ import { Bridge } from "./rpc.js";
 import { LocalBridge, type StudioBridge } from "./api.js";
 import { probeOwner, RemoteBridge } from "./remote.js";
 import { FailoverBridge, type ClaimedPort } from "./failover.js";
+import { agentRunning, handleConsole } from "./console.js";
 
 /** Default loopback port. Deliberately not 58741 — that is drgost1's server. */
 export const DEFAULT_PORT = 44755;
@@ -99,7 +100,7 @@ async function claimPort(
   seed?: Bridge,
 ): Promise<ClaimedPort | null> {
   const bridge = seed ?? new Bridge();
-  const server = createBridgeHttpServer(bridge);
+  const server = createBridgeHttpServer(bridge, port);
 
   const failure = await listen(server, port);
   if (failure !== null) {
@@ -118,9 +119,9 @@ async function claimPort(
 }
 
 /** Builds the HTTP endpoint, ready to listen but not listening yet. */
-function createBridgeHttpServer(bridge: Bridge): Server {
+function createBridgeHttpServer(bridge: Bridge, port: number): Server {
   const server = createServer((req, res) => {
-    void handle(bridge, req, res);
+    void handle(bridge, port, req, res);
   });
 
   /**
@@ -194,6 +195,7 @@ function closeServer(server: Server, reaper: NodeJS.Timeout): Promise<void> {
 
 async function handle(
   bridge: Bridge,
+  port: number,
   req: IncomingMessage,
   res: ServerResponse,
 ): Promise<void> {
@@ -264,6 +266,8 @@ async function handle(
       case "POST /goodbye":
         bridge.forgetClient(peerId(req));
         return send(res, 200, { ok: true, clients: bridge.clientCount() });
+      case "POST /console":
+        return await handleConsoleCommand(bridge, port, req, res);
       case "POST /bye":
         bridge.detach(url.searchParams.get("studioId") ?? "");
         return send(res, 200, { ok: true });
@@ -514,6 +518,42 @@ function readBody(req: IncomingMessage): Promise<string> {
   });
 }
 
+/**
+ * A line typed into a Studio console panel.
+ *
+ * Answered as rows rather than as a rendered string: the panel owns how a row
+ * looks, and handing it pre-formatted text would mean two places deciding what
+ * a warning is coloured. Failures come back as rows too, with 200, because
+ * every one of them is something to print rather than something the plugin
+ * could retry differently.
+ */
+async function handleConsoleCommand(
+  bridge: Bridge,
+  port: number,
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
+  const body = JSON.parse(await readBody(req)) as {
+    studioId?: string;
+    command?: string;
+    args?: string[];
+    line?: string;
+  };
+
+  try {
+    const lines = await handleConsole(bridge, port, {
+      studioId: body.studioId ?? "",
+      command: body.command ?? "",
+      args: body.args ?? [],
+      line: body.line ?? "",
+    });
+    return send(res, 200, { lines, running: agentRunning(body.studioId ?? "") });
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    return send(res, 200, { lines: [{ level: "error", message }], running: false });
+  }
+}
+
 function send(res: ServerResponse, status: number, body: unknown): void {
   const payload = JSON.stringify(body);
   res.writeHead(status, {
@@ -552,7 +592,7 @@ async function handlePeerHello(
   req: IncomingMessage,
   res: ServerResponse,
 ): Promise<void> {
-  let about: { name?: string; version?: string; pid?: number } = {};
+  let about: { name?: string; version?: string; pid?: number; spawned?: boolean } = {};
   try {
     const body = await readBody(req);
     if (body.length > 0) about = JSON.parse(body) as typeof about;
@@ -560,17 +600,37 @@ async function handlePeerHello(
     // A peer that sends nothing useful is still a peer. Registering it matters;
     // labelling it does not.
   }
+  //[[ `spawned` is read here, and forgetting to read it was the whole bug.
+  //
+  // The agent the panel starts marks itself all the way down -- the spawn's
+  // environment, and the MCP config it hands the agent so the marker survives
+  // whatever the agent does to that environment. `RemoteBridge.hello` then puts
+  // it in the body. And this function, which types the body it accepts, simply
+  // had no field for it, so JSON.parse produced it and the destructuring threw
+  // it away. Every layer was correct except the one that reads.
+  //
+  // Cost: "2 MCP clients connected" on every prompt, and a stopped agent left
+  // in `clients` until the stale timeout swept it -- the badge saying a
+  // stranger is driving your Studio when it is the agent you just asked for.
+  //]]
   bridge.noteClient(peerId(req), {
     name: label(about.name),
     version: label(about.version),
     pid: typeof about.pid === "number" ? about.pid : 0,
+    spawned: about.spawned === true,
   });
   return send(res, 200, { ok: true, clients: bridge.clientCount() });
 }
 
-/** Trims a self-reported label to something a header chip can hold. */
-function label(value: unknown): string {
-  return typeof value === "string" ? value.slice(0, 64) : "";
+/**
+ * Trims a self-reported label to something a header chip can hold.
+ *
+ * Undefined rather than "" when there is nothing to trim: `noteClient` merges
+ * with `??`, and an empty string is a value, so a keepalive carrying no name
+ * would erase the name the first hello established.
+ */
+function label(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value.slice(0, 64) : undefined;
 }
 
 function peerId(req: IncomingMessage): string {

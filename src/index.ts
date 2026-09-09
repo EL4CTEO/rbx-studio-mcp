@@ -14,6 +14,7 @@ import { registerExecTools } from "./tools/exec.js";
 import { registerPerfTools } from "./tools/perf.js";
 import { registerPlaytestTools } from "./tools/playtest.js";
 import { registerScreenshotTools } from "./tools/screenshot.js";
+import { registerTerrainTools } from "./tools/terrain.js";
 import { registerWorldTools } from "./tools/world.js";
 import { registerGenerateTools } from "./tools/generate.js";
 import { registerCharacterTools } from "./tools/character.js";
@@ -117,6 +118,7 @@ async function main(): Promise<void> {
   registerInputTools(context);
   registerDeviceTools(context);
   registerApiTools(context);
+  registerTerrainTools(context);
   registerWorldTools(context);
   registerGenerateTools(context);
   registerCharacterTools(context);

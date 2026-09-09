@@ -9,7 +9,9 @@
 
 local HttpService = game:GetService("HttpService")
 local RunService = game:GetService("RunService")
+local Selection = game:GetService("Selection")
 
+local Commands = require(script.Commands)
 local Config = require(script.Config)
 local Console = require(script.Console)
 local Dispatch = require(script.Dispatch)
@@ -17,6 +19,7 @@ local History = require(script.History)
 local LogBuffer = require(script.LogBuffer)
 local Mirror = require(script.Mirror)
 local Phrase = require(script.Phrase)
+local ScriptEdit = require(script.ScriptEdit)
 local Themes = require(script.Themes)
 local Transport = require(script.Transport)
 local Debug = require(script.handlers.Debug)
@@ -25,6 +28,7 @@ local Capture = require(script.handlers.Capture)
 local Character = require(script.handlers.Character)
 local Geometry = require(script.handlers.Geometry)
 local Generate = require(script.handlers.Generate)
+local Terrain = require(script.handlers.Terrain)
 local World = require(script.handlers.World)
 local Discover = require(script.handlers.Discover)
 local Exec = require(script.handlers.Exec)
@@ -157,6 +161,7 @@ Assets.register()
 Character.register()
 Geometry.register()
 Generate.register()
+Terrain.register()
 World.register()
 Exec.register()
 Viewport.register()
@@ -399,6 +404,38 @@ Console.mount(widget, {
 		plugin:SetSetting(SETTING_THEME, id)
 		Console.log("dim", string.format("theme: %s", id))
 	end,
+	onSubmit = function(line)
+		Commands.run(line)
+	end,
+	onComplete = function(prefix)
+		return Commands.complete(prefix)
+	end,
+})
+
+--[[
+	What the command line cannot reach on its own.
+
+	`plugin:SetSetting` is unavailable inside a ModuleScript, and the transport's
+	lifecycle lives here rather than in the console, so the handful of commands
+	that need either are handed a function instead of a dependency.
+]]
+Commands.setup({
+	reconnect = function()
+		Console.log("info", "reconnect requested")
+		Transport.stop()
+		task.wait(0.2)
+		connect()
+	end,
+	savePort = function(value)
+		plugin:SetSetting(SETTING_PORT, value)
+	end,
+	saveTheme = function(id)
+		plugin:SetSetting(SETTING_THEME, id)
+	end,
+	status = function()
+		return currentStatus
+	end,
+	studioId = studioId,
 })
 
 -- The saved preset, now that there is something to paint. Done immediately
@@ -406,6 +443,58 @@ Console.mount(widget, {
 -- in the wrong palette.
 if themeNeedsApplying then
 	Console.applyTheme()
+end
+
+--[[
+	Keeps the prompt row showing what Studio has selected.
+
+	`Selection.SelectionChanged` is the event the panel was missing. Everything
+	about the selection was previously available only on demand, through
+	`studio_status`, which answers an agent's question but not the user's: they
+	are the one typing "make this bigger", and the word is only safe to type if
+	they can see what it means without leaving the panel.
+
+	Debounced through a generation counter rather than a timer handle, the same
+	way `recordCall` schedules its summary. Drag-selecting a group in the
+	viewport fires this once per instance added -- dozens of times in a second
+	-- and re-rendering a label on every one of them is work nobody sees.
+]]
+local selectionGeneration = 0
+
+local function describeSelection(): string
+	local picked = Selection:Get()
+	if #picked == 0 then
+		return ""
+	end
+	if #picked == 1 then
+		-- The name alone. The class is in the Properties panel and the path is
+		-- in the Explorer; what this line is for is confirming WHICH thing.
+		return string.format("\u{25A3} %s", picked[1].Name)
+	end
+	return string.format("\u{25A3} %d selected", #picked)
+end
+
+local function watchSelection()
+	Selection.SelectionChanged:Connect(function()
+		selectionGeneration += 1
+		local mine = selectionGeneration
+		task.delay(0.12, function()
+			if selectionGeneration ~= mine then
+				return
+			end
+			-- Guarded: an instance can be destroyed between the event and this
+			-- running, and reading `.Name` on it throws.
+			local ok, text = pcall(describeSelection)
+			Console.setSelection(if ok then text else "")
+		end)
+	end)
+	Console.setSelection(describeSelection())
+end
+
+-- Only in the editor. A playtest session has its own Selection service that
+-- nobody is clicking in, and the client view cannot reach the panel at all.
+if RunService:IsEdit() then
+	watchSelection()
 end
 
 --[[
@@ -609,6 +698,21 @@ local function onEvent(event: { [string]: any })
 		Console.setClients(event.count, if typeof(event.list) == "table" then event.list else nil)
 	elseif event.event == "agent" and event.state == "finished" then
 		Console.agentFinished()
+	elseif event.event == "console" and typeof(event.message) == "string" then
+		--[[
+			A line from an agent the panel itself started.
+
+			Pushed rather than returned because a run lasts minutes: the request
+			that started it answered immediately with "started", and everything
+			after that has to arrive on the stream the plugin already holds open.
+		]]
+		Console.log(
+			(if typeof(event.level) == "string" then event.level else "dim") :: any,
+			event.message,
+			if typeof(event.detail) == "string" then event.detail else nil
+		)
+	elseif event.event == "agent-run" then
+		Console.setPromptBusy(event.state == "running")
 	elseif event.event == "peer" and typeof(event.op) == "string" then
 		--[[
 			A command another session on this place just finished.

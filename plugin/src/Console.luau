@@ -20,6 +20,8 @@
 
 local TweenService = game:GetService("TweenService")
 
+local Format = require(script.Parent.Format)
+local Prompt = require(script.Parent.Prompt)
 local ThemePicker = require(script.Parent.ThemePicker)
 local Themes = require(script.Parent.Themes)
 local Visuals = require(script.Parent.Visuals)
@@ -70,6 +72,10 @@ local Z_CRT_LINE = 22
 	"the last three hundred things that happened" mean what it says.
 ]]
 local MAX_RECORDS = 300
+
+-- The status bar's height. Named because three things now measure against it:
+-- the bar itself, the prompt row sitting on top of it, and the log above both.
+local FOOTER_HEIGHT = 22
 
 --[[
 	The active preset's colours, rebound rather than re-read.
@@ -166,29 +172,16 @@ local DETAIL_INDENT = string.rep(" ", 11)
 local DETAIL_WRAP = 74
 
 --[[
-	Breaks a long detail into lines at word boundaries.
+	Breaks a long string into lines at word boundaries.
 
 	Roblox's own TextWrapped would do this, and would wrap to column 0 -- there
 	is no hanging indent for a TextLabel -- which is the ragged shape this
 	replaces. Wrapping here means every continuation line can carry the indent.
+
+	A single word longer than the width is cut rather than allowed to overhang.
+	That case is not prose: it is a path, a URL or a base64 blob, and letting one
+	of those push the line out re-creates the exact wrap this exists to prevent.
 ]]
-local function wrapDetail(detail: string): { string }
-	local lines: { string } = {}
-	local current = ""
-	for word in string.gmatch(detail, "%S+") do
-		local candidate = if current == "" then word else current .. " " .. word
-		if (utf8.len(candidate) or #candidate) > DETAIL_WRAP and current ~= "" then
-			table.insert(lines, current)
-			current = word
-		else
-			current = candidate
-		end
-	end
-	if current ~= "" then
-		table.insert(lines, current)
-	end
-	return lines
-end
 
 --[[
 	One logged row, before it is coloured.
@@ -297,6 +290,26 @@ type State = {
 		away.
 	]]
 	crtGeneration: number,
+
+	--[[
+		Which levels the log is currently showing, or nil for all of them.
+
+		A filter over the RECORDS rather than over what is appended: turning it
+		off has to bring the hidden rows back, and a log that dropped them on the
+		way in could only ever show what happened since. Records are kept whole
+		and `paint` decides what to draw.
+	]]
+	filter: { [string]: boolean }?,
+
+	--[[
+		Re-runs the log's top and bottom edges after something above it moves.
+
+		Defined inside `mount`, where the band and the scroller are both in
+		scope, and kept here so `toggleVisuals` can reach it. A second copy of
+		that arithmetic is how the log ends up overlapping the band.
+	]]
+	relayout: (() -> ())?,
+	visualsButton: TextButton?,
 }
 
 local state: State = {
@@ -328,6 +341,9 @@ local state: State = {
 	crtGhost = nil,
 	crtLine = nil,
 	crtGeneration = 0,
+	filter = nil,
+	relayout = nil,
+	visualsButton = nil,
 }
 
 -- Declared ahead of its definition: `setClients` calls it and is written
@@ -348,18 +364,39 @@ local function hex(color: Color3): string
 	)
 end
 
--- RichText is markup, so anything user- or engine-supplied has to be escaped or
--- a stray `<` in an error message silently eats the rest of the line.
-local function escape(value: string): string
-	local escaped = string.gsub(value, "&", "&amp;")
-	escaped = string.gsub(escaped, "<", "&lt;")
-	escaped = string.gsub(escaped, ">", "&gt;")
-	return escaped
-end
 
 local function span(color: Color3, value: string): string
-	return string.format('<font color="%s">%s</font>', hex(color), escape(value))
+	return string.format('<font color="%s">%s</font>', hex(color), Format.escape(value))
 end
+
+--[[
+	Turns an agent's markdown into the markup this label already speaks.
+
+	Agents write for a terminal that renders markdown, so their replies arrive
+	full of `**` and backticks. Printed raw they are worse than noise -- the
+	asterisks land in the middle of a sentence and read as typos -- and stripping
+	them would throw away the emphasis the agent chose. The label is RichText, so
+	the third option is simply to honour it.
+
+	Applied AFTER escaping, which is what makes it safe: `escape` has already
+	turned every angle bracket in the agent's own text into an entity, so the
+	only tags in the string afterwards are the ones put there here.
+
+	Bold before italic, or the outer pair of a `**` run is eaten as two italics.
+	Underscores are deliberately not italic markers: `execute_luau` and
+	`mcp__rbx-studio__modify` are the vocabulary of this log, and they would
+	spend most of their lives in italics for no reason.
+]]
+
+--[[
+	Collapses anything that would break the one-line-per-row contract.
+
+	A row is a line. Every width here is measured in characters and every
+	continuation is indented by hand, so a newline arriving inside a message or
+	a detail lands in the middle of that arithmetic and comes out at column 0 --
+	which is how a two-line Luau snippet in a tool argument left a bare "m"
+	sitting under the log. Tabs go the same way, for the same reason.
+]]
 
 --[[
 	Turns one record into the lines it occupies.
@@ -389,22 +426,73 @@ local function renderRecord(record: Record): { string }
 		goes on its own line below would shorten it for nothing.
 	]]
 	local detailWidth = if detail then (utf8.len(detail) or #detail) else 0
+	local messageWidth = utf8.len(record.message) or #record.message
+	local budget = DETAIL_COLUMN - 3
+	--[[
+		The message has to fit as it stands, not once it has been cut down.
+
+		The rule used to be about the PAIR fitting, and then the message was
+		truncated to make the pair true. That was written when every message was
+		a tool name, where losing the tail of "Run Luau (7 lines)" costs nothing.
+		A prompt echoed back is a message too, and it came out as the user's own
+		sentence chopped at 49 characters with an ellipsis -- to make room for
+		the word "you". A detail is worth less than the line it annotates, so
+		when both cannot fit it is the detail that moves.
+	]]
 	local inlineDetail = detail ~= nil
-		and (utf8.len(record.message) or #record.message) + detailWidth + 3
-			<= DETAIL_COLUMN + INLINE_DETAIL
+		and messageWidth <= budget
+		and messageWidth + detailWidth + 3 <= DETAIL_COLUMN + INLINE_DETAIL
 
 	local trimmed = record.message
-	local budget = DETAIL_COLUMN - 3
-	if inlineDetail and (utf8.len(trimmed) or #trimmed) > budget then
-		-- Cut rather than wrap. A wrapped line destroys the alignment and
-		-- carries the detail off the end of the visible width as well.
-		local offset = utf8.offset(trimmed, budget) or budget
-		trimmed = string.sub(trimmed, 1, offset - 1) .. utf8.char(0x2026)
+
+	--[[
+		A message too long for the width is wrapped here, not by the label.
+
+		Details have always been wrapped with a hanging indent; messages never
+		were, because until now every message was a tool name. Agent output is
+		prose -- whole paragraphs arriving as one row -- and a paragraph left to
+		the TextLabel wraps back to column 0, under the timestamps, so the second
+		line of a sentence reads as a new entry. The indent is what keeps a
+		wrapped sentence visibly part of the row above it.
+
+		Skipped when a detail is riding the right-hand column: the message has
+		already been cut to fit beside it, and wrapping something that fits would
+		only break the column the cut was made to protect.
+	]]
+	local continuation: { string } = {}
+	if not inlineDetail and (utf8.len(trimmed) or #trimmed) > DETAIL_WRAP then
+		local wrapped = Format.wrap(trimmed, DETAIL_WRAP)
+		trimmed = table.remove(wrapped, 1) :: string
+		continuation = wrapped
+	end
+
+	--[[
+		Only an agent's own prose is read as markdown.
+
+		`reply` is the level its sentences arrive on. Every other level carries
+		names this console generated -- tool names, paths, glob patterns -- where
+		an asterisk is a character rather than an instruction, and italicising
+		half a path would be a worse bug than the one this fixes.
+	]]
+	local prose = record.level == "reply"
+
+	local function line(text: string): string
+		local escaped = Format.escape(text)
+		if prose then
+			escaped = Format.emphasise(escaped, hex(PALETTE.cyan))
+		end
+		return string.format('<font color="%s">%s</font>', hex(PALETTE[spec.key]), escaped)
 	end
 
 	local body = string.format("%s %s", spec.sigil, trimmed)
 	local bodyWidth = utf8.len(body) or #body
-	local lines = { span(PALETTE.dim, record.stamp) .. " " .. span(PALETTE[spec.key], body) }
+	local lines = { span(PALETTE.dim, record.stamp) .. " " .. line(body) }
+
+	-- In the message's own colour, not the dim of a detail: these lines ARE the
+	-- message, and greying them would read as an explanation of it.
+	for _, extra in continuation do
+		table.insert(lines, line(DETAIL_INDENT .. extra))
+	end
 
 	--[[
 		Short details ride the right-hand column; long ones get their own lines.
@@ -422,7 +510,7 @@ local function renderRecord(record: Record): { string }
 			local padding = math.max(1, DETAIL_COLUMN - bodyWidth)
 			lines[1] ..= span(PALETTE.dim, string.rep(" ", padding) .. detail)
 		else
-			for _, wrapped in wrapDetail(detail) do
+			for _, wrapped in Format.wrap(detail, DETAIL_WRAP) do
 				table.insert(lines, span(PALETTE.dim, DETAIL_INDENT .. wrapped))
 			end
 		end
@@ -438,9 +526,12 @@ local function paint()
 	end
 
 	local lines: { string } = {}
+	local filter = state.filter
 	for _, record in state.records do
-		for _, line in renderRecord(record) do
-			table.insert(lines, line)
+		if filter == nil or filter[record.level] then
+			for _, line in renderRecord(record) do
+				table.insert(lines, line)
+			end
 		end
 	end
 	label.Text = table.concat(lines, "\n")
@@ -511,8 +602,8 @@ end
 function Console.log(level: Level, message: string, detail: string?)
 	table.insert(state.records, {
 		level = level,
-		message = message,
-		detail = detail,
+		message = Format.flatten(message),
+		detail = if detail ~= nil then Format.flatten(detail) else nil,
 		-- Stamped when the row happened, not when it is painted. A repaint after
 		-- a theme switch re-renders every line, and re-reading the clock there
 		-- would restamp the whole session to the moment the user changed colour.
@@ -665,6 +756,19 @@ function Console.recordCall(ok: boolean, milliseconds: number)
 	end
 	task.delay(QUIET_SECONDS, function()
 		if state.generation ~= mine or state.calls == 0 then
+			return
+		end
+		--[[
+			Not while an agent this panel started is still working.
+
+			This line reports a silence, and its whole justification was that MCP
+			gives no way to tell a finished agent from a thinking one. For an
+			agent we started ourselves that is no longer true -- we hold its
+			process and know exactly when it exits -- so announcing it idle
+			mid-run would be stating something we can see is false, in the middle
+			of its own output.
+		]]
+		if Prompt.isBusy() then
 			return
 		end
 		Console.log(
@@ -1185,6 +1289,17 @@ export type Handlers = {
 	-- only job is to remember it. Persistence lives there because
 	-- `plugin:SetSetting` is not reachable from a ModuleScript.
 	onTheme: (string) -> (),
+	--[[
+		A line the user typed into the prompt row.
+
+		The console does not interpret it. Commands live in their own module
+		because half of them are about things this file knows nothing about --
+		the transport, the port setting, the bridge -- and a console that
+		reached for all of that to answer `status` would be the whole plugin.
+	]]
+	onSubmit: (string) -> (),
+	-- Command names starting with the given prefix, for Tab and the hint.
+	onComplete: (string) -> { string },
 }
 
 --[[
@@ -1459,7 +1574,7 @@ function Console.mount(parent: Instance, handlers: Handlers)
 	local footer = Instance.new("Frame")
 	footer.AnchorPoint = Vector2.new(0, 1)
 	footer.Position = UDim2.fromScale(0, 1)
-	footer.Size = UDim2.new(1, 0, 0, 22)
+	footer.Size = UDim2.new(1, 0, 0, FOOTER_HEIGHT)
 	themed(footer, "BackgroundColor3", "surface")
 	footer.BorderSizePixel = 0
 	footer.Parent = root
@@ -1509,17 +1624,38 @@ function Console.mount(parent: Instance, handlers: Handlers)
 		costs legibility is a bad trade however good it looks, and this is a
 		console before it is anything else.
 	]]
+	--[[
+		The prompt sits at the BOTTOM, above the status bar.
+
+		It started under the header, which put it as far from the newest log line
+		as the panel allows: you typed at the top, the answer arrived at the
+		bottom, and reading your own session meant crossing the whole widget
+		twice. Every terminal and every chat window puts the input against the
+		tail of the output for that reason, and this is both of those things.
+
+		It is not inside the activity band either, though the band's caption line
+		reads like a prompt already. The band is toggleable, and hiding the only
+		way to type into the panel behind a decoration switch is a trap.
+	]]
+	Prompt.mount(root, { submit = handlers.onSubmit, complete = handlers.onComplete })
+	local promptRow = root:FindFirstChild("Prompt") :: Frame
+	promptRow.AnchorPoint = Vector2.new(0, 1)
+	promptRow.Position = UDim2.new(0, 0, 1, -FOOTER_HEIGHT)
+	promptRow.Size = UDim2.new(1, 0, 0, Prompt.HEIGHT)
+
 	Visuals.mount(root)
 	local band = root:FindFirstChild("ActivityBand") :: Frame
 	band.Position = UDim2.new(0, 0, 0, 33)
 	band.Size = UDim2.new(1, 0, 0, Visuals.BAND_HEIGHT)
 
 	-- The log's top edge follows the band, so turning it on never hides a line.
+	-- Its bottom edge clears the prompt and the status bar, which do not move.
 	local function layoutLog()
 		local top = 33 + (if Visuals.isVisible() then Visuals.BAND_HEIGHT else 0)
 		scroller.Position = UDim2.new(0, 0, 0, top)
-		scroller.Size = UDim2.new(1, 0, 1, -(top + 22))
+		scroller.Size = UDim2.new(1, 0, 1, -(top + FOOTER_HEIGHT + Prompt.HEIGHT))
 	end
+	state.relayout = layoutLog
 
 	-- On by default. It is the part that says the session is alive, and a signal
 	-- nobody discovers is not a signal; anyone who wants the extra 44px back can
@@ -1529,13 +1665,9 @@ function Console.mount(parent: Instance, handlers: Handlers)
 	Visuals.setIdle()
 	layoutLog()
 
+	state.visualsButton = visualsButton
 	visualsButton.MouseButton1Click:Connect(function()
-		Visuals.setVisible(not Visuals.isVisible())
-		layoutLog()
-		-- The button reports the state it is in, not the state it would move to.
-		-- A toggle that reads as an instruction is ambiguous the moment you look
-		-- away and back.
-		visualsButton.Text = if Visuals.isVisible() then "\u{25C6} visuals" else "visuals"
+		Console.toggleVisuals()
 	end)
 
 	--[[
@@ -1558,6 +1690,106 @@ function Console.mount(parent: Instance, handlers: Handlers)
 		local maxScroll = math.max(0, scroller.AbsoluteCanvasSize.Y - scroller.AbsoluteWindowSize.Y)
 		state.pinned = maxScroll - scroller.CanvasPosition.Y < 24
 	end)
+end
+
+--[[
+	Shows or hides the activity band, from the button or from `visuals`.
+
+	One implementation for two callers. The button used to own this outright,
+	which meant the command could either duplicate the three lines it takes --
+	and go stale the day one of them changes -- or leave the button's own label
+	saying the opposite of what the panel was doing.
+]]
+function Console.toggleVisuals(): boolean
+	local wanted = not Visuals.isVisible()
+	Visuals.setVisible(wanted)
+	local relayout = state.relayout
+	if relayout then
+		relayout()
+	end
+	local button = state.visualsButton
+	if button then
+		-- The button reports the state it is in, not the state it would move to.
+		-- A toggle that reads as an instruction is ambiguous the moment you look
+		-- away and back.
+		button.Text = if wanted then utf8.char(0x25C6) .. " visuals" else "visuals"
+	end
+	return wanted
+end
+
+--[[
+	Narrows the log to one level, or opens it back up when given nothing.
+
+	Nothing is discarded. The records are all still there and a repaint brings
+	them back, which is the only behaviour that makes a filter safe to reach for
+	mid-session: the alternative is a user hiding the very row they were about
+	to read and having no way back to it.
+]]
+function Console.setFilter(levels: { string }?)
+	if levels == nil or #levels == 0 then
+		state.filter = nil
+	else
+		local wanted: { [string]: boolean } = {}
+		for _, level in levels do
+			wanted[level] = true
+		end
+		state.filter = wanted
+	end
+	redraw()
+end
+
+--[[
+	The log as plain text, timestamps and all, with the markup taken back out.
+
+	`copy` needs the words rather than the rendering, and rebuilding them from
+	the records is the only honest source: the rendered label is RichText, and a
+	stripped copy of it would carry whatever the escaping did to the user's own
+	angle brackets.
+
+	Every line is commented out, because the only place Studio will show this to
+	you is a script editor -- and a log pasted in as code is a wall of red
+	underlines with a syntax error on the first word. Commented, it opens as
+	something you read, which is what it is.
+]]
+function Console.plainText(): string
+	local lines: { string } = { "-- rbx-studio console log" }
+	for _, record in state.records do
+		local sigil = (LEVELS[record.level] or LEVELS.info).sigil
+		local detail = if record.detail ~= nil then "    " .. record.detail else ""
+		table.insert(
+			lines,
+			string.format("-- %s %s %s%s", record.stamp, sigil, record.message, detail)
+		)
+	end
+	return table.concat(lines, "\n")
+end
+
+function Console.focusPrompt()
+	Prompt.focus()
+end
+
+--[[
+	Reports that an agent started from the prompt is working.
+
+	Two instruments, one fact. The caret says it to whoever is about to type;
+	the cell says it to whoever is glancing at the panel from across the screen.
+	Told in one place because they must never disagree -- a caret that has gone
+	back to violet beside a cell still pulsing is a panel arguing with itself.
+]]
+--[[
+	Passes Studio's current selection to the prompt row.
+
+	A pass-through, and worth having anyway: `init.server` owns the watcher and
+	the console owns the widget, and letting the watcher reach into `Prompt`
+	directly would give the panel two owners.
+]]
+function Console.setSelection(text: string)
+	Prompt.setSelection(text)
+end
+
+function Console.setPromptBusy(busy: boolean)
+	Prompt.setBusy(busy)
+	Visuals.setThinking(busy)
 end
 
 --[[
@@ -1592,6 +1824,7 @@ function Console.applyTheme()
 	-- the connection, and the only thing that knows it is `setStatus`.
 	Console.setStatus(state.status, state.statusMeta)
 	redraw()
+	Prompt.applyTheme()
 	Visuals.applyTheme()
 end
 

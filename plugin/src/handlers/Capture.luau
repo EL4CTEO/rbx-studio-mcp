@@ -41,34 +41,82 @@ local COMPRESSION_LEVEL = 3
 local Capture = {}
 
 --[[
-	Channel value at or under which a byte counts as black.
+	How far two channel values may differ and still count as the same colour.
 
-	Not zero. A capture that failed comes back at exactly zero, but so does a
-	frame that picked up a hair of dithering, and being off by one is not worth
-	an argument.
+	Generous, because a surface that looks flat is not mathematically flat: PNG
+	round-tripping and Studio's own subtle gradients move a byte or two.
 ]]
-local BLACK_LEVEL = 8
+local FLAT_SPREAD = 6
 
 --[[
-	Whether every pixel in the image is black.
+	Fraction of sampled pixels that must match before the frame counts as empty.
 
-	A black screenshot is the one failure this tool cannot report by failing: the
-	call succeeds, the PNG is valid, and the agent reads it as "the game is dark"
-	and reasons on from there. So it is measured and said out loud instead.
-
-	Written to leave on the first byte that is not black, which is what makes it
-	free. A real frame -- even a night scene, which still has a skybox gradient,
-	a GUI or the topbar somewhere -- exits within the first handful of pixels.
-	The whole buffer is only ever walked when the answer is yes, and at that
-	point the walk has earned itself.
+	Not 100%. This is the number two wrong versions of this check were missing:
+	a viewport showing nothing is never perfectly uniform -- Studio leaves its
+	settings gear and a loading mark in the corner, and those few hundred pixels
+	were enough to make an "is every pixel the same" test answer no. 99% leaves
+	room for that furniture while still being far below anything with a scene in
+	it: a horizon, a part, a skybox gradient or a GUI all move well past 1%.
 ]]
-local function isBlack(rgb: buffer): boolean
-	for offset = 0, buffer.len(rgb) - 1 do
-		if buffer.readu8(rgb, offset) > BLACK_LEVEL then
-			return false
+local FLAT_SHARE = 0.99
+
+--[[
+	Every Nth pixel is looked at, not every pixel.
+
+	A 1656x674 capture is 1.1M pixels, and walking all of them in Luau to answer
+	a yes/no question costs more than the screenshot did. Sampling one in 16 is
+	11000 samples over a full frame -- far more than enough to notice that
+	something is drawn, and it cannot miss a scene, because a scene is not 16
+	pixels.
+]]
+local SAMPLE_STRIDE = 16
+
+--[[
+	Whether the capture is empty: one colour, give or take the corner furniture.
+
+	Two earlier versions of this got it wrong in the same direction, and both
+	shipped a picture of nothing described as a picture of something.
+
+	The first asked "is every pixel black". Studio only returns pure black when
+	it is not rendering at all; when the 3D view is simply not the active tab,
+	the capture is the script editor's background -- a dark navy around 26-35 --
+	which sailed past a threshold of 8.
+
+	The second asked "is every pixel the same colour". Closer, and still no: the
+	empty viewport keeps Studio's settings gear in the top-right corner, so a
+	handful of pixels differ and the answer came back no again. The picture was
+	99% one colour and the test wanted 100%.
+
+	So the question is a proportion, not an absolute. What is being detected is
+	"nothing was drawn into this", and a frame with anything in it -- a part, a
+	horizon, a midnight skybox, a GUI -- puts far more than 1% of its pixels
+	somewhere else.
+]]
+local function isFlat(rgb: buffer): boolean
+	local length = buffer.len(rgb)
+	if length < 3 then
+		return true
+	end
+
+	local red = buffer.readu8(rgb, 0)
+	local green = buffer.readu8(rgb, 1)
+	local blue = buffer.readu8(rgb, 2)
+
+	local step = 3 * SAMPLE_STRIDE
+	local samples = 0
+	local matches = 0
+	for offset = 0, length - 3, step do
+		samples += 1
+		if
+			math.abs(buffer.readu8(rgb, offset) - red) <= FLAT_SPREAD
+			and math.abs(buffer.readu8(rgb, offset + 1) - green) <= FLAT_SPREAD
+			and math.abs(buffer.readu8(rgb, offset + 2) - blue) <= FLAT_SPREAD
+		then
+			matches += 1
 		end
 	end
-	return true
+
+	return samples > 0 and (matches / samples) >= FLAT_SHARE
 end
 
 -- Only a content id comes back over the remote, so this is the time to start a
@@ -300,7 +348,7 @@ local function encode(contentId: string, width: number, context: string): { [str
 	end
 
 	local rgb, outWidth, outHeight = Png.downscaleToRgb(pixels, sourceWidth, sourceHeight, width)
-	local black = isBlack(rgb)
+	local black = isFlat(rgb)
 
 	--[[
 		Raw pixels, compressed by the engine, assembled into a PNG by Node.

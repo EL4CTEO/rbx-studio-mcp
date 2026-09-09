@@ -17,9 +17,9 @@ import { probeOwner } from "./bridge/remote.js";
  * old confusion started, not where it ended.
  */
 
-type Status = "ok" | "warn" | "bad";
+export type Status = "ok" | "warn" | "bad";
 
-interface Check {
+export interface Check {
   status: Status;
   title: string;
   detail: string;
@@ -181,10 +181,23 @@ function checkLuau(): Check {
   };
 }
 
-export async function runDoctor(port: number): Promise<void> {
+/**
+ * The checks themselves, with no opinion about where they are printed.
+ *
+ * Split out of `runDoctor` because the console panel runs the same diagnosis
+ * and cannot use stdout: the bridge's stdout is the MCP transport. Two copies
+ * of this list would drift, and a `doctor` that disagrees with itself depending
+ * on where you typed it is worse than no `doctor` at all.
+ */
+export async function collectChecks(port: number): Promise<Check[]> {
   const built = builtBuildId();
   const checks: Check[] = [checkNode(), checkLuau(), checkPluginFile(), await checkPort(port)];
   checks.push(...(await checkStudios(port, built)));
+  return checks;
+}
+
+export async function runDoctor(port: number): Promise<void> {
+  const checks = await collectChecks(port);
 
   const lines = checks.map((check) => `[${MARK[check.status]}] ${check.title}\n  ${check.detail}`);
   const bad = checks.filter((check) => check.status === "bad").length;

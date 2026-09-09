@@ -18,7 +18,7 @@ interface ScreenshotResponse {
   rawBytes?: number;
   bytes: number;
   context: string;
-  /** True when every pixel came back black; see the note built below. */
+  /** True when the whole image is one flat colour; see the note built below. */
   black?: boolean;
   /** Set when Studio is emulating a device, which is why the shape is unusual. */
   device?: string;
@@ -163,7 +163,7 @@ export function registerScreenshotTools(context: ToolContext): void {
         : "";
 
       /*
-       * A capture that came back entirely black is almost never the game.
+       * A capture that came back as one flat colour is almost never the game.
        *
        * It is a valid PNG of nothing, so nothing about the reply says it
        * failed, and the picture is the reply -- an agent looking at it reads a
@@ -174,11 +174,12 @@ export function registerScreenshotTools(context: ToolContext): void {
        * ruled out, because it is, occasionally.
        */
       const blank = response.black
-        ? " WARNING: every pixel in this capture is black, which usually means Studio was not" +
-          " rendering when it was taken rather than that the scene is dark — the window being" +
-          " minimised, fully covered by another window, or on a virtual desktop that is not" +
-          " on screen will all do it. Ask the user to bring Studio to the front and take it" +
-          " again before drawing any conclusion from what is in this image."
+        ? " WARNING: nothing was rendered into this capture — it is a single flat colour. The" +
+          " usual causes are that the 3D view is not the active tab — a script editor open" +
+          " in front of it returns the editor's background — or that Studio was not" +
+          " rendering at all: minimised, fully covered by another window, or on a virtual" +
+          " desktop that is not on screen. Ask the user to bring the 3D view to the front" +
+          " and take it again before drawing any conclusion from what is in this image."
         : "";
 
       return image(

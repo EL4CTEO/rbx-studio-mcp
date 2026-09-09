@@ -49,6 +49,8 @@ interface ClientRecord {
   name: string;
   version: string;
   pid: number;
+  /** Started by a console panel, so not worth announcing. See ClientView. */
+  spawned: boolean;
 }
 
 interface Pending {
@@ -150,6 +152,17 @@ export class Bridge {
    */
   private readonly chosen = new Map<string, string>();
 
+  /**
+   * A target the USER picked, which outlives the clients that were running.
+   *
+   * `chosen` cannot express this. It is keyed on client, and the point of
+   * typing `use 2` in the console panel is usually to aim an agent that has not
+   * been started yet -- so the choice has to survive being made before there is
+   * anybody to attribute it to. Consulted only after a client's own choice, so
+   * an agent that called set_active_studio still wins for itself.
+   */
+  private defaultStudio: string | null = null;
+
   // --- session lifecycle -------------------------------------------------
 
   attach(identity: StudioIdentity, stream: ServerResponse | null): string {
@@ -193,6 +206,7 @@ export class Bridge {
     // substituting a survivor is deliberate: with a pair left, going ambiguous
     // asks the question again, where quietly promoting whichever remains would
     // point the agent at a place nobody picked.
+    if (this.defaultStudio === studioId) this.defaultStudio = null;
     for (const [clientId, chosenId] of this.chosen) {
       if (chosenId === studioId) this.chosen.delete(clientId);
     }
@@ -232,6 +246,7 @@ export class Bridge {
       name: about?.name ?? known?.name ?? "unknown",
       version: about?.version ?? known?.version ?? "",
       pid: about?.pid ?? known?.pid ?? 0,
+      spawned: about?.spawned ?? known?.spawned ?? false,
     });
     // Announced when a client arrives, and when one finally says who it is: the
     // MCP handshake lands after the process has already registered, so the
@@ -241,8 +256,20 @@ export class Bridge {
     }
   }
 
+  /**
+   * How many clients are sharing this bridge, not counting the panel's own.
+   *
+   * The badge this feeds means "somebody else is also driving your Studio", and
+   * an agent the panel started on the user's instruction is not somebody else.
+   * Counting it made every prompt flash the badge to 2 and log an arrival and a
+   * departure around output the user was trying to read.
+   */
   clientCount(): number {
-    return this.clients.size;
+    let total = 0;
+    for (const client of this.clients.values()) {
+      if (!client.spawned) total += 1;
+    }
+    return total;
   }
 
   /**
@@ -254,6 +281,7 @@ export class Bridge {
    */
   clientList(): ClientView[] {
     return [...this.clients.values()]
+      .filter((client) => !client.spawned)
       .map((client) => ({
         name: client.name,
         version: client.version,
@@ -275,7 +303,7 @@ export class Bridge {
   }
 
   private announceClients(): void {
-    this.onClientsChanged?.(this.clients.size, this.clientList());
+    this.onClientsChanged?.(this.clientCount(), this.clientList());
   }
 
   /**
@@ -314,14 +342,18 @@ export class Bridge {
   activeId(clientId: string): string | null {
     const picked = this.chosen.get(clientId);
     if (picked !== undefined && this.sessions.has(picked)) return picked;
+    if (this.defaultStudio !== null && this.sessions.has(this.defaultStudio)) {
+      return this.defaultStudio;
+    }
     if (this.sessions.size === 1) return this.sessions.keys().next().value ?? null;
     return null;
   }
 
-  /** True only once this client has actually picked a target. */
+  /** True once this client, or the user on its behalf, has picked a target. */
   activeIsChosen(clientId: string): boolean {
     const picked = this.chosen.get(clientId);
-    return picked !== undefined && this.sessions.has(picked);
+    if (picked !== undefined && this.sessions.has(picked)) return true;
+    return this.defaultStudio !== null && this.sessions.has(this.defaultStudio);
   }
 
   setActive(clientId: string, studioId: string): void {
@@ -528,6 +560,44 @@ export class Bridge {
       if (session.identity.placeId !== origin.identity.placeId) continue;
       if (session.stream && !session.stream.writableEnded) session.stream.write(payload);
     }
+  }
+
+  /**
+   * Sends a frame to one Studio rather than to all of them.
+   *
+   * The console panel's command output belongs to the panel that asked for it.
+   * Broadcasting it would print one Studio's `doctor` into every other Studio's
+   * log, which is worse than useless: the reader has no way to tell whose
+   * answer they are looking at.
+   */
+  notify(studioId: string, frame: Record<string, unknown>): void {
+    const session = this.sessions.get(studioId);
+    if (session?.stream && !session.stream.writableEnded) {
+      session.stream.write(`data: ${JSON.stringify(frame)}
+
+`);
+    }
+  }
+
+  /**
+   * Points every client at one Studio.
+   *
+   * Targeting is per-client because two agents may legitimately work on two
+   * places at once. The panel is not a client, though -- it is the user, and
+   * "use this one" typed there means it for everything they are about to run,
+   * including agents that do not exist yet and so cannot be addressed. Applying
+   * it across the board is the only reading that matches the words.
+   */
+  setActiveForAll(studioId: string): void {
+    if (!this.sessions.has(studioId)) {
+      throw new ToolError(
+        "UNKNOWN_STUDIO",
+        `No connected Studio has id "${studioId}".`,
+        "Call list_studios to see the connected instances and their ids.",
+      );
+    }
+    for (const clientId of this.clients.keys()) this.chosen.set(clientId, studioId);
+    this.defaultStudio = studioId;
   }
 
   broadcast(frame: Record<string, unknown>): void {

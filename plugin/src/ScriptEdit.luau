@@ -52,13 +52,60 @@ end
 	Raises SCRIPT_LOCKED when the write is refused, which normally means the
 	script is a package member or is owned by another Team Create session.
 ]]
+--[[
+	Makes sure a write that reported success actually stuck.
+
+	`UpdateSourceAsync` returns true and the editor buffer shows the new text --
+	and then, a third of a second later, the freshly opened document finishes
+	loading and overwrites the buffer with the source from disk. The write is
+	gone, nothing raised, and the tool reports the edit applied. Measured:
+
+		updateOk    = true
+		immediately = "M.rate = 99"   <- the write landed
+		after 0.5s  = "M.rate = 60"   <- and was thrown away
+
+	Reading back straight after the write therefore proves nothing; the first
+	version of this check did exactly that, saw a match, and returned happy
+	while the edit was still about to be discarded. The read has to happen after
+	the load could have finished.
+
+	Nothing here opens editor tabs any more, so the loading document that
+	caused this is only reachable when the USER opens one in the same moment we
+	write to it -- rare, and cheap enough to cover anyway. One settle, one read,
+	and a rewrite if it did not take.
+]]
+local SETTLE = 0.2
+
+local function confirm(target: LuaSourceContainer, produced: string?)
+	if produced == nil then
+		return
+	end
+
+	-- Three rounds: the race is with one load, so a single rewrite settles it,
+	-- and a script that discards three identical writes is failing for a reason
+	-- repeating will not fix.
+	for _ = 1, 3 do
+		task.wait(SETTLE)
+		if ScriptEdit.read(target) == produced then
+			return
+		end
+		pcall(function()
+			ScriptEditorService:UpdateSourceAsync(target, function()
+				return produced
+			end)
+		end)
+	end
+end
+
 function ScriptEdit.write(target: LuaSourceContainer, transform: (string) -> string)
 	local pending: any = nil
 
+	local produced: string? = nil
 	local ok, err = pcall(function()
 		ScriptEditorService:UpdateSourceAsync(target, function(source)
 			local applied, result = pcall(transform, source)
 			if applied then
+				produced = result
 				return result
 			end
 			pending = result
@@ -70,6 +117,7 @@ function ScriptEdit.write(target: LuaSourceContainer, transform: (string) -> str
 		error(pending, 0)
 	end
 	if ok then
+		confirm(target, produced)
 		return
 	end
 

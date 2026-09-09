@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { CLIENT_HEADER, PROTOCOL_VERSION } from "../lib/protocol.js";
 import { ToolError } from "../lib/errors.js";
+import { SPAWNED_BY_PANEL } from "./api.js";
 import type { ClientDescription, SessionsView, StudioBridge } from "./api.js";
 
 /** How the port owner identifies itself, so we never proxy to a stranger. */
@@ -92,7 +93,14 @@ export class RemoteBridge implements StudioBridge {
     try {
       await this.post(
         "/hello",
-        { name: this.about?.name, version: this.about?.version, pid: process.pid },
+        {
+          name: this.about?.name,
+          version: this.about?.version,
+          pid: process.pid,
+          // Not from `this.about`, which is null on the first hello -- and the
+          // first hello is the one that gets announced. See SPAWNED_BY_PANEL.
+          spawned: SPAWNED_BY_PANEL,
+        },
         5_000,
       );
     } catch {

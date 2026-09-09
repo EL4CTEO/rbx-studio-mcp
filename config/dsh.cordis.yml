@@ -1,0 +1,45 @@
+# rbx-studio for DeepSeek Harness (dsh).
+#
+# dsh is "everything is a plugin", and an MCP server becomes one through the
+# `@deepseek-ai/dsh-mcp-client` bridge: one overlay row per server, and its
+# tools arrive as native tools named `mcp__<serverName>__<tool>`. That is the
+# same naming Claude Code and Codex use, so nothing else in this project has to
+# know which harness is driving it.
+#
+# Use it for one run:
+#
+#     dsh --profile headless --patch /path/to/dsh.cordis.yml "add a spawn point"
+#
+# Or keep it, by merging this row into your own patch layer -- append to it
+# rather than overwriting, since it may already hold unrelated patches:
+#
+#     $DSH_HOME/profiles/<name>/cordis.patch.yml   one profile
+#     $DSH_HOME/cordis.patch.yml                   every profile
+#
+# Studio must be open with the plugin installed; dsh starts the bridge, not the
+# editor. If the port is already held by another agent's server, this one
+# becomes a peer and proxies to it, which is how several agents share one
+# Studio.
+- insert:
+    - id: mcp-rbx-studio
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        # Fixes the tool prefix at `mcp__rbx-studio__`. Deliberately not left to
+        # the server's own reported name: dsh treats that as untrusted, and a
+        # rename would silently invalidate every permission rule and every
+        # session history entry that referred to these tools.
+        serverName: rbx-studio
+        transport: stdio
+        command: npx
+        args: ['-y', '@el4cteo/rbx-studio-mcp']
+        env: {}
+        # The place dsh was started from. The bridge itself does not care, but
+        # the tools report paths relative to it.
+        cwd: !!js process.cwd()
+        # Screenshots and script reads are the big payloads here, and a slow
+        # Studio round trip on a large place can outrun a shorter budget.
+        toolCallTimeoutMs: 60000
+        # A missing Studio is not a reason to refuse to start. The tools simply
+        # answer NO_STUDIO until the editor is open, which is a better first
+        # session than a harness that will not boot.
+        failOnStartupError: false

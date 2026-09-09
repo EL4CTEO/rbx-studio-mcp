@@ -27,7 +27,10 @@ if (luau === null) {
 }
 
 /** Modules under test, paired with the test file that exercises each. */
-const suites = [{ module: "plugin/src/TextEdit.luau", test: "tests/textedit.luau" }];
+const suites = [
+  { module: "plugin/src/TextEdit.luau", test: "tests/textedit.luau" },
+  { module: "plugin/src/Format.luau", test: "tests/format.luau" },
+];
 
 /**
  * The stub stands in for Dispatch. It has to raise the same structured table the
