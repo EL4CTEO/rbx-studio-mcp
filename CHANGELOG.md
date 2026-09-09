@@ -2,6 +2,12 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.5.3
+
+### Fixed
+- **Every tool call was logged twice** — once by Studio with a readable name and a duration, once by the agent. The agent's copy is dropped for `rbx-studio` calls; tools Studio never sees still appear.
+- **opencode's naming of our tools is recognised**, so a call reads `studio_status` rather than `rbx-studio_studio_status`.
+
 ## 0.5.2
 
 ### Added

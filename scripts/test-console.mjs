@@ -64,15 +64,46 @@ const readAll = (id, lines) => {
   // used to require it be dropped, which is the same instinct that made
   // opencode print nothing -- a line we cannot parse is still evidence, and the
   // panel is the only place the user can see it.
-  ok(rows.length === 4, "claude: init contributes no row, but junk is surfaced");
+  // Three rows, and which three is the point. The junk line IS shown -- that
+  // assertion used to require it be dropped, the same instinct that made
+  // opencode print nothing. The rbx-studio tool call is NOT, because Studio
+  // logs every call that reaches it with a friendlier name and a duration, and
+  // the agent's copy of it made every call two lines in the panel.
+  ok(rows.length === 3, "claude: junk is surfaced, our own tool call is not doubled");
   ok(
     rows.some((row) => row.level === "dim" && row.message === "not json at all"),
     "claude: an unparseable line is shown dim rather than swallowed",
   );
+  ok(
+    !rows.some((row) => row.level === "call"),
+    "claude: an rbx-studio call is left to Studio's own log",
+  );
   ok(rows[0].level === "reply" && rows[0].message === "Looking at the place.", "claude: prose");
-  ok(rows[1].level === "call" && rows[1].message === "create", "claude: server prefix is stripped");
-  ok(rows[3].level === "ok" && rows[3].message === "agent done", "claude: result row");
-  ok(rows[3].detail === "5.6s  $0.1282", "claude: duration and cost ride the detail column");
+  ok(rows[2].level === "ok" && rows[2].message === "agent done", "claude: result row");
+  ok(rows[2].detail === "5.6s  $0.1282", "claude: duration and cost ride the detail column");
+
+  // A tool that is NOT ours is all the panel will ever hear about, so it stays.
+  const outside = readAll("claude", [
+    JSON.stringify({
+      type: "assistant",
+      message: { content: [{ type: "tool_use", name: "Bash", input: { command: "ls -la" } }] },
+    }),
+  ]);
+  ok(
+    outside.rows[0].level === "call" && outside.rows[0].message === "Bash",
+    "claude: a tool Studio never sees is still logged",
+  );
+
+  // opencode names MCP tools `<server>_<tool>`, not `mcp__<server>__<tool>`.
+  // Unstripped it printed "rbx-studio_studio_status" AND doubled Studio's row.
+  const named = readAll("opencode", [
+    JSON.stringify({
+      type: "tool_use",
+      sessionID: "s",
+      part: { type: "tool", tool: "rbx-studio_studio_status", state: { input: {} } },
+    }),
+  ]);
+  ok(named.rows.length === 0, "opencode: its own naming of our tools is recognised too");
 
   // A failure must not be reported as a completion. This is the one row a user
   // reads to decide whether to trust what just happened to their place.
@@ -94,7 +125,7 @@ const readAll = (id, lines) => {
         content: [
           {
             type: "tool_use",
-            name: "mcp__rbx-studio__execute_luau",
+            name: "Bash",
             input: { source: "local m = workspace.SmallHouse\nm.Parent = nil\nprint(m)" },
           },
         ],
@@ -102,7 +133,7 @@ const readAll = (id, lines) => {
     }),
   ]);
   ok(!rows[0].detail.includes("\n"), "tool detail never contains a newline");
-  ok(rows[0].message === "execute_luau", "tool name keeps its own underscores");
+  ok(rows[0].message === "Bash", "an outside tool keeps its own name");
 }
 
 // --- every adapter, against its real envelope -------------------------------

@@ -87,8 +87,45 @@ function unparsed(line: string): Reading {
   return text === "" ? NOTHING : { lines: [{ level: "dim", message: text }] };
 }
 
-function toolLine(name: string, input: unknown): HarnessLine {
-  const short = name.replace(/^mcp__[^_]+__/, "").replace(/^mcp__/, "");
+/**
+ * The MCP server this panel belongs to, as the agents spell it.
+ *
+ * Every harness renames MCP tools its own way: Claude and Codex write
+ * `mcp__rbx-studio__tree`, opencode writes `rbx-studio_tree`. Both are the same
+ * call, and neither is what a reader wants to see -- the tool is `tree`.
+ */
+const OWN_SERVER = "rbx-studio";
+
+/** Strips whatever prefix a harness put in front of an MCP tool name. */
+function shorten(name: string): string {
+  return name
+    .replace(/^mcp__[^_]+__/, "")
+    .replace(/^mcp__/, "")
+    .replace(new RegExp("^" + OWN_SERVER + "[_-]+"), "");
+}
+
+/**
+ * Rows for one tool call -- usually one, and none for our own tools.
+ *
+ * Studio logs every call that reaches it, with a friendly name and the time it
+ * took, for EVERY client. So an agent's own row for a `rbx-studio` call is the
+ * same event written twice, one line apart: "Check Studio 441ms" from the
+ * plugin, "rbx-studio_studio_status" from the agent. Two lines per call, and
+ * the panel's four-call test read as eight.
+ *
+ * The agent's copy is the one to drop. Studio's has the duration, has the
+ * readable name, and appears whichever client made the call -- including the
+ * user's own terminal session, which no adapter here ever sees. What is lost is
+ * the arguments; that is a fair price for a log that reads as one event per
+ * line, and `console` still has them.
+ *
+ * Everything else the agent does -- reading a file, running a shell command --
+ * Studio never sees, so those rows are all there is and they stay.
+ */
+function toolLines(name: string, input: unknown): HarnessLine[] {
+  const short = shorten(name);
+  if (short !== name) return [];
+
   let detail: string | undefined;
   if (input !== null && typeof input === "object") {
     const parts = Object.entries(input as Record<string, unknown>)
@@ -100,7 +137,7 @@ function toolLine(name: string, input: unknown): HarnessLine {
       .map(([key, value]) => key + "=" + String(value).replace(/\s+/g, " ").slice(0, 32));
     if (parts.length > 0) detail = parts.join(" ");
   }
-  return { level: "call", message: short, detail };
+  return [{ level: "call", message: short, detail }];
 }
 
 /** Collapses a paragraph into the one-line rows a console log can hold. */
@@ -149,7 +186,7 @@ const claude: Harness = {
       const lines: HarnessLine[] = [];
       for (const part of event.message?.content ?? []) {
         if (part.type === "text" && String(part.text).trim() !== "") lines.push(...say(part.text));
-        if (part.type === "tool_use") lines.push(toolLine(part.name, part.input));
+        if (part.type === "tool_use") lines.push(...toolLines(part.name, part.input));
       }
       return { lines, session: event.session_id };
     }
@@ -232,8 +269,8 @@ const codex: Harness = {
       return { lines: say(String(item.text ?? "")) };
     }
     if (event.type === "item.started") {
-      if (item.type === "mcp_tool_call") return { lines: [toolLine(String(item.tool ?? "tool"), item.arguments)] };
-      if (item.type === "command_execution") return { lines: [toolLine("shell", item.command)] };
+      if (item.type === "mcp_tool_call") return { lines: toolLines(String(item.tool ?? "tool"), item.arguments) };
+      if (item.type === "command_execution") return { lines: toolLines("shell", item.command) };
     }
     if (item.type === "error" && event.type === "item.completed") {
       return { lines: [{ level: "error", message: String(item.message ?? "agent failed") }] };
@@ -288,7 +325,7 @@ const opencode: Harness = {
       return { lines: say(part.text), session };
     }
     if (kind === "tool_use" && typeof part.tool === "string") {
-      return { lines: [toolLine(part.tool, part.state?.input)], session };
+      return { lines: toolLines(part.tool, part.state?.input), session };
     }
     if (kind === "error") {
       const message = event.error ?? part.error ?? "agent failed";
@@ -378,7 +415,7 @@ const gemini: Harness = {
       return { lines: say(String(event.content ?? event.text ?? "")) };
     }
     if (event.type === "tool_use") {
-      return { lines: [toolLine(String(event.name ?? event.tool ?? "tool"), event.args ?? event.input)] };
+      return { lines: toolLines(String(event.name ?? event.tool ?? "tool"), event.args ?? event.input) };
     }
     if (event.type === "error") {
       return { lines: [{ level: "error", message: String(event.message ?? "agent failed") }] };
@@ -423,7 +460,7 @@ const cursor: Harness = {
       const call = event.tool_call ?? {};
       const named = Object.keys(call)[0] ?? "tool";
       const inner = call[named] ?? {};
-      return { lines: [toolLine(inner.name ?? named, inner.args)], session };
+      return { lines: toolLines(inner.name ?? named, inner.args), session };
     }
     if (event.type === "result") {
       return {
@@ -483,7 +520,7 @@ function readAnthropicStream(line: string): Reading {
     const lines: HarnessLine[] = [];
     for (const part of event.message?.content ?? []) {
       if (part.type === "text" && String(part.text).trim() !== "") lines.push(...say(part.text));
-      if (part.type === "tool_use") lines.push(toolLine(part.name, part.input));
+      if (part.type === "tool_use") lines.push(...toolLines(part.name, part.input));
     }
     return { lines, session: event.session_id };
   }
@@ -596,7 +633,7 @@ const goose: Harness = {
       if (typeof text === "string") return { lines: say(text), session };
     }
     if (kind === "tool_use" || kind === "tool_request") {
-      return { lines: [toolLine(String(event.name ?? event.tool ?? "tool"), event.input)], session };
+      return { lines: toolLines(String(event.name ?? event.tool ?? "tool"), event.input), session };
     }
     if (kind === "error") {
       return { lines: [{ level: "error", message: String(event.message ?? "agent failed") }], session };
