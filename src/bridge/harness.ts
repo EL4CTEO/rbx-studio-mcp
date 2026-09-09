@@ -74,6 +74,19 @@ function parse(line: string): any {
 }
 
 /** A tool call written the way the console writes its own. */
+/**
+ * What to do with a line that is not the JSON we expected.
+ *
+ * Never nothing. Dropping unrecognised input is precisely how the opencode
+ * adapter printed a blank run for months: it understood none of what it was
+ * sent and said so by staying quiet. A line nobody can parse is still evidence,
+ * and dim is the level for evidence.
+ */
+function unparsed(line: string): Reading {
+  const text = line.trim();
+  return text === "" ? NOTHING : { lines: [{ level: "dim", message: text }] };
+}
+
 function toolLine(name: string, input: unknown): HarnessLine {
   const short = name.replace(/^mcp__[^_]+__/, "").replace(/^mcp__/, "");
   let detail: string | undefined;
@@ -127,7 +140,7 @@ const claude: Harness = {
   ],
   read: (line) => {
     const event = parse(line);
-    if (event === null) return NOTHING;
+    if (event === null) return unparsed(line);
 
     if (event.type === "system" && event.subtype === "init") {
       return { lines: [], session: event.session_id };
@@ -196,7 +209,7 @@ const codex: Harness = {
   ],
   read: (line) => {
     const event = parse(line);
-    if (event === null) return NOTHING;
+    if (event === null) return unparsed(line);
 
     if (event.type === "thread.started") {
       return { lines: [], session: event.thread_id };
@@ -265,9 +278,7 @@ const opencode: Harness = {
   ],
   read: (line) => {
     const event = parse(line);
-    if (event === null) {
-      return line.trim() === "" ? NOTHING : { lines: [{ level: "dim", message: line.trim() }] };
-    }
+    if (event === null) return unparsed(line);
 
     const session = typeof event.sessionID === "string" ? event.sessionID : undefined;
     const kind = event.type;
@@ -354,7 +365,7 @@ const gemini: Harness = {
   argv: (prompt) => ["--output-format", "stream-json", "-p", prompt],
   read: (line) => {
     const event = parse(line);
-    if (event === null) return NOTHING;
+    if (event === null) return unparsed(line);
 
     if (event.type === "init") {
       return { lines: [], session: event.session_id ?? event.sessionId };
@@ -398,7 +409,7 @@ const cursor: Harness = {
   ],
   read: (line) => {
     const event = parse(line);
-    if (event === null) return NOTHING;
+    if (event === null) return unparsed(line);
     const session = typeof event.session_id === "string" ? event.session_id : undefined;
 
     if (event.type === "assistant") {
@@ -448,7 +459,199 @@ const crush: Harness = {
     line.trim() === "" ? NOTHING : { lines: [{ level: "reply", message: line.trim() }] },
 };
 
-const REGISTRY: Harness[] = [claude, codex, opencode, dsh, gemini, cursor, crush];
+/**
+ * Reads Claude Code's `stream-json` envelope, which several other CLIs copy.
+ *
+ * Amp says so outright ("Claude Code-compatible protocol"), and the shape is
+ * the same three events with the same field names: `system`/`init` carrying
+ * `session_id`, `assistant` carrying `message.content[]` of `text` and
+ * `tool_use` parts, and `result` ending the run. Sharing the reader means a fix
+ * to one is a fix to all of them, and means a new CLI that adopts the envelope
+ * costs an argv and nothing else.
+ *
+ * `result` detail is left to the caller: Claude reports cost and duration in
+ * fields the others do not have.
+ */
+function readAnthropicStream(line: string): Reading {
+  const event = parse(line);
+  if (event === null) return unparsed(line);
+
+  if (event.type === "system" && event.subtype === "init") {
+    return { lines: [], session: event.session_id };
+  }
+  if (event.type === "assistant") {
+    const lines: HarnessLine[] = [];
+    for (const part of event.message?.content ?? []) {
+      if (part.type === "text" && String(part.text).trim() !== "") lines.push(...say(part.text));
+      if (part.type === "tool_use") lines.push(toolLine(part.name, part.input));
+    }
+    return { lines, session: event.session_id };
+  }
+  if (event.type === "result") {
+    return {
+      lines: [
+        event.is_error === true
+          ? { level: "error", message: "agent failed" }
+          : { level: "ok", message: "agent done" },
+      ],
+      session: event.session_id,
+    };
+  }
+  return NOTHING;
+}
+
+/**
+ * Sourcegraph Amp. `-x` is its execute verb and `--stream-json` its event
+ * stream, in Claude Code's own envelope.
+ *
+ * Continuing is a different COMMAND rather than a flag -- `amp threads continue
+ * <id>` -- so the resumed argv is not the first-run argv with something added,
+ * which is why this builds both shapes rather than appending.
+ */
+const amp: Harness = {
+  id: "amp",
+  label: "Amp",
+  bin: "amp",
+  argv: (prompt, session) =>
+    session === null
+      ? ["-x", "--stream-json", prompt]
+      : ["threads", "continue", session, "-x", "--stream-json", prompt],
+  read: readAnthropicStream,
+};
+
+/**
+ * Qwen Code. A Gemini CLI fork, and it kept the headless interface: `-p` with
+ * `--output-format stream-json`, and the same `init`/`message`/`tool_use`
+ * events.
+ */
+const qwen: Harness = {
+  id: "qwen",
+  label: "Qwen Code",
+  bin: "qwen",
+  argv: (prompt) => ["--output-format", "stream-json", "-p", prompt],
+  read: (line) => gemini.read(line),
+};
+
+/**
+ * Factory Droid. `exec` is headless; `--output-format json` answers with ONE
+ * object at the end rather than a stream.
+ *
+ * `stream-json` exists and is deprecated -- it prints a warning -- and its
+ * replacement, `stream-jsonrpc`, is a request/response protocol that expects a
+ * client writing to stdin, not a log to read. A single object at the end is the
+ * honest fit for a one-shot prompt, at the cost of the panel showing the work
+ * only when it is done.
+ *
+ * `--auto medium` because a headless agent cannot answer an approval prompt,
+ * and `low` refuses the file edits an agent asked to build something needs.
+ */
+const droid: Harness = {
+  id: "droid",
+  label: "Factory Droid",
+  bin: "droid",
+  argv: (prompt, session) => [
+    "exec",
+    "--output-format",
+    "json",
+    "--auto",
+    "medium",
+    ...(session === null ? [] : ["--session-id", session]),
+    prompt,
+  ],
+  read: (line) => {
+    const event = parse(line);
+    if (event === null) return unparsed(line);
+    const text = event.result ?? event.output ?? event.message ?? event.text;
+    const session = event.session_id ?? event.sessionId;
+    if (typeof text === "string" && text.trim() !== "") return { lines: say(text), session };
+    return { lines: [], session };
+  },
+};
+
+/**
+ * Block's goose. `run -t` is its headless verb, and it speaks `stream-json`.
+ *
+ * Sessions are named rather than identified: `--resume -n <name>` reopens one,
+ * so the name goose reports is stored where the other harnesses store an id.
+ */
+const goose: Harness = {
+  id: "goose",
+  label: "goose",
+  bin: "goose",
+  argv: (prompt, session) => [
+    "run",
+    ...(session === null ? [] : ["--resume", "-n", session]),
+    "--output-format",
+    "stream-json",
+    "-t",
+    prompt,
+  ],
+  read: (line) => {
+    const event = parse(line);
+    if (event === null) return unparsed(line);
+    const session = event.session_id ?? event.session ?? event.name;
+    const kind = event.type;
+    if (kind === "text" || kind === "message" || kind === "assistant") {
+      const text = event.text ?? event.content ?? event.message?.content;
+      if (typeof text === "string") return { lines: say(text), session };
+    }
+    if (kind === "tool_use" || kind === "tool_request") {
+      return { lines: [toolLine(String(event.name ?? event.tool ?? "tool"), event.input)], session };
+    }
+    if (kind === "error") {
+      return { lines: [{ level: "error", message: String(event.message ?? "agent failed") }], session };
+    }
+    return { lines: [], session };
+  },
+};
+
+/**
+ * GitHub Copilot CLI. `-p` runs one prompt; there is no structured output --
+ * the request for it is open and unimplemented -- so this reads plain text.
+ *
+ * `--no-ask-user` matters more here than the missing JSON: without it Copilot
+ * pauses for clarification, and a headless run with nothing to answer it sits
+ * there until it is killed. `--allow-tool` is scoped to this server's tools for
+ * the same reason Claude's is: a prompt typed in a Studio panel is not consent
+ * to touch the disk.
+ */
+const copilot: Harness = {
+  id: "copilot",
+  label: "GitHub Copilot CLI",
+  bin: "copilot",
+  argv: (prompt) => ["-p", prompt, "--no-ask-user", "--allow-tool", "mcp__rbx-studio"],
+  read: (line) =>
+    line.trim() === "" ? NOTHING : { lines: [{ level: "reply", message: line.trim() }] },
+};
+
+/**
+ * Aider. `--message` is one shot; `--yes` answers the confirmations it would
+ * otherwise block on. No event stream, so its prose arrives as prose.
+ */
+const aider: Harness = {
+  id: "aider",
+  label: "Aider",
+  bin: "aider",
+  argv: (prompt) => ["--message", prompt, "--yes", "--no-pretty"],
+  read: (line) =>
+    line.trim() === "" ? NOTHING : { lines: [{ level: "reply", message: line.trim() }] },
+};
+
+const REGISTRY: Harness[] = [
+  claude,
+  codex,
+  opencode,
+  dsh,
+  gemini,
+  cursor,
+  amp,
+  qwen,
+  droid,
+  goose,
+  copilot,
+  aider,
+  crush,
+];
 
 /**
  * Whether an MCP client's self-reported name is this harness.

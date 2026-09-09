@@ -2,6 +2,14 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.5.2
+
+### Added
+- **Six more coding agents** the panel can run: Amp, Qwen Code, Factory Droid, goose, GitHub Copilot CLI and Aider. Thirteen in total, each built against its documented headless output rather than a guess.
+
+### Fixed
+- **Output nobody can parse is now shown instead of dropped.** Every adapter discarded lines it did not recognise, which is exactly how opencode managed to print a blank run.
+
 ## 0.5.1
 
 ### Fixed

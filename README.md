@@ -182,7 +182,7 @@ Under the header is a command line. Type a command, or type a sentence and it go
 
 Up and down walk the history, Tab completes.
 
-**Prompts start a real agent.** The bridge runs whichever tool you have on PATH — Claude Code, Codex, opencode, DeepSeek Harness, Gemini, Cursor — in headless mode. It connects back to this same bridge, drives the same Studio, and its work streams into the log line by line. It is a separate session from the terminal you may already have open, billed separately, and it is allowed the `rbx-studio` tools and nothing else. `stop` cancels it.
+**Prompts start a real agent.** The bridge runs whichever tool you have on PATH — Claude Code, Codex, opencode, DeepSeek Harness, Gemini, Cursor, Amp, Qwen Code, Factory Droid, goose, GitHub Copilot CLI, Aider, Crush — in headless mode. It connects back to this same bridge, drives the same Studio, and its work streams into the log line by line. It is a separate session from the terminal you may already have open, billed separately, and it is allowed the `rbx-studio` tools and nothing else. `stop` cancels it.
 
 Hover the tab on the right edge for eight themes — Lattice, Observatory, Orbit, Void, Nebula, Aurora, Phosphor, Blueprint. Each redraws the activity band, not just its colours. Your pick is remembered.
 

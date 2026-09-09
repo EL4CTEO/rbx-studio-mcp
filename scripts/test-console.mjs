@@ -60,11 +60,19 @@ const readAll = (id, lines) => {
   ]);
 
   ok(session === "abc-123", "claude: session id is learned from the init event");
-  ok(rows.length === 3, "claude: init contributes no row, junk lines are ignored");
+  // Four rows, not three: the "not json at all" line is SHOWN. This assertion
+  // used to require it be dropped, which is the same instinct that made
+  // opencode print nothing -- a line we cannot parse is still evidence, and the
+  // panel is the only place the user can see it.
+  ok(rows.length === 4, "claude: init contributes no row, but junk is surfaced");
+  ok(
+    rows.some((row) => row.level === "dim" && row.message === "not json at all"),
+    "claude: an unparseable line is shown dim rather than swallowed",
+  );
   ok(rows[0].level === "reply" && rows[0].message === "Looking at the place.", "claude: prose");
   ok(rows[1].level === "call" && rows[1].message === "create", "claude: server prefix is stripped");
-  ok(rows[2].level === "ok" && rows[2].message === "agent done", "claude: result row");
-  ok(rows[2].detail === "5.6s  $0.1282", "claude: duration and cost ride the detail column");
+  ok(rows[3].level === "ok" && rows[3].message === "agent done", "claude: result row");
+  ok(rows[3].detail === "5.6s  $0.1282", "claude: duration and cost ride the detail column");
 
   // A failure must not be reported as a completion. This is the one row a user
   // reads to decide whether to trust what just happened to their place.
@@ -435,6 +443,86 @@ const readAll = (id, lines) => {
     ok(/connected/.test(text), "the ones that are attached are named as attached");
   } else {
     ok(true, "skipped: both agents are not installed here");
+  }
+}
+
+// --- the harnesses added after the opencode failure -------------------------
+//
+// Same rule as the block above: every shape here comes from the vendor's own
+// documentation, not from a guess. The point of the rule is that a guessed
+// envelope produces silence, and silence is the failure mode this whole file
+// exists to catch.
+{
+  // Amp says outright that it speaks Claude Code's protocol, so it is read by
+  // the same function -- and this asserts that, rather than trusting it.
+  const amp = readAll("amp", [
+    JSON.stringify({ type: "system", subtype: "init", session_id: "T-1", cwd: "/x" }),
+    JSON.stringify({
+      type: "assistant",
+      session_id: "T-1",
+      message: {
+        content: [
+          { type: "text", text: "Built the wall." },
+          { type: "tool_use", name: "create", input: { className: "Part" } },
+        ],
+      },
+    }),
+    JSON.stringify({ type: "result", session_id: "T-1", is_error: false }),
+  ]);
+  ok(amp.session === "T-1", "amp: session id");
+  ok(amp.rows.some((row) => row.message === "Built the wall."), "amp: prose");
+  ok(amp.rows.some((row) => row.message === "create"), "amp: tool calls");
+  ok(amp.rows.some((row) => row.message === "agent done"), "amp: result ends the run");
+
+  // Continuing is a different command, not a flag: `amp threads continue <id>`.
+  const ampResume = find("amp").argv("go on", "T-1");
+  ok(ampResume[0] === "threads" && ampResume[1] === "continue", "amp: resumes with its own verb");
+  ok(ampResume[2] === "T-1", "amp: the thread id follows the verb");
+  ok(find("amp").argv("hi", null)[0] === "-x", "amp: a fresh run uses the execute flag");
+
+  // Qwen Code is a Gemini CLI fork and kept its headless envelope.
+  const qwen = readAll("qwen", [
+    JSON.stringify({ type: "init", session_id: "q-1" }),
+    JSON.stringify({ type: "message", role: "assistant", content: "Done." }),
+  ]);
+  ok(qwen.session === "q-1", "qwen: session id, read as gemini");
+  ok(qwen.rows.some((row) => row.message === "Done."), "qwen: prose");
+
+  // Droid answers with one object at the end rather than a stream.
+  const droid = readAll("droid", [JSON.stringify({ session_id: "d-1", result: "Placed it." })]);
+  ok(droid.session === "d-1", "droid: session id");
+  ok(droid.rows.some((row) => row.message === "Placed it."), "droid: the final answer");
+  const droidArgv = find("droid").argv("hi", null);
+  ok(droidArgv[0] === "exec", "droid: uses its exec verb");
+  ok(droidArgv.includes("--auto"), "droid: sets an autonomy level, or it blocks on approval");
+
+  // goose names sessions instead of numbering them.
+  const goose = readAll("goose", [
+    JSON.stringify({ type: "message", text: "Ready.", session_id: "g-1" }),
+  ]);
+  ok(goose.rows.some((row) => row.message === "Ready."), "goose: prose");
+  const gooseResume = find("goose").argv("go on", "g-1");
+  ok(
+    gooseResume.includes("--resume") && gooseResume[gooseResume.indexOf("-n") + 1] === "g-1",
+    "goose: resumes a session by name",
+  );
+
+  // Copilot has no structured output, but it does block without --no-ask-user.
+  const copilotArgv = find("copilot").argv("hi", null);
+  ok(copilotArgv.includes("--no-ask-user"), "copilot: never waits for a human that is not there");
+  ok(
+    readAll("copilot", ["Explained it."]).rows[0].message === "Explained it.",
+    "copilot: plain text reaches the log",
+  );
+
+  // Aider blocks on confirmations unless told not to.
+  ok(find("aider").argv("hi", null).includes("--yes"), "aider: answers its own confirmations");
+
+  // Every harness must produce SOMETHING from a plain line. A reader that
+  // silently drops unknown input is exactly how opencode printed nothing.
+  for (const harness of ["amp", "qwen", "droid", "goose", "copilot", "aider", "crush"]) {
+    const rows = readAll(harness, ["some unstructured output"]).rows;
+    ok(rows.length > 0, harness + ": unrecognised output is shown, not swallowed");
   }
 }
 
