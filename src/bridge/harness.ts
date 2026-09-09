@@ -162,8 +162,26 @@ const claude: Harness = {
 };
 
 /**
- * OpenAI Codex CLI. `exec` is its headless verb and `--json` its event stream;
- * the envelope differs from Claude's but carries the same three facts.
+ * OpenAI Codex CLI. `exec` is its headless verb and `--json` its event stream.
+ *
+ * Documented shape, one JSON object per line:
+ *
+ *   {"type":"thread.started","thread_id":"019cec77-..."}
+ *   {"type":"turn.started"}
+ *   {"type":"item.completed","item":{"type":"agent_message","text":"..."}}
+ *   {"type":"item.started",  "item":{"type":"mcp_tool_call","server":"...","tool":"..."}}
+ *   {"type":"turn.completed","usage":{...}}
+ *   {"type":"turn.failed","error":{"message":"..."}}
+ *
+ * Two things here were wrong and are worth naming, because both fail quietly.
+ *
+ * The session id is `thread_id` on `thread.started`, not `session_id` on a
+ * `session.created` that codex never sends -- so every panel prompt started a
+ * new conversation and "continuing" was a lie.
+ *
+ * And global flags must precede the `resume` subcommand: codex rejects
+ * `--skip-git-repo-check` placed after it, so the old argv could only ever
+ * work on the FIRST turn and broke on every follow-up.
  */
 const codex: Harness = {
   id: "codex",
@@ -171,38 +189,69 @@ const codex: Harness = {
   bin: "codex",
   argv: (prompt, session) => [
     "exec",
-    ...(session === null ? [] : ["resume", session]),
     "--json",
     "--skip-git-repo-check",
+    ...(session === null ? [] : ["resume", session]),
     prompt,
   ],
   read: (line) => {
     const event = parse(line);
     if (event === null) return NOTHING;
-    const item = event.item ?? event.msg ?? event;
-    const kind = item.type ?? event.type;
 
-    if (kind === "session.created" || kind === "session_configured") {
-      return { lines: [], session: item.session_id ?? event.session_id };
+    if (event.type === "thread.started") {
+      return { lines: [], session: event.thread_id };
     }
-    if (kind === "agent_message" || kind === "assistant_message") {
-      return { lines: say(String(item.text ?? item.message ?? "")) };
-    }
-    if (kind === "command_execution" || kind === "mcp_tool_call" || kind === "function_call") {
-      const name = String(item.tool ?? item.name ?? item.command ?? "tool");
-      return { lines: [toolLine(name, item.arguments ?? item.input)] };
-    }
-    if (kind === "turn.completed" || kind === "task_complete") {
+    if (event.type === "turn.completed") {
       return { lines: [{ level: "ok", message: "agent done" }] };
     }
-    if (kind === "error" || kind === "turn.failed") {
+    if (event.type === "turn.failed" || event.type === "error") {
+      const message = event.error?.message ?? event.message ?? "agent failed";
+      return { lines: [{ level: "error", message: String(message) }] };
+    }
+
+    const item = event.item;
+    if (item === undefined) return NOTHING;
+
+    // Tools report twice, `item.started` then `item.completed`. The started one
+    // is taken because it is the one that arrives while the work is happening,
+    // which is what a live log is for; taking both printed every call twice.
+    if (item.type === "agent_message" && event.type === "item.completed") {
+      return { lines: say(String(item.text ?? "")) };
+    }
+    if (event.type === "item.started") {
+      if (item.type === "mcp_tool_call") return { lines: [toolLine(String(item.tool ?? "tool"), item.arguments)] };
+      if (item.type === "command_execution") return { lines: [toolLine("shell", item.command)] };
+    }
+    if (item.type === "error" && event.type === "item.completed") {
       return { lines: [{ level: "error", message: String(item.message ?? "agent failed") }] };
     }
     return NOTHING;
   },
 };
 
-/** opencode. `run` is one-shot; `--format json` turns it into an event stream. */
+/**
+ * opencode. `run` is one-shot; `--format json` turns it into an event stream.
+ *
+ * The envelope here was WRONG until it was recorded from a live run, and wrong
+ * in the way that produces silence rather than an error: it expected
+ * `message.part.updated`, `session.created` and `session.idle`, none of which
+ * opencode emits. Every line fell through to NOTHING, so a prompt started the
+ * agent, the agent answered, and the panel printed a blank run and went idle.
+ *
+ * What it actually emits, one JSON object per line, verified on 1.18.30:
+ *
+ *   {"type":"step_start", "sessionID":"ses_...", "part":{...}}
+ *   {"type":"tool_use",   "sessionID":"ses_...", "part":{"type":"tool","tool":"glob","state":{...}}}
+ *   {"type":"text",       "sessionID":"ses_...", "part":{"type":"text","text":"Hi there"}}
+ *   {"type":"step_finish","sessionID":"ses_...", "part":{"tokens":{...},"cost":0.004}}
+ *
+ * `sessionID` rides on EVERY event rather than arriving in one of its own, so
+ * it is read from whatever comes first instead of being waited for.
+ *
+ * `step_finish` is per step, not per run -- a turn that calls a tool emits two
+ * of them -- so it is not "agent done". The run's end is the process exiting,
+ * which `run` already reports.
+ */
 const opencode: Harness = {
   id: "opencode",
   label: "opencode",
@@ -219,22 +268,25 @@ const opencode: Harness = {
     if (event === null) {
       return line.trim() === "" ? NOTHING : { lines: [{ level: "dim", message: line.trim() }] };
     }
-    const kind = event.type ?? event.event;
-    if (kind === "session.created" || kind === "session") {
-      return { lines: [], session: event.sessionID ?? event.id ?? event.properties?.info?.id };
+
+    const session = typeof event.sessionID === "string" ? event.sessionID : undefined;
+    const kind = event.type;
+    const part = event.part ?? {};
+
+    if (kind === "text" && typeof part.text === "string") {
+      return { lines: say(part.text), session };
     }
-    if (kind === "message.part.updated" || kind === "part") {
-      const part = event.properties?.part ?? event.part ?? {};
-      if (part.type === "text" && typeof part.text === "string") return { lines: say(part.text) };
-      if (part.type === "tool" && typeof part.tool === "string") {
-        return { lines: [toolLine(part.tool, part.state?.input)] };
-      }
-      return NOTHING;
+    if (kind === "tool_use" && typeof part.tool === "string") {
+      return { lines: [toolLine(part.tool, part.state?.input)], session };
     }
-    if (kind === "session.idle" || kind === "done") {
-      return { lines: [{ level: "ok", message: "agent done" }] };
+    if (kind === "error") {
+      const message = event.error ?? part.error ?? "agent failed";
+      return { lines: [{ level: "error", message: String(message) }], session };
     }
-    return NOTHING;
+    // step_start and step_finish are turn bookkeeping. They carry the token
+    // count and cost, which the panel already gets from the run's own summary,
+    // and printing a row per step would double the log for nothing.
+    return { lines: [], session };
   },
 };
 
@@ -285,15 +337,139 @@ const dsh: Harness = {
     line.trim() === "" ? NOTHING : { lines: [{ level: "reply", message: line.trim() }] },
 };
 
-const REGISTRY: Harness[] = [
-  claude,
-  codex,
-  opencode,
-  dsh,
-  generic("gemini", "gemini", "Gemini CLI"),
-  generic("cursor", "cursor-agent", "Cursor Agent"),
-  generic("crush", "crush", "Crush"),
-];
+/**
+ * Gemini CLI. `-p` is its headless verb; `--output-format stream-json` turns it
+ * into an event stream of `init`, `message`, `tool_use`, `tool_result`, `error`
+ * and `result`.
+ *
+ * No documented way to resume a headless session, so every prompt is a fresh
+ * conversation. That is the CLI's limitation rather than this adapter's, and it
+ * is why `session` is ignored here instead of being passed to a flag that does
+ * not exist.
+ */
+const gemini: Harness = {
+  id: "gemini",
+  label: "Gemini CLI",
+  bin: "gemini",
+  argv: (prompt) => ["--output-format", "stream-json", "-p", prompt],
+  read: (line) => {
+    const event = parse(line);
+    if (event === null) return NOTHING;
+
+    if (event.type === "init") {
+      return { lines: [], session: event.session_id ?? event.sessionId };
+    }
+    if (event.type === "message") {
+      // Both sides of the conversation come through here; the user's half is
+      // the prompt that was just typed into the panel, and echoing it back
+      // reads as the agent repeating the question.
+      if (event.role === "user") return NOTHING;
+      return { lines: say(String(event.content ?? event.text ?? "")) };
+    }
+    if (event.type === "tool_use") {
+      return { lines: [toolLine(String(event.name ?? event.tool ?? "tool"), event.args ?? event.input)] };
+    }
+    if (event.type === "error") {
+      return { lines: [{ level: "error", message: String(event.message ?? "agent failed") }] };
+    }
+    if (event.type === "result") {
+      return { lines: [{ level: "ok", message: "agent done" }] };
+    }
+    return NOTHING;
+  },
+};
+
+/**
+ * Cursor Agent. `-p` with `--output-format stream-json`, an envelope shaped
+ * closely after Claude's -- `system`/`assistant`/`result` with `session_id` on
+ * every event -- but with its own tool shape: `tool_call` carries a single key
+ * naming the kind of call, `readToolCall`, `writeToolCall` or `function`.
+ */
+const cursor: Harness = {
+  id: "cursor",
+  label: "Cursor Agent",
+  bin: "cursor-agent",
+  argv: (prompt, session) => [
+    ...(session === null ? [] : ["--resume", session]),
+    "--output-format",
+    "stream-json",
+    "-p",
+    prompt,
+  ],
+  read: (line) => {
+    const event = parse(line);
+    if (event === null) return NOTHING;
+    const session = typeof event.session_id === "string" ? event.session_id : undefined;
+
+    if (event.type === "assistant") {
+      const parts = event.message?.content;
+      const text = Array.isArray(parts)
+        ? parts.filter((piece: any) => piece?.type === "text").map((piece: any) => piece.text).join("")
+        : "";
+      return { lines: say(String(text)), session };
+    }
+    if (event.type === "tool_call" && event.subtype === "started") {
+      const call = event.tool_call ?? {};
+      const named = Object.keys(call)[0] ?? "tool";
+      const inner = call[named] ?? {};
+      return { lines: [toolLine(inner.name ?? named, inner.args)], session };
+    }
+    if (event.type === "result") {
+      return {
+        lines: [
+          event.is_error === true
+            ? { level: "error", message: "agent failed" }
+            : { level: "ok", message: "agent done" },
+        ],
+        session,
+      };
+    }
+    if (event.type === "error") {
+      return { lines: [{ level: "error", message: String(event.message ?? "agent failed") }], session };
+    }
+    return { lines: [], session };
+  },
+};
+
+/**
+ * Crush. `run` takes the prompt and prints the answer as plain text -- there is
+ * no event stream and no resume, so this is `generic` with the right verb.
+ *
+ * The verb matters: the generic adapter guesses `-p`, which crush rejects as an
+ * unknown flag. A harness that is merely unstructured still works; one invoked
+ * wrongly does not run at all.
+ */
+const crush: Harness = {
+  id: "crush",
+  label: "Crush",
+  bin: "crush",
+  argv: (prompt) => ["run", prompt],
+  read: (line) =>
+    line.trim() === "" ? NOTHING : { lines: [{ level: "reply", message: line.trim() }] },
+};
+
+const REGISTRY: Harness[] = [claude, codex, opencode, dsh, gemini, cursor, crush];
+
+/**
+ * Whether an MCP client's self-reported name is this harness.
+ *
+ * The names nearly agree and not quite: the harness ids here are `claude`,
+ * `codex`, `opencode`, and the clients introduce themselves as `claude-code`,
+ * `codex`, `opencode`. Compared with the punctuation stripped and either one
+ * allowed to be the prefix, which covers `claude` against `claude-code`
+ * without needing a second table to keep in sync with the first.
+ *
+ * Deliberately not clever. A wrong match here picks the wrong agent, and the
+ * cost of no match is only that the first installed one is used instead --
+ * which is the behaviour this replaces, so a miss is never worse than before.
+ */
+export function matchesClient(harness: Harness, clientName: string): boolean {
+  const flat = (value: string): string => value.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const id = flat(harness.id);
+  const name = flat(clientName);
+  if (id.length === 0 || name.length === 0) return false;
+  return name.startsWith(id) || id.startsWith(name);
+}
 
 /**
  * Where a binary is on PATH, or null. Found by looking rather than by running.

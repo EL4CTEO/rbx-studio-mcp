@@ -14,7 +14,15 @@
  */
 import { type Check, collectChecks } from "../doctor.js";
 import type { Bridge } from "./rpc.js";
-import { type HarnessLine, type Run, find, installed, run } from "./harness.js";
+import {
+  type Harness,
+  type HarnessLine,
+  type Run,
+  find,
+  installed,
+  matchesClient,
+  run,
+} from "./harness.js";
 
 export type ConsoleLine = HarnessLine;
 
@@ -138,7 +146,7 @@ function resolveStudio(bridge: Bridge, token: string): string | null {
 }
 
 /** Which harnesses are installed, and which one prompts will go to. */
-function renderAgents(state: AgentState): ConsoleLine[] {
+function renderAgents(state: AgentState, bridge: Bridge): ConsoleLine[] {
   const available = installed();
   if (available.length === 0) {
     return [
@@ -151,15 +159,87 @@ function renderAgents(state: AgentState): ConsoleLine[] {
       },
     ];
   }
-  const chosen = state.harnessId ?? available[0]?.id;
+  //[[ Says what a prompt WOULD do, not what the registry contains.
+  //
+  // Listing an "(in use)" that the prompt then ignores is worse than not
+  // marking one at all -- that mismatch is what made the wrong agent answer
+  // look like a bug in the agent rather than in this choice. So the mark comes
+  // from the same function the prompt uses, and when that cannot decide,
+  // nothing is marked and the list says so.
+  //]]
+  const wanted = preferred(state, bridge, available);
+  const connected = (entry: Harness): boolean =>
+    bridge.clientList().some((client) => matchesClient(entry, client.name));
+
   return [
     { level: "info", message: `${available.length} agent${available.length === 1 ? "" : "s"} available` },
-    ...available.map((entry): ConsoleLine => ({
-      level: entry.id === chosen ? "ok" : "dim",
-      message: `  ${entry.id}`,
-      detail: entry.id === chosen ? `${entry.label}  (in use)` : entry.label,
+    ...available.map((entry): ConsoleLine => {
+      const marks: string[] = [];
+      if (connected(entry)) marks.push("connected");
+      if (entry.id === wanted?.id) marks.push(state.harnessId === null ? "would answer" : "in use");
+      return {
+        level: entry.id === wanted?.id ? "ok" : "dim",
+        message: `  ${entry.id}`,
+        detail: marks.length > 0 ? `${entry.label}  (${marks.join(", ")})` : entry.label,
+      };
+    }),
+    wanted === undefined
+      ? { level: "warn", message: "several agents are connected -- `agent use <id>` to pick one" }
+      : { level: "dim", message: "type anything that is not a command to send it to the agent" },
+  ];
+}
+
+/**
+ * Which agent an unconfigured panel should use, or nothing when it cannot tell.
+ *
+ * The old rule was "the first one installed", which is alphabetical accident
+ * dressed up as a decision: someone with opencode open typed a prompt and
+ * Claude Code answered, because `claude` sits first in the registry. The answer
+ * was fine and came from the wrong program.
+ *
+ * The bridge knows more than the registry does. Every agent driving this Studio
+ * is connected to it and says its name, so the panel can answer with the one
+ * the user is actually working in. That settles the ordinary case, which is one
+ * agent attached to one Studio.
+ *
+ * When two are attached there is no signal that says which one the user meant.
+ * Recency does not: in the report that prompted this, opencode had been up a
+ * minute and Claude Code forty seconds, and the wanted answer was the older
+ * one. So this returns nothing and the caller asks -- the same shape as
+ * AMBIGUOUS_STUDIO, which refuses to guess between two open places for exactly
+ * this reason. The choice is remembered, so it is one question once.
+ */
+function preferred(state: AgentState, bridge: Bridge, available: Harness[]): Harness | undefined {
+  if (state.harnessId !== null) return find(state.harnessId);
+  if (available.length === 1) return available[0];
+
+  const matched = available.filter((harness) =>
+    bridge.clientList().some((client) => matchesClient(harness, client.name)),
+  );
+  if (matched.length === 1) return matched[0];
+
+  // Nothing connected that we recognise: the registry order is as good a guess
+  // as any, and refusing here would block a panel whose user has no agent
+  // attached at all -- which is a normal way to use this.
+  return matched.length === 0 ? available[0] : undefined;
+}
+
+/** Asks which of several attached agents should answer, and how to say so. */
+function askWhichAgent(bridge: Bridge, available: Harness[]): ConsoleLine[] {
+  const attached = available.filter((harness) =>
+    bridge.clientList().some((client) => matchesClient(harness, client.name)),
+  );
+  return [
+    {
+      level: "warn",
+      message: `${attached.length} agents are connected to this Studio -- which should answer?`,
+    },
+    ...attached.map((harness): ConsoleLine => ({
+      level: "dim",
+      message: `  agent use ${harness.id}`,
+      detail: harness.label,
     })),
-    { level: "dim", message: "type anything that is not a command to send it to the agent" },
+    { level: "dim", message: "asked once; the choice is remembered until you change it" },
   ];
 }
 
@@ -213,11 +293,13 @@ function startAgent(
   }
 
   const available = installed();
-  if (available.length === 0) return renderAgents(state);
+  if (available.length === 0) return renderAgents(state, bridge);
 
-  const wanted = state.harnessId === null ? available[0] : find(state.harnessId);
+  const wanted = preferred(state, bridge, available);
   if (wanted === undefined) {
-    return [{ level: "error", message: `unknown agent "${state.harnessId}"` }];
+    return state.harnessId === null
+      ? askWhichAgent(bridge, available)
+      : [{ level: "error", message: `unknown agent "${state.harnessId}"` }];
   }
 
   const emit = (line: ConsoleLine): void => {
@@ -288,7 +370,7 @@ export async function handleConsole(
 
     case "agent": {
       const verb = request.args[0];
-      if (verb === undefined || verb === "list") return renderAgents(state);
+      if (verb === undefined || verb === "list") return renderAgents(state, bridge);
       if (verb === "use") {
         const id = request.args[1];
         if (id === undefined) return [{ level: "dim", message: "usage: agent use <id>" }];

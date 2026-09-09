@@ -2,6 +2,15 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.5.1
+
+### Fixed
+- **opencode printed nothing.** Its adapter was built on event names opencode does not emit, so every line was discarded and a prompt logged a blank run. Rebuilt from a recorded run.
+- **Codex never resumed a conversation**, and follow-up turns were refused outright: the session id was read from the wrong field, and global flags were placed after the `resume` subcommand, which codex rejects.
+- **Crush was launched with a flag it rejects.** It takes `run <prompt>`, not `-p`.
+- **Gemini and Cursor now stream properly** instead of being treated as plain-text unknowns.
+- **The panel asks which agent should answer** when more than one is connected to the Studio, instead of picking whichever sorts first. Remembered after you answer once.
+
 ## 0.5.0
 
 A command line in the console panel, and terrain.

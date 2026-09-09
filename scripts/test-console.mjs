@@ -17,7 +17,7 @@ import { readFileSync } from "node:fs";
 import { Bridge } from "../dist/bridge/rpc.js";
 import { LocalBridge } from "../dist/bridge/api.js";
 import { frame, handleConsole } from "../dist/bridge/console.js";
-import { find, installed } from "../dist/bridge/harness.js";
+import { find, installed, matchesClient } from "../dist/bridge/harness.js";
 
 let checks = 0;
 const ok = (condition, what) => {
@@ -97,22 +97,123 @@ const readAll = (id, lines) => {
   ok(rows[0].message === "execute_luau", "tool name keeps its own underscores");
 }
 
-// --- Codex and opencode ----------------------------------------------------
+// --- every adapter, against its real envelope -------------------------------
+//
+// This block used to assert INVENTED event names -- `session.created` for
+// codex, `message.part.updated` for opencode -- while the file's own header
+// claimed the shapes were recorded from live runs. They were not, and the tests
+// passed anyway, because a test written against the same wrong envelope as the
+// code agrees with it perfectly.
+//
+// What that cost: a prompt sent to opencode printed NOTHING. Every line fell
+// through to no rows, the panel logged a blank run and went idle, and the
+// agent's answer was thrown away. The lines below are copied from real runs
+// (opencode 1.18.30, claude 2.1.266) or from the vendors' own documented
+// schemas for the CLIs not installed here.
 {
-  const codex = readAll("codex", [
-    JSON.stringify({ type: "session.created", session_id: "cx-1" }),
-    JSON.stringify({ type: "agent_message", text: "Done." }),
-  ]);
-  ok(codex.session === "cx-1", "codex: session id");
-  ok(codex.rows[0].level === "reply" && codex.rows[0].message === "Done.", "codex: prose");
-
+  // opencode 1.18.30, verbatim from `opencode run --format json`.
   const oc = readAll("opencode", [
+    JSON.stringify({ type: "step_start", sessionID: "ses_abc", part: { type: "step-start" } }),
     JSON.stringify({
-      type: "message.part.updated",
-      properties: { part: { type: "text", text: "Placed the model." } },
+      type: "tool_use",
+      sessionID: "ses_abc",
+      part: { type: "tool", tool: "glob", state: { input: { pattern: "*.ts" } } },
     }),
+    JSON.stringify({
+      type: "text",
+      sessionID: "ses_abc",
+      part: { type: "text", text: "Hi there, how's it going?" },
+    }),
+    JSON.stringify({ type: "step_finish", sessionID: "ses_abc", part: { type: "step-finish" } }),
   ]);
-  ok(oc.rows[0].message === "Placed the model.", "opencode: prose");
+  ok(oc.session === "ses_abc", "opencode: session id rides on every event");
+  ok(
+    oc.rows.some((row) => row.level === "reply" && row.message === "Hi there, how's it going?"),
+    "opencode: the answer is printed -- the bug was that it never was",
+  );
+  ok(oc.rows.some((row) => row.message === "glob"), "opencode: tool calls are printed");
+  ok(
+    !oc.rows.some((row) => row.message === "agent done"),
+    "opencode: step_finish is per step, not the end of the run",
+  );
+
+  // Codex, from the documented exec --json protocol.
+  const codex = readAll("codex", [
+    JSON.stringify({ type: "thread.started", thread_id: "019cec77-af02" }),
+    JSON.stringify({ type: "turn.started" }),
+    JSON.stringify({
+      type: "item.started",
+      item: { id: "i1", type: "mcp_tool_call", server: "rbx", tool: "create", arguments: {} },
+    }),
+    JSON.stringify({
+      type: "item.completed",
+      item: { id: "i1", type: "mcp_tool_call", server: "rbx", tool: "create" },
+    }),
+    JSON.stringify({ type: "item.completed", item: { id: "i2", type: "agent_message", text: "Done." } }),
+    JSON.stringify({ type: "turn.completed", usage: {} }),
+  ]);
+  ok(codex.session === "019cec77-af02", "codex: session comes from thread.started/thread_id");
+  ok(
+    codex.rows.some((row) => row.level === "reply" && row.message === "Done."),
+    "codex: prose",
+  );
+  ok(
+    codex.rows.filter((row) => row.message === "create").length === 1,
+    "codex: a tool reported started AND completed is logged once",
+  );
+  ok(codex.rows.some((row) => row.message === "agent done"), "codex: turn.completed ends the run");
+
+  // Codex global flags must precede the `resume` subcommand or it refuses them.
+  const resumed = find("codex").argv("hello", "thread-1");
+  ok(
+    resumed.indexOf("--skip-git-repo-check") < resumed.indexOf("resume"),
+    "codex: global flags come before the resume subcommand",
+  );
+  ok(resumed[resumed.length - 1] === "hello", "codex: the prompt stays last");
+
+  // Gemini, from the documented headless stream-json events.
+  const gem = readAll("gemini", [
+    JSON.stringify({ type: "init", session_id: "gem-1", model: "gemini" }),
+    JSON.stringify({ type: "message", role: "user", content: "what did I ask" }),
+    JSON.stringify({ type: "message", role: "assistant", content: "Built it." }),
+    JSON.stringify({ type: "result" }),
+  ]);
+  ok(gem.session === "gem-1", "gemini: session id");
+  ok(gem.rows.some((row) => row.message === "Built it."), "gemini: the assistant half is printed");
+  ok(
+    !gem.rows.some((row) => row.message === "what did I ask"),
+    "gemini: the user half is not echoed back at them",
+  );
+
+  // Cursor, from the documented stream-json envelope.
+  const cur = readAll("cursor", [
+    JSON.stringify({ type: "system", subtype: "init", session_id: "cur-1" }),
+    JSON.stringify({
+      type: "tool_call",
+      subtype: "started",
+      session_id: "cur-1",
+      tool_call: { readToolCall: { args: { path: "a.ts" } } },
+    }),
+    JSON.stringify({
+      type: "assistant",
+      session_id: "cur-1",
+      message: { role: "assistant", content: [{ type: "text", text: "Read it." }] },
+    }),
+    JSON.stringify({ type: "result", subtype: "success", is_error: false, session_id: "cur-1" }),
+  ]);
+  ok(cur.session === "cur-1", "cursor: session id rides on every event");
+  ok(cur.rows.some((row) => row.message === "Read it."), "cursor: text is nested in message.content");
+  ok(cur.rows.some((row) => row.message === "readToolCall"), "cursor: the tool key names the call");
+  ok(cur.rows.some((row) => row.message === "agent done"), "cursor: result ends the run");
+
+  // Crush has no event stream, but it does have its own verb -- the generic
+  // adapter guessed `-p`, which crush rejects outright as an unknown flag.
+  const crush = find("crush").argv("hello", null);
+  ok(crush[0] === "run", "crush: uses its `run` verb, not a guessed -p flag");
+  ok(
+    readAll("crush", ["Placed the model."]).rows[0].message === "Placed the model.",
+    "crush: plain text still reaches the log",
+  );
 }
 
 // --- DeepSeek Harness ------------------------------------------------------
@@ -288,6 +389,53 @@ const readAll = (id, lines) => {
     readFileSync(patch, "utf8").includes("RBX_STUDIO_MCP_SPAWNED: '1'"),
     "dsh overlay: carries the same marker",
   );
+}
+
+// Choosing which agent answers a prompt --------------------------------------
+//
+// The shipped bug: someone with opencode open typed a prompt into the panel and
+// Claude Code answered, because the choice was "first one installed" and
+// `claude` sorts first in the registry. The answer was fine and came from the
+// wrong program.
+{
+  const claude = find("claude");
+  const opencode = find("opencode");
+
+  ok(matchesClient(claude, "claude-code"), "claude matches the name its client reports");
+  ok(matchesClient(opencode, "opencode"), "opencode matches its own client name");
+  ok(!matchesClient(claude, "opencode"), "and does not match a different agent");
+  ok(!matchesClient(opencode, "claude-code"), "in either direction");
+  ok(!matchesClient(claude, ""), "a nameless client matches nothing");
+
+  // The registry marks `agent` rows and picks the prompt's target from the same
+  // function, so a listing can never say "in use" about an agent the prompt
+  // would not use. Exercised through the real bridge: what makes an agent a
+  // candidate is that it is CONNECTED, which only the bridge knows.
+  const bridge = new Bridge();
+  bridge.noteClient("one", { name: "opencode", version: "1", pid: 1 });
+  bridge.noteClient("two", { name: "claude-code", version: "2", pid: 2 });
+
+  const rows = await handleConsole(bridge, 44755, {
+    studioId: "studio-agents",
+    command: "agent",
+    args: [],
+    line: "agent",
+  });
+  const text = rows.map((row) => `${row.message} ${row.detail ?? ""}`).join(" | ");
+
+  // Only meaningful when both are actually installed on the machine running the
+  // suite; otherwise there is nothing to be ambiguous between.
+  const both = installed().filter((entry) => entry.id === "claude" || entry.id === "opencode");
+  if (both.length === 2) {
+    ok(
+      rows.some((row) => row.level === "warn" && /agent use <id>/.test(row.message)),
+      "two connected agents are not silently resolved to whichever sorts first",
+    );
+    ok(!/in use/.test(text), "and none is marked as the one in use");
+    ok(/connected/.test(text), "the ones that are attached are named as attached");
+  } else {
+    ok(true, "skipped: both agents are not installed here");
+  }
 }
 
 process.stdout.write(`console: ${checks} checks pass\n`);
