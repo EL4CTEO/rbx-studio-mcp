@@ -2,6 +2,10 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.5.4
+
+- README cut to half its length: install, tools, panel, done.
+
 ## 0.5.3
 
 ### Fixed
