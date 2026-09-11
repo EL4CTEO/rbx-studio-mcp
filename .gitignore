@@ -6,3 +6,4 @@ dist/
 build/
 sourcemap.json
 /tools/
+.dsh-test/

@@ -1300,6 +1300,14 @@ export type Handlers = {
 	onSubmit: (string) -> (),
 	-- Command names starting with the given prefix, for Tab and the hint.
 	onComplete: (string) -> { string },
+	--[[
+		The same commands, described, for the menu that opens above the prompt.
+
+		Separate from `onComplete` because the two want different things: Tab
+		wants names to compare against what is typed, and the menu wants a usage
+		line and a summary to put on screen.
+	]]
+	onSuggest: (string) -> { { name: string, usage: string, summary: string } },
 }
 
 --[[
@@ -1637,7 +1645,11 @@ function Console.mount(parent: Instance, handlers: Handlers)
 		reads like a prompt already. The band is toggleable, and hiding the only
 		way to type into the panel behind a decoration switch is a trap.
 	]]
-	Prompt.mount(root, { submit = handlers.onSubmit, complete = handlers.onComplete })
+	Prompt.mount(root, {
+		submit = handlers.onSubmit,
+		complete = handlers.onComplete,
+		suggest = handlers.onSuggest,
+	})
 	local promptRow = root:FindFirstChild("Prompt") :: Frame
 	promptRow.AnchorPoint = Vector2.new(0, 1)
 	promptRow.Position = UDim2.new(0, 0, 1, -FOOTER_HEIGHT)

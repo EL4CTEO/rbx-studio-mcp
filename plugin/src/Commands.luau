@@ -411,20 +411,58 @@ define({ name = "stop", usage = "stop", summary = "cancel the running agent", re
 -- Dispatch ----------------------------------------------------------------
 
 --[[
-	Command names starting with `prefix`, for Tab and for the hint.
+	What a command looks like to the menu above the prompt.
 
-	Sorted so the suggestion list does not reorder itself between keystrokes,
-	which is exactly the sort of movement that makes a hint unreadable.
+	Deliberately the same three fields `help` prints. A user who learns the
+	surface from the menu and a user who learns it from `help` should be
+	learning the same thing, and two descriptions of one command are two things
+	to keep in step.
 ]]
-function Commands.complete(prefix: string): { string }
-	local matches: { string } = {}
+export type Suggestion = {
+	name: string,
+	usage: string,
+	summary: string,
+}
+
+--[[
+	Commands starting with `prefix`, described.
+
+	An empty prefix answers with everything, which is what the menu shows the
+	moment the field is focused: the old row said "type a command" and then left
+	the reader to guess which ones existed.
+
+	Sorted so the list does not reorder itself between keystrokes, which is
+	exactly the sort of movement that makes a suggestion unreadable.
+]]
+function Commands.suggest(prefix: string): { Suggestion }
+	local matches: { Suggestion } = {}
 	for _, entry in entries do
 		if string.sub(entry.name, 1, #prefix) == prefix then
-			table.insert(matches, entry.name)
+			table.insert(matches, {
+				name = entry.name,
+				usage = entry.usage,
+				summary = entry.summary,
+			})
 		end
 	end
-	table.sort(matches)
+	table.sort(matches, function(a, b)
+		return a.name < b.name
+	end)
 	return matches
+end
+
+--[[
+	Command names starting with `prefix`, for Tab and for the hint.
+
+	Built on `suggest` rather than beside it, so the two can never disagree
+	about what matches.
+]]
+function Commands.complete(prefix: string): { string }
+	local names: { string } = {}
+	for _, suggestion in Commands.suggest(prefix) do
+		table.insert(names, suggestion.name)
+	end
+	return names
 end
 
 --[[

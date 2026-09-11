@@ -410,6 +410,9 @@ Console.mount(widget, {
 	onComplete = function(prefix)
 		return Commands.complete(prefix)
 	end,
+	onSuggest = function(prefix)
+		return Commands.suggest(prefix)
+	end,
 })
 
 --[[
