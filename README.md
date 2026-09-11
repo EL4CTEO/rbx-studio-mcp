@@ -83,7 +83,7 @@ Two things to watch: a playtest connects a second session, so pass `studioId` an
 
 ## The console panel
 
-Every call is logged with how long it took. Below the header is a command line — type a command, or type a sentence and a coding agent answers it.
+Every call is logged with how long it took. At the foot of the panel is a command line — type a command, or type a sentence and a coding agent answers it.
 
 | | |
 |---|---|
@@ -96,7 +96,7 @@ Every call is logged with how long it took. Below the header is a command line �
 | `agent [use <id>\|new]` `stop` | which agent runs your prompts |
 | anything else | sent to that agent |
 
-Arrows walk the history, Tab completes.
+Click the bar and every command is listed with what it does. Keep typing to filter, scroll for the rest, click one to fill it in.
 
 **Prompts start a real agent** — whichever you have on PATH: Claude Code, Codex, opencode, Gemini, Cursor, Amp, Qwen Code, Factory Droid, goose, Copilot CLI, Aider, Crush, DeepSeek Harness. It runs headless, drives the same Studio, and its work appears in the log. It is a separate session from your terminal, billed separately, and allowed the `rbx-studio` tools only. `stop` cancels it.
 
@@ -111,13 +111,23 @@ Eight themes behind the tab on the right edge. Your pick is remembered.
 
 ## DeepSeek Harness (dsh)
 
-This server registers as a dsh plugin. `config/dsh.cordis.yml` is the row:
+This server registers as a dsh plugin. Append this row to `$DSH_HOME/cordis.patch.yml`,
+or to `$DSH_HOME/profiles/<name>/cordis.patch.yml` for one profile only:
 
-```sh
-dsh --profile headless --patch config/dsh.cordis.yml "add a spawn point"
+```yaml
+- insert:
+    - id: mcp-rbx-studio
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: rbx-studio
+        transport: stdio
+        command: npx
+        args: ['-y', '@el4cteo/rbx-studio-mcp']
+        cwd: !!js process.cwd()
 ```
 
-To keep it, append that row to your own `cordis.patch.yml`. Needs `DEEPSEEK_API_KEY`.
+Then `dsh --profile headless "what is in workspace"`. Needs `DEEPSEEK_API_KEY`.
+The same row, commented, is in `config/dsh.cordis.yml` for use with `dsh --patch`.
 
 ## Security
 

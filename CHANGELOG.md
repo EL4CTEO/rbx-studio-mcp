@@ -2,6 +2,10 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.6.0
+
+- README: the dsh section now prints the plugin row itself, and names the file to paste it into. It pointed at a path inside `node_modules`, which is not there when the server is run through `npx`.
+
 ## 0.5.8
 
 ### Added
