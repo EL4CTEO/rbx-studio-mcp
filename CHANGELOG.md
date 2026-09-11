@@ -9,7 +9,7 @@ What changed in each release, written for people using the server rather than fo
 
 ### Fixed
 - **The prompt no longer keeps the cursor after a command runs**, so the reply is not covered and clicking the bar always reopens the menu.
-- The dsh patch file now ships in the npm package.
+- **Using DeepSeek Harness?** `config/dsh.cordis.yml` now ships inside the npm package, so `dsh --patch` can point at it without cloning the repo.
 
 ## 0.5.6
 
