@@ -40,6 +40,9 @@ export type Hooks = {
 	-- has to outlive the session is handed back to the script that can persist it.
 	savePort: (number) -> (),
 	saveTheme: (string) -> (),
+	-- Whether the panel may open itself on load, and the setter for it.
+	autoOpen: () -> boolean,
+	saveAutoOpen: (boolean) -> (),
 	-- The transport's own view of the connection, which the console only ever
 	-- receives second-hand as a string to display.
 	status: () -> string,
@@ -244,6 +247,63 @@ define({
 	run = function()
 		local shown = Console.toggleVisuals()
 		Console.log("dim", if shown then "visuals on" else "visuals off")
+	end,
+})
+
+define({
+	name = "autoopen",
+	usage = "autoopen [on|off]",
+	summary = "let this panel open itself, or only ever from the toolbar",
+	run = function(args)
+		local current = hooks
+		if current == nil then
+			return
+		end
+
+		local wanted = args[1]
+		if wanted == nil then
+			Console.log(
+				"dim",
+				if current.autoOpen()
+					then "autoopen on -- the panel opens with the place, and with Play"
+					else "autoopen off -- the panel opens only from the toolbar button"
+			)
+			return
+		end
+
+		local value: boolean
+		if wanted == "on" then
+			value = true
+		elseif wanted == "off" then
+			value = false
+		else
+			Console.log("error", string.format("%q is not on or off", wanted), "autoopen [on|off]")
+			return
+		end
+
+		if value == current.autoOpen() then
+			Console.log("dim", string.format("already autoopen %s", wanted))
+			return
+		end
+
+		current.saveAutoOpen(value)
+		--[[
+			Said plainly, because nothing about it can be seen from here.
+
+			A dock widget's initial state is decided when Studio creates it, and
+			this one already exists -- so the change shows up at the next load,
+			not now. A setting that appears to do nothing is a setting the user
+			runs again, and then a third time, before deciding it is broken.
+		]]
+		if value then
+			Console.log("ok", "autoopen on", "the panel will come back on its own")
+		else
+			Console.log(
+				"ok",
+				"autoopen off",
+				"from the next place or playtest, open it from the toolbar"
+			)
+		end
 	end,
 })
 

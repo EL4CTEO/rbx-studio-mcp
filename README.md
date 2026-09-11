@@ -91,7 +91,7 @@ Every call is logged with how long it took. At the foot of the panel is a comman
 | `doctor` | check the setup |
 | `status` `version` `place` `clients` | what this session is |
 | `studios` `use <n>` | which Studio window calls go to |
-| `theme [name]` `visuals` `log [level]` `clear` `copy` | the panel |
+| `theme [name]` `visuals` `autoopen [on\|off]` `log [level]` `clear` `copy` | the panel |
 | `port [n]` `reconnect` | the connection |
 | `agent [use <id>\|new]` `stop` | which agent runs your prompts |
 | anything else | sent to that agent |

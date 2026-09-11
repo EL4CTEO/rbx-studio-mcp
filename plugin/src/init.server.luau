@@ -47,6 +47,19 @@ local SETTING_AUTOCONNECT = "autoConnect"
 local SETTING_FORCE_POLL = "forcePoll"
 local SETTING_THEME = "theme"
 local SETTING_WIDGET_OPEN = "widgetOpen"
+--[[
+	Whether the panel is allowed to come up on its own at all.
+
+	Separate from `widgetOpen`, which is where the user last left it. That one
+	answers "was it open?"; this one answers "may it open itself?", and they are
+	different questions -- someone who wants the panel there when they ask for it
+	and nowhere else has no way to say so with a single remembered flag, because
+	opening it once would arm it for every load afterwards.
+
+	Off means the toolbar button is the only thing that opens it: not a place
+	being opened, not a Studio launch, not pressing Play. Set by `autoopen off`.
+]]
+local SETTING_AUTO_OPEN = "autoOpen"
 local SETTING_WIDGET_SIZE = "widgetSize"
 local SETTING_WIDGET_TRACE = "widgetTrace"
 
@@ -209,6 +222,27 @@ button.ClickableWhenViewportHidden = true
 ]]
 local storedOpen = plugin:GetSetting(SETTING_WIDGET_OPEN)
 local wantOpen = if typeof(storedOpen) == "boolean" then storedOpen else true
+
+--[[
+	`autoopen off` means this load does not put the panel on screen.
+
+	Every DataModel, deliberately. The first version of this only covered the
+	playtest, on the reading that a window over the game view was the complaint
+	-- but a panel that reappears every time a place is opened is the same
+	complaint arriving through the other door, and one switch for "open yourself"
+	is easier to hold in your head than two.
+
+	Read here rather than acted on later because a dock widget's initial state is
+	fixed when it is created: bringing it up and hiding it again would flash a
+	window on screen, which is the thing being asked for less of. `widgetOpen` is
+	left exactly as it was, so turning this back on restores the panel to however
+	it was last left rather than to a default.
+]]
+local storedAutoOpen = plugin:GetSetting(SETTING_AUTO_OPEN)
+local autoOpen = if typeof(storedAutoOpen) == "boolean" then storedAutoOpen else true
+if not autoOpen then
+	wantOpen = false
+end
 
 local floatWidth, floatHeight = 560, 320
 local storedSize = plugin:GetSetting(SETTING_WIDGET_SIZE)
@@ -434,6 +468,15 @@ Commands.setup({
 	end,
 	saveTheme = function(id)
 		plugin:SetSetting(SETTING_THEME, id)
+	end,
+	autoOpen = function()
+		return autoOpen
+	end,
+	saveAutoOpen = function(value)
+		-- The live copy moves too, so `autoopen` with no argument reports what
+		-- was just set rather than what the session started with.
+		autoOpen = value
+		plugin:SetSetting(SETTING_AUTO_OPEN, value)
 	end,
 	status = function()
 		return currentStatus

@@ -4,6 +4,9 @@ What changed in each release, written for people using the server rather than fo
 
 ## 0.6.0
 
+### Added
+- **`autoopen off`** stops the panel putting itself on screen — not when a place opens, not when you press Play. The toolbar button still opens it. `autoopen on` puts it back; `autoopen` says which it is.
+
 - README: the dsh section now prints the plugin row itself, and names the file to paste it into. It pointed at a path inside `node_modules`, which is not there when the server is run through `npx`.
 
 ## 0.5.8
