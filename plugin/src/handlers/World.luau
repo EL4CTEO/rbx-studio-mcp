@@ -18,21 +18,54 @@
 local ChangeHistoryService = game:GetService("ChangeHistoryService")
 
 --[[
-	Collision groups are read and written through the Workspace, not PhysicsService.
+	Collision groups are read and written through a WorldRoot, not PhysicsService.
 
 	Roblox moved collision group management onto WorldRoot in September 2026 and
 	deprecated the PhysicsService methods in the same announcement. Both still
-	work today -- checked against Studio 0.737 -- so this is a migration ahead of
-	a removal rather than a fix. The move also means a WorldModel gets its own
-	groups instead of sharing the Workspace's, which is the point of it.
+	work today -- checked against Studio 0.738 -- so this is a migration ahead of
+	a removal rather than a fix.
+
+	The move is not only a rename. A `WorldModel` is a WorldRoot too, and it now
+	keeps its OWN registry: a group named "Doors" inside a viewport's WorldModel
+	is a different group from the Workspace's "Doors", with its own collidability
+	matrix. Going through `PhysicsService` -- or hard-coding `workspace` here --
+	can only ever reach one of them, which would quietly make this tool lie about
+	a place that uses both. So the root is chosen per call; see `root`.
 ]]
-local CollisionGroups = workspace
+local Workspace = game:GetService("Workspace")
 
 local Dispatch = require(script.Parent.Parent.Dispatch)
 local Paths = require(script.Parent.Parent.Paths)
 local Undo = require(script.Parent.Parent.Undo)
 
 local World = {}
+
+--[[
+	Which world the call is about.
+
+	Defaults to the Workspace, which is what nearly every caller means. Naming a
+	`worldModel` path targets that model's private registry instead -- the
+	viewport-preview case -- and anything that is not a WorldRoot is refused by
+	name rather than left to fail later inside `RegisterCollisionGroup` with a
+	message about a method that does not exist.
+]]
+local function root(params: { [string]: any }): Instance
+	local path = params.worldModel
+	if typeof(path) ~= "string" or path == "" then
+		return Workspace
+	end
+
+	local instance = Paths.resolve(path)
+	if not instance:IsA("WorldRoot") then
+		Dispatch.fail(
+			"BAD_PARAMS",
+			string.format("%s is a %s, not a WorldModel.", path, instance.ClassName),
+			"Collision groups live on a WorldRoot: the Workspace, or a WorldModel "
+				.. "inside a ViewportFrame. Omit `worldModel` for the Workspace."
+		)
+	end
+	return instance
+end
 
 --[[
 	Steps the undo stack.
@@ -101,18 +134,59 @@ end
 ]]
 function World.collision(params: { [string]: any }): { [string]: any }
 	local action = tostring(params.action or "list")
+	local world = root(params) :: any
 
 	if action == "list" then
 		local groups: { { [string]: any } } = {}
 		local ok, registered = pcall(function()
-			return CollisionGroups:GetRegisteredCollisionGroups()
+			return world:GetRegisteredCollisionGroups()
 		end)
 		if ok and typeof(registered) == "table" then
+			--[[
+				Named pairs, not the raw mask.
+
+				`mask` is the engine's bitfield, and it is not readable: a group
+				that passes through only itself reports -3, which says nothing to
+				anyone without a calculator and the group ordering to hand. The
+				whole reason a collision group exists is "these two do not
+				collide", so that is what is listed -- by name, both ways round,
+				which is the answer the caller came for.
+
+				The mask is kept beside it, because a caller comparing against
+				something they stored earlier still needs the number.
+			]]
 			for _, group in registered :: { any } do
-				table.insert(groups, { name = group.name, mask = group.mask })
+				local passesThrough: { string } = {}
+				for _, other in registered :: { any } do
+					local okPair, collides = pcall(function()
+						return world:CollisionGroupsAreCollidable(group.name, other.name)
+					end)
+					if okPair and collides == false then
+						table.insert(passesThrough, other.name)
+					end
+				end
+				table.sort(passesThrough)
+				table.insert(groups, {
+					name = group.name,
+					mask = group.mask,
+					passesThrough = if #passesThrough > 0 then table.concat(passesThrough, ", ") else "nothing",
+				})
 			end
 		end
-		return { groups = groups }
+		--[[
+			The ceiling is reported alongside the groups because it is low --
+			32 in practice -- and a caller building groups programmatically has
+			no other way to learn it before the registration that fails.
+		]]
+		local limit: number? = nil
+		local okLimit, maximum = pcall(function()
+			return world:GetMaxCollisionGroups()
+		end)
+		if okLimit then
+			limit = tonumber(maximum)
+		end
+
+		return { groups = groups, world = Paths.of(world), count = #groups, max = limit }
 	end
 
 	local name = params.group
@@ -122,7 +196,7 @@ function World.collision(params: { [string]: any }): { [string]: any }
 
 	if action == "create" then
 		local ok, err = pcall(function()
-			CollisionGroups:RegisterCollisionGroup(name)
+			world:RegisterCollisionGroup(name)
 		end)
 		if not ok then
 			-- Already existing is the common case and is not a failure worth
@@ -131,7 +205,7 @@ function World.collision(params: { [string]: any }): { [string]: any }
 				Dispatch.fail("COLLISION_FAILED", string.format("Could not create %q: %s", name, tostring(err)))
 			end
 		end
-		return { group = name, created = ok, existed = not ok }
+		return { group = name, created = ok, existed = not ok, world = Paths.of(world) }
 	end
 
 	if action == "assign" then
@@ -154,7 +228,7 @@ function World.collision(params: { [string]: any }): { [string]: any }
 				end
 			end
 		end)
-		return { group = name, assigned = #assigned, parts = assigned, undoable = undoable }
+		return { group = name, assigned = #assigned, parts = assigned, undoable = undoable, world = Paths.of(world) }
 	end
 
 	if action == "remove" then
@@ -168,12 +242,12 @@ function World.collision(params: { [string]: any }): { [string]: any }
 			has existed the whole time; it was just never wired up.
 		]]
 		local ok, err = pcall(function()
-			CollisionGroups:UnregisterCollisionGroup(name)
+			world:UnregisterCollisionGroup(name)
 		end)
 		if not ok then
 			Dispatch.fail("COLLISION_FAILED", string.format("Could not remove %q: %s", name, tostring(err)))
 		end
-		return { group = name, removed = true }
+		return { group = name, removed = true, world = Paths.of(world) }
 	end
 
 	if action == "collidable" then
@@ -183,12 +257,12 @@ function World.collision(params: { [string]: any }): { [string]: any }
 		end
 		local collidable = params.collidable ~= false
 		local ok, err = pcall(function()
-			CollisionGroups:CollisionGroupSetCollidable(name, other, collidable)
+			world:CollisionGroupSetCollidable(name, other, collidable)
 		end)
 		if not ok then
 			Dispatch.fail("COLLISION_FAILED", string.format("Could not set collidability: %s", tostring(err)))
 		end
-		return { group = name, with = other, collidable = collidable }
+		return { group = name, with = other, collidable = collidable, world = Paths.of(world) }
 	end
 
 	Dispatch.fail("BAD_PARAMS", string.format("unknown collision action %q", action))

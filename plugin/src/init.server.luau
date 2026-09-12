@@ -38,6 +38,8 @@ local Playtest = require(script.handlers.Playtest)
 local Viewport = require(script.handlers.Viewport)
 local Input = require(script.handlers.Input)
 local Device = require(script.handlers.Device)
+local Data = require(script.handlers.Data)
+local Anim = require(script.handlers.Anim)
 local Api = require(script.handlers.Api)
 local Scripts = require(script.handlers.Scripts)
 local Session = require(script.handlers.Session)
@@ -181,6 +183,8 @@ Viewport.register()
 Scripts.register()
 Input.register()
 Device.register()
+Data.register()
+Anim.register()
 Api.register()
 
 --[[
@@ -698,7 +702,7 @@ local function onCommand(id: string, op: string, params: { [string]: any }?)
 		]]
 		Transport.sendResult(result)
 
-		local elapsed = string.format("%.0fms", milliseconds)
+		local elapsed = Console.durationText(milliseconds)
 		Console.recordCall(result.ok, milliseconds)
 
 		if result.ok then

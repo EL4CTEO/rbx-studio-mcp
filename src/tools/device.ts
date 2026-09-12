@@ -37,16 +37,26 @@ export function registerDeviceTools(context: ToolContext): void {
         "`list` gives the ids, each with its real name, form factor and " +
         "resolution — ids look like \"iphone_16\", \"ipad_a16\", " +
         "\"samsung_galaxy_s25_ultra\", \"xbox\", \"meta_quest_3\".\n\n" +
-        "`stop` returns Studio to the normal editor viewport. Do that when you " +
-        "are finished: a left-over emulated device makes every later screenshot " +
-        "the wrong shape, and nothing on screen obviously says why.",
+        "`network` degrades the connection on purpose — latency, jitter and " +
+        "packet loss — which is the other half of what a phone player " +
+        "actually gets. A menu that works at 0ms is not evidence that it works " +
+        "at 300: the spinner that never stops, the button that fires twice, the " +
+        "HUD that arrives after the round started are all invisible on a local " +
+        "connection. Use a `preset` (`wifi`, `4g`, `3g`, `poor`, `clear`) or " +
+        "set the numbers yourself, then `playtest` and watch.\n\n" +
+        "`stop` returns Studio to the normal editor viewport AND clears the " +
+        "network shaping. Do that when you are finished: a left-over emulated " +
+        "device makes every later screenshot the wrong shape, a left-over 400ms " +
+        "delay makes the whole place feel broken, and nothing on screen says " +
+        "why in either case.",
       inputSchema: {
         op: z
-          .enum(["list", "set", "stop", "state"])
+          .enum(["list", "set", "network", "stop", "state"])
           .default("state")
           .describe(
-            "'list' shows the available devices, 'set' switches to one, 'stop' " +
-              "returns to the normal viewport, 'state' only reports.",
+            "'list' shows the available devices, 'set' switches to one, " +
+              "'network' shapes the connection, 'stop' undoes both, 'state' " +
+              "only reports.",
           ),
         device: z
           .string()
@@ -64,6 +74,63 @@ export function registerDeviceTools(context: ToolContext): void {
           .enum(["Phone", "Tablet", "Console", "Desktop", "VR"])
           .optional()
           .describe("list only: show only devices of this form factor."),
+        preset: z
+          .enum(["clear", "wifi", "4g", "3g", "poor"])
+          .optional()
+          .describe(
+            "network only: a whole connection in one word. clear=0ms (normal), " +
+              "wifi=15ms, 4g=60ms/0.5% loss, 3g=150ms/2% loss, poor=400ms/8% " +
+              "loss. Named fields below override whichever part you name.",
+          ),
+        latency: z
+          .number()
+          .min(0)
+          .max(1000)
+          .optional()
+          .describe(
+            "network only: minimum delay in milliseconds, up to 1000 — the " +
+              "engine's own ceiling. 0 clears it.",
+          ),
+        jitter: z
+          .number()
+          .min(0)
+          .max(1000)
+          .optional()
+          .describe(
+            "network only: how much the delay varies, in milliseconds. Jitter " +
+              "breaks things steady latency does not — it is what makes " +
+              "replicated motion stutter rather than simply lag.",
+          ),
+        loss: z
+          .number()
+          .min(0)
+          .max(50)
+          .optional()
+          .describe(
+            "network only: percentage of packets thrown away, up to 50 — the " +
+              "engine's own ceiling. The field that finds real bugs: latency " +
+              "makes a game feel slow, loss makes it behave wrongly. 2-8% is a " +
+              "bad mobile connection.",
+          ),
+        memory: z
+          .number()
+          .int()
+          .min(0)
+          .max(65536)
+          .optional()
+          .describe(
+            "network only: pretend the machine has this many MB of memory. A " +
+              "cheap phone is a small screen AND little memory; this is the " +
+              "half that makes textures unload. 0 removes the cap.",
+          ),
+        direction: z
+          .enum(["in", "out", "both"])
+          .optional()
+          .describe(
+            "network only: which way to degrade. 'in' is the player with a bad " +
+              "connection, 'out' is everyone else seeing that player late. " +
+              "Defaults to both.",
+          ),
         studioId: z.string().optional().describe("Target Studio; omit for the active one."),
       },
       readOnly: false,
@@ -101,6 +168,29 @@ export function registerDeviceTools(context: ToolContext): void {
         return text('set needs a `device` id. Call `device op="list"` to see them.');
       }
 
+      if (args.op === "network") {
+        const shaped = await bridge.call<Record<string, unknown>>(
+          "device.network",
+          {
+            preset: args.preset,
+            latency: args.latency,
+            jitter: args.jitter,
+            loss: args.loss,
+            memory: args.memory,
+            direction: args.direction,
+          },
+          { studioId: args.studioId, timeoutMs: 30_000 },
+        );
+        return json(
+          shaped,
+          shaped["shaping"] === true
+            ? 'Traffic is degraded from now on, in edit and in playtest, until `device op="stop"` ' +
+                "or `op=\"network\" preset=\"clear\"`. Nothing on screen says so — if the place " +
+                "starts behaving strangely later, this is the first thing to rule out."
+            : "The connection is back to normal.",
+        );
+      }
+
       const command =
         args.op === "set" ? "device.set" : args.op === "stop" ? "device.stop" : "device.state";
       const response = await bridge.call<Record<string, unknown>>(
@@ -112,7 +202,7 @@ export function registerDeviceTools(context: ToolContext): void {
       return json(
         response,
         args.op === "set"
-          ? "Take a `screenshot` to see it. Call `device op=\"stop\"` when finished, or every later screenshot stays this shape."
+          ? 'Take a `screenshot` to see it. Call `device op="stop"` when finished, or every later screenshot stays this shape.'
           : undefined,
       );
     },

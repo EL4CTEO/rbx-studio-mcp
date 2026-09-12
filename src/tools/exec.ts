@@ -12,6 +12,17 @@ interface ExecResponse {
   note?: string;
 }
 
+interface UiAuditResponse {
+  screen: string;
+  device?: string;
+  root: string;
+  checked: number;
+  hidden: number;
+  findings: Array<{ path: string; name: string; className: string; issue: string; detail: string }>;
+  findingCount: number;
+  overlapStopped: boolean;
+}
+
 interface TextBoundsResponse {
   width: number;
   height: number;
@@ -154,6 +165,15 @@ export function registerExecTools(context: ToolContext): void {
         "'what occupies this space', which the data model alone cannot: use it to " +
         "find the ground under a spawn point, or check whether a gap is clear " +
         "before placing something.\n\n" +
+        "`ui` audits a whole interface for the faults that are invisible in the " +
+        "data model: elements off the side of the screen, elements covering each " +
+        "other, zero-size elements, text too small to read, and text that " +
+        "overflows its label. A button positioned off a phone screen has a " +
+        "perfectly correct Position and Size — nothing about the instance is " +
+        "wrong, it is just somewhere nobody can reach.\n\n" +
+        "It measures against whatever `device` is currently emulating, so the " +
+        "way to use it is twice: once as-is, then `device op=\"set\"` a phone and " +
+        "again. Layout is live in edit mode — no playtest needed.\n\n" +
         "`textbounds` measures how big a piece of text actually renders. Point " +
         "it at a TextLabel, TextButton or TextBox with `path` and it reads that " +
         "label's own text, font, size and width and answers whether the text " +
@@ -162,7 +182,7 @@ export function registerExecTools(context: ToolContext): void {
         "character counts ignore the font, and font size is not a width.",
       inputSchema: {
         op: z
-          .enum(["select", "raycast", "focus", "camera", "textbounds"])
+          .enum(["select", "raycast", "focus", "camera", "textbounds", "ui"])
           .describe(
             "'focus' points the camera at something and frames it, 'camera' sets " +
               "it explicitly, 'select' changes the Studio selection, 'textbounds' "
@@ -271,6 +291,59 @@ export function registerExecTools(context: ToolContext): void {
           { studioId: args.studioId },
         );
         return json(response);
+      }
+
+      if (args.op === "ui") {
+        const audit = await bridge.call<UiAuditResponse>(
+          "viewport.ui",
+          { path: args.path },
+          { studioId: args.studioId, timeoutMs: 45_000 },
+        );
+
+        const where = `${audit.root} on a ${audit.screen} screen` +
+          (audit.device !== undefined ? ` (emulating ${audit.device})` : "");
+
+        if (audit.findings.length === 0) {
+          return text(
+            `No problems found — ${audit.checked} visible elements checked, ${where}.` +
+              (audit.device === undefined
+                ? '\n\nThis was the desktop viewport. Run it again after `device op="set"` with a ' +
+                  "phone — most interface faults only appear on a small screen."
+                : ""),
+          );
+        }
+
+        /*
+         * Grouped by issue rather than listed by element. Twenty findings of
+         * four kinds is four things to fix; listed flat it reads as twenty, and
+         * the shape of the problem ("everything is clipped at the bottom") is
+         * lost in the rows.
+         */
+        const byIssue = new Map<string, typeof audit.findings>();
+        for (const finding of audit.findings) {
+          const bucket = byIssue.get(finding.issue) ?? [];
+          bucket.push(finding);
+          byIssue.set(finding.issue, bucket);
+        }
+
+        const blocks = [...byIssue.entries()].map(([issue, rows]) => {
+          const lines = rows.map((row) => `  ${row.path} — ${row.detail}`);
+          return `${issue.toUpperCase()} (${rows.length})\n${lines.join("\n")}`;
+        });
+
+        const notes: string[] = [
+          `${audit.checked} visible elements checked, ${audit.hidden} hidden skipped, ${where}.`,
+        ];
+        if (audit.device === undefined) {
+          notes.push(
+            'Run again after `device op="set"` with a phone — this is the desktop layout.',
+          );
+        }
+        if (audit.overlapStopped) {
+          notes.push("Overlap checking stopped early; there were too many sibling pairs.");
+        }
+
+        return text(`${blocks.join("\n\n")}\n\n${notes.join(" ")}`);
       }
 
       if (args.op === "textbounds") {

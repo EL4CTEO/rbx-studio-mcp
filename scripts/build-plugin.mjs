@@ -17,6 +17,19 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const sourceDir = join(root, "plugin", "src");
 const outputPath = resolve(process.argv[2] ?? join(root, "build", "StudioMCP.rbxmx"));
 
+/**
+ * The package's version, stamped into the plugin the same way the build id is.
+ *
+ * `Config.PLUGIN_VERSION` used to be a literal that someone had to remember to
+ * edit alongside package.json, and nothing checked. A release that bumped the
+ * package and not the literal shipped a plugin reporting the previous version
+ * in its own `version` and `status` output, in `list_studios`, and in the
+ * mismatch warnings the server prints when a plugin looks out of date -- which
+ * is the one place a wrong version number does real damage, because it is read
+ * as evidence about which build is running.
+ */
+const packageVersion = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
+
 const NEWLINE = "\n";
 
 /**
@@ -121,6 +134,13 @@ function buildTree(dir, name) {
       // Stamped with the fingerprint of the pre-injection sources, which is
       // exactly what the server recomputes at runtime.
       source = source.replace('Config.BUILD_ID = "dev"', `Config.BUILD_ID = "${stamp}"`);
+      // The literal in the source is the fallback for anyone loading
+      // plugin/src directly through Rojo; a built plugin always carries the
+      // package's own version.
+      source = source.replace(
+        /Config\.PLUGIN_VERSION = "[^"]*"/,
+        `Config.PLUGIN_VERSION = "${packageVersion}"`,
+      );
     }
 
     if (entry.name === "init.server.luau") {

@@ -21,6 +21,7 @@ local Stats = game:GetService("Stats")
 local Dispatch = require(script.Parent.Parent.Dispatch)
 local LogBuffer = require(script.Parent.Parent.LogBuffer)
 local Paths = require(script.Parent.Parent.Paths)
+local Scope = require(script.Parent.Parent.Scope)
 
 -- The log holds thousands of lines in a busy session; an unbounded tail would
 -- swamp any context window.
@@ -506,6 +507,231 @@ function Perf.coverage(params: { [string]: any }): { [string]: any }
 	}
 end
 
+--[[
+	Every reference in the place that points at nothing.
+
+	A dead asset id is the quietest failure Roblox has. A Sound whose id was
+	deleted, made private, or mistyped plays silence; a Decal shows nothing; an
+	Animation does nothing. None of them errors, none of them warns, and the
+	instance looks perfectly healthy in the Explorer -- the id is a string, and
+	it is still a string. The only way to find them today is to play the game and
+	notice something missing, which nobody does reliably for the twentieth sound
+	effect.
+
+	`ContentProvider:PreloadAsync` settles it. Measured: a real id came back
+	`IsLoaded=true, TimeLength=0.632`, a dead one `IsLoaded=false, TimeLength=0`.
+	So this collects every asset-bearing property in the place, asks the engine
+	to fetch them, and reports the ones that did not arrive.
+
+	One honest cost: preloading a dead id writes a line to Studio's Output
+	window. That is the engine talking, not this tool, and it corroborates the
+	finding rather than contradicting it -- but it is the user's Output window,
+	so the tool says up front that it will happen.
+]]
+
+--[[
+	Assets fetched in one audit.
+
+	Preloading is network work, and a place with two thousand sounds would spend
+	minutes on it while Studio sat still. The cap is generous enough to cover
+	most places whole and small enough that the worst case is seconds, and the
+	reply says when it stopped short rather than implying it checked everything.
+]]
+local MAX_ASSETS = 200
+
+--[[
+	How long the whole fetch may take before this gives up on it.
+
+	Long enough for two hundred ordinary assets over a slow connection, short
+	enough that a stuck fetch is a slow answer rather than a hung Studio.
+]]
+local PRELOAD_SECONDS = 20
+
+--[[
+	Which property on which class holds a content id.
+
+	Written out rather than discovered from the API dump, because "a string
+	property whose name sounds like an asset" catches `Name` and misses
+	`MeshContent`. The list is short, and being wrong here means reporting a
+	healthy place as broken.
+]]
+local ASSET_FIELDS: { { className: string, property: string } } = {
+	{ className = "Sound", property = "SoundId" },
+	{ className = "Decal", property = "Texture" },
+	{ className = "Texture", property = "Texture" },
+	{ className = "ImageLabel", property = "Image" },
+	{ className = "ImageButton", property = "Image" },
+	{ className = "Animation", property = "AnimationId" },
+	{ className = "Sky", property = "SkyboxUp" },
+	{ className = "ParticleEmitter", property = "Texture" },
+	{ className = "Beam", property = "Texture" },
+	{ className = "Trail", property = "Texture" },
+}
+
+function Perf.audit(params: { [string]: any }): { [string]: any }
+	local ContentProvider = game:GetService("ContentProvider")
+
+	local unset: { { [string]: any } } = {}
+	local candidates: { { instance: Instance, id: string, property: string } } = {}
+	local disabled: { string } = {}
+	local duplicates: { string } = {}
+
+	local seenNames: { [string]: boolean } = {}
+
+	for _, descendant in game:GetDescendants() do
+		if Scope.isNoisy(descendant) then
+			continue
+		end
+
+		for _, field in ASSET_FIELDS do
+			if not descendant:IsA(field.className) then
+				continue
+			end
+			local ok, value = pcall(function()
+				return (descendant :: any)[field.property]
+			end)
+			if not ok or typeof(value) ~= "string" then
+				continue
+			end
+			if value == "" then
+				table.insert(unset, { path = Paths.of(descendant), property = field.property })
+			elseif #candidates < MAX_ASSETS then
+				table.insert(candidates, { instance = descendant, id = value, property = field.property })
+			end
+			break
+		end
+
+		--[[
+			`Disabled` exists on BaseScript, not on ModuleScript -- reading it off
+			the wrong one throws, which is how this check failed the first time it
+			was written. Narrowed to the class that has it.
+		]]
+		if descendant:IsA("BaseScript") and (descendant :: any).Disabled == true then
+			if #disabled < 25 then
+				table.insert(disabled, Paths.of(descendant))
+			end
+		end
+
+		--[[
+			Same-named siblings, which is what breaks `WaitForChild`: it returns
+			whichever one the engine reaches first, and that is not stable.
+
+			Geometry is excluded, and that exclusion is the whole value of the
+			check. Measured on a real place: the first version reported 25
+			duplicates and every one of them was a wall bar, a bench or a table
+			leg in a blockout -- decorative parts nobody ever looks up by name.
+			The real findings were buried under them.
+
+			A duplicated script, RemoteEvent, value or GUI element is a different
+			matter: those exist to be found by name, and two of them means code
+			somewhere is reaching for whichever the engine happened to index
+			first.
+		]]
+		local parent = descendant.Parent
+		if parent ~= nil and not descendant:IsA("BasePart") and not descendant:IsA("Attachment") then
+			local key = tostring(parent:GetDebugId(8)) .. "/" .. descendant.Name
+			if seenNames[key] and #duplicates < 25 then
+				table.insert(duplicates, Paths.of(descendant))
+			end
+			seenNames[key] = true
+		end
+	end
+
+	--[[
+		Preloaded in one call rather than one per asset.
+
+		`PreloadAsync` takes the whole list and fetches in parallel; asking for
+		them one at a time would serialise two hundred network round trips into
+		something that looks like a hang.
+	]]
+	local toLoad: { Instance } = {}
+	for _, entry in candidates do
+		table.insert(toLoad, entry.instance)
+	end
+	--[[
+		Given a deadline, because `PreloadAsync` has none of its own.
+
+		It blocks until every id in the list resolves, and an id that resolves
+		slowly -- or a network that has stopped answering -- blocks it for as
+		long as that takes. Measured: an audit against a running playtest sat
+		still long enough for the request to time out and the playtest to end
+		with it. A tool that can stop Studio responding is worse than one that
+		reports less.
+
+		Run on its own thread and waited on here, so the wait can end without
+		the work being cancelled -- there is no way to cancel it, and pretending
+		otherwise would leave a thread writing into a finished request.
+	]]
+	local preloaded = true
+	if #toLoad > 0 then
+		local done = false
+		task.spawn(function()
+			pcall(function()
+				ContentProvider:PreloadAsync(toLoad)
+			end)
+			done = true
+		end)
+
+		local waited = 0
+		while not done and waited < PRELOAD_SECONDS do
+			waited += task.wait(0.05)
+		end
+		preloaded = done
+	end
+
+	local dead: { { [string]: any } } = {}
+	for _, entry in candidates do
+		local instance = entry.instance
+		local loaded = true
+		if instance:IsA("Sound") then
+			-- A Sound that fetched has a length; one that did not is still zero.
+			loaded = (instance :: Sound).TimeLength > 0
+		else
+			local ok, value = pcall(function()
+				return (instance :: any).IsLoaded
+			end)
+			if ok and typeof(value) == "boolean" then
+				loaded = value
+			end
+		end
+		--[[
+			Nothing is called dead once the fetch has been abandoned.
+
+			An id that simply had not arrived yet is indistinguishable here from
+			one that points at nothing, and "this sound is broken" about a sound
+			that is fine is the one answer this check must never give.
+		]]
+		if not loaded and not preloaded then
+			continue
+		end
+		if not loaded and #dead < 50 then
+			table.insert(dead, {
+				path = Paths.of(instance),
+				property = entry.property,
+				id = entry.id,
+			})
+		end
+	end
+
+	return {
+		checked = #candidates,
+		-- Reported beside the fetched count, because "3 checked" on a place with
+		-- fourteen blank ids reads as if the audit barely ran. A blank id needs
+		-- no fetch to be judged; it is still a reference that points nowhere.
+		scanned = #candidates + #unset,
+		truncated = #candidates >= MAX_ASSETS,
+		-- Said out loud, because an empty `dead` list from an abandoned fetch
+		-- reads exactly like a clean place.
+		incomplete = if not preloaded then true else nil,
+		dead = dead,
+		deadCount = #dead,
+		unset = unset,
+		unsetCount = #unset,
+		disabledScripts = disabled,
+		duplicateNames = duplicates,
+	}
+end
+
 function Perf.register(host: Plugin?)
 	pluginRef = host
 
@@ -649,6 +875,7 @@ function Perf.scene(params: { [string]: any }): { [string]: any }
 end
 
 	Dispatch.registerAll("perf", {
+		audit = Perf.audit,
 		console = Perf.console,
 		snapshot = function()
 			return Perf.snapshot()

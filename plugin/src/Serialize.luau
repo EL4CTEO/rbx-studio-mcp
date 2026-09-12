@@ -13,6 +13,8 @@
 	straight back without the agent reformatting it.
 ]]
 
+local Paths = require(script.Parent.Paths)
+
 local Serialize = {}
 
 -- Floats are rounded before display: Studio reports positions like
@@ -87,11 +89,36 @@ function Serialize.value(value: any): any
 	if kind == "UDim" then
 		return string.format("{%s, %s}", num(value.Scale), num(value.Offset))
 	end
+	if kind == "Font" then
+		--[[
+			Written so it can be read back, which `tostring` is not.
+
+			A Font stringifies as `Font { Family = rbxasset://..., Weight = Bold,
+			Style = Normal }`, which nothing here can parse. The family, weight
+			and style are all there is to one, so they are written plainly and
+			separated the way a composite value is elsewhere in this module.
+		]]
+		return string.format(
+			"%s | %s | %s",
+			value.Family,
+			value.Weight.Name,
+			value.Style.Name
+		)
+	end
 	if kind == "EnumItem" then
 		return string.format("Enum.%s.%s", tostring(value.EnumType), value.Name)
 	end
 	if kind == "Instance" then
-		return value:GetFullName()
+		--[[
+			Formatted as an address, not as a display name.
+
+			`GetFullName` writes "StarterPack.Pistol.Handle" for both of two
+			Tools named Pistol, so reading a Motor6D's Part1 and writing it back
+			pointed at the wrong one -- silently, since both paths resolve.
+			`Paths.of` adds the [n] that tells them apart, which is what makes a
+			value read here safe to write straight back.
+		]]
+		return Paths.of(value)
 	end
 	if kind == "NumberRange" then
 		return string.format("%s..%s", num(value.Min), num(value.Max))
@@ -307,9 +334,112 @@ function Serialize.parse(text: any, valueType: string): (boolean, any, string?)
 		return true, NumberRange.new(numbers[1], numbers[2]), nil
 	end
 
-	-- Enum values arrive as "Enum.Material.Plastic" or bare "Plastic".
-	local enumType = (Enum :: any)[valueType]
-	if enumType then
+	--[[
+		PhysicalProperties, which is neither a vector nor an enum.
+
+		Written as the Properties panel writes it: density, friction,
+		elasticity, and optionally the two weights. Handled here because it is a
+		real property on every BasePart and the fall-through below cannot take
+		it -- see the note on the Enum lookup.
+	]]
+	if valueType == "PhysicalProperties" then
+		if #numbers >= 5 then
+			return true, PhysicalProperties.new(numbers[1], numbers[2], numbers[3], numbers[4], numbers[5]), nil
+		end
+		if #numbers >= 3 then
+			return true, PhysicalProperties.new(numbers[1], numbers[2], numbers[3]), nil
+		end
+		return false, nil, 'expected "density, friction, elasticity" and optionally two weights'
+	end
+
+	--[[
+		Fonts, which look like an enum and are not one.
+
+		`TextLabel.FontFace` holds a `Font`, while `Enum.Font` is a separate
+		thing that happens to share its names. The fall-through below found
+		`Enum.Font` first and returned an EnumItem, so every attempt to set
+		FontFace failed with "Font expected, got EnumItem" -- measured while
+		building an ordinary shop panel, where it stopped the whole batch. This
+		has to come first for that reason.
+
+		Three spellings are accepted, because all three are what someone
+		actually has to hand: the familiar enum name ("GothamBold"), a family
+		asset id, and a family with a weight and style after it -- the form this
+		module writes when it reads a Font back.
+	]]
+	if valueType == "Font" then
+		local written = tostring(text)
+		local pieces: { string } = {}
+		for piece in string.gmatch(written, "[^|]+") do
+			table.insert(pieces, (string.gsub(piece, "^%s*(.-)%s*$", "%1")))
+		end
+
+		local family = if #pieces > 0 then pieces[1] else written
+		local weight = Enum.FontWeight.Regular
+		local style = Enum.FontStyle.Normal
+		if #pieces >= 2 then
+			local okWeight, found = pcall(function()
+				return (Enum.FontWeight :: any)[pieces[2]]
+			end)
+			if okWeight and found then
+				weight = found
+			end
+		end
+		if #pieces >= 3 and pieces[3] == "Italic" then
+			style = Enum.FontStyle.Italic
+		end
+
+		-- The enum spelling first: "GothamBold" carries its weight in the name,
+		-- and `fromEnum` knows the pairing better than any table here would.
+		if #pieces == 1 then
+			local name = family:match("([^%.]+)$") or family
+			for _, item in Enum.Font:GetEnumItems() do
+				if item.Name == name and item ~= Enum.Font.Unknown then
+					local okEnumFont, font = pcall(function()
+						return Font.fromEnum(item)
+					end)
+					if okEnumFont then
+						return true, font, nil
+					end
+				end
+			end
+		end
+
+		if string.sub(family, 1, 9) == "rbxasset:" or string.sub(family, 1, 12) == "rbxassetid:" then
+			return true, Font.new(family, weight, style), nil
+		end
+
+		local okName, font = pcall(function()
+			return Font.fromName(family, weight, style)
+		end)
+		if okName and font then
+			return true, font, nil
+		end
+
+		return false,
+			nil,
+			string.format(
+				'"%s" is not a font. Use an Enum.Font name like "GothamBold", a family '
+					.. 'name like "Gotham", or "family | Weight | Style".',
+				written
+			)
+	end
+
+	--[[
+		Enum values arrive as "Enum.Material.Plastic" or bare "Plastic".
+
+		Indexed inside a pcall, because `Enum` throws on an unknown name rather
+		than returning nil. Every value type this function does not handle ends
+		up here, so an unguarded lookup turned "no conversion known for type X"
+		-- a clear message naming the property -- into a raw HANDLER_ERROR
+		reading "PhysicalProperties is not a valid member of Enum", which names
+		the wrong thing entirely. Measured on a `modify` setting
+		CustomPhysicalProperties.
+	]]
+	local okEnum, enumType = pcall(function()
+		return (Enum :: any)[valueType]
+	end)
+	if okEnum and enumType then
 		local name = tostring(text):match("([^%.]+)$") or tostring(text)
 		for _, item in enumType:GetEnumItems() do
 			if item.Name == name then
@@ -319,6 +449,48 @@ function Serialize.parse(text: any, valueType: string): (boolean, any, string?)
 		return false,
 			nil,
 			string.format('"%s" is not a member of Enum.%s', tostring(text), valueType)
+	end
+
+	--[[
+		Instance references, written as the path of the thing pointed at.
+
+		Motor6D.Part0, WeldConstraint.Part1, ObjectValue.Value, Beam.Attachment0,
+		Model.PrimaryPart, BillboardGui.Adornee -- every one of these holds
+		another instance, and none of them could be set at all before this. That
+		is not a corner: a Motor6D with no Part0 joins nothing, so building a rig
+		or welding a gun to a hand fell out of `create` entirely and had to go
+		through `execute_luau`. Measured on a six-joint R6 rig, which failed with
+		"no conversion known for type BasePart".
+
+		Written the same way every reference is READ -- `Serialize.value` returns
+		`GetFullName()` for an instance -- so a value read here can be written
+		straight back, which is the promise the rest of this module makes.
+
+		The class is checked against the property's own type, because the engine
+		accepts the assignment and then quietly does nothing useful with a Part0
+		pointing at a Folder. An empty string clears the reference, which is the
+		only way to say "nothing" in a field that otherwise takes a path.
+	]]
+	if kind == "string" then
+		local wanted = tostring(text)
+		if wanted == "" then
+			return true, nil, nil
+		end
+		local okPath, resolved = pcall(Paths.resolve, wanted)
+		if okPath and typeof(resolved) == "Instance" then
+			local instance = resolved :: Instance
+			if instance:IsA(valueType) then
+				return true, instance, nil
+			end
+			return false,
+				nil,
+				string.format(
+					"%s is a %s, but this property holds a %s",
+					wanted,
+					instance.ClassName,
+					valueType
+				)
+		end
 	end
 
 	return false, nil, string.format('no conversion known for type "%s"', valueType)

@@ -15,10 +15,12 @@
 
 local RunService = game:GetService("RunService")
 local Selection = game:GetService("Selection")
+local StarterGui = game:GetService("StarterGui")
 local TextService = game:GetService("TextService")
 local Workspace = game:GetService("Workspace")
 
 local Dispatch = require(script.Parent.Parent.Dispatch)
+local Emulation = require(script.Parent.Parent.Emulation)
 local Paths = require(script.Parent.Parent.Paths)
 local Serialize = require(script.Parent.Parent.Serialize)
 
@@ -403,8 +405,274 @@ function Viewport.textbounds(params: { [string]: any }): { [string]: any }
 	return report
 end
 
+--[[
+	Every interface fault that is invisible in the data model.
+
+	`textbounds` already answers "does this text fit its label". This is the same
+	question asked of the whole screen, and it exists because the data model
+	cannot answer it at all: a button positioned off the side of a phone has a
+	perfectly correct `Position`, a `Size` that is not zero, and a parent that is
+	visible. Nothing about the instance is wrong. It is simply not where anyone
+	can reach it, and the only ways to find that out today are to play the game
+	or to look at a picture.
+
+	Studio lays StarterGui out for real in edit mode -- measured:
+	`AbsolutePosition` and `AbsoluteSize` carry live values with nothing running,
+	and they move when a device is emulated. So the audit runs against whatever
+	`device` is currently emulating, which is what makes it worth running twice:
+	once on desktop, once on a phone.
+
+	It reports rather than judges. Every finding names the element and the
+	number, so a caller can decide whether a label four pixels off the edge is a
+	bug or a deliberate bleed.
+]]
+
+--[[
+	Text below this many pixels tall is not readable on a phone.
+
+	Roblox's own UI guidance and every accessibility standard land in the same
+	place: somewhere around 12 device-independent pixels is the floor for body
+	text. 10 is used here because it is the point past which there is no
+	argument -- a label under it is unreadable on any display, not merely small.
+]]
+local MIN_TEXT_PIXELS = 10
+
+--[[
+	Pairs compared for overlap before the check gives up.
+
+	Overlap is quadratic in the number of siblings, and a scrolling list of two
+	hundred rows is both a legitimate design and forty thousand comparisons of
+	rectangles that are supposed to sit next to each other. Past this the check
+	reports that it stopped rather than continuing to spend the user's frame on
+	an answer nobody asked for.
+]]
+local MAX_OVERLAP_PAIRS = 2000
+
+local function rectOf(element: GuiObject): (number, number, number, number)
+	local position = element.AbsolutePosition
+	local size = element.AbsoluteSize
+	return position.X, position.Y, position.X + size.X, position.Y + size.Y
+end
+
+local function overlaps(a: GuiObject, b: GuiObject): boolean
+	local ax1, ay1, ax2, ay2 = rectOf(a)
+	local bx1, by1, bx2, by2 = rectOf(b)
+	return ax1 < bx2 and bx1 < ax2 and ay1 < by2 and by1 < ay2
+end
+
+--[[
+	Whether this element is actually on screen at all.
+
+	Walks up rather than trusting `Visible`: an element with Visible true inside
+	a frame with Visible false is not on screen, and reporting it as a fault
+	would bury the real findings under every hidden menu in the place.
+]]
+local function shown(element: Instance): boolean
+	local node: Instance? = element
+	while node ~= nil and not node:IsA("LayerCollector") do
+		if node:IsA("GuiObject") and not (node :: GuiObject).Visible then
+			return false
+		end
+		node = node.Parent
+	end
+	if node ~= nil and node:IsA("ScreenGui") then
+		return (node :: ScreenGui).Enabled
+	end
+	return node ~= nil
+end
+
+function Viewport.ui(params: { [string]: any }): { [string]: any }
+	local root: Instance = if typeof(params.path) == "string" and params.path ~= ""
+		then Paths.resolve(params.path)
+		else StarterGui
+
+	local camera = Workspace.CurrentCamera
+	if camera == nil then
+		Dispatch.fail("NO_CAMERA", "This session has no camera, so there is no screen to measure against.")
+	end
+	local screen = (camera :: Camera).ViewportSize
+	local screenWidth, screenHeight = math.floor(screen.X), math.floor(screen.Y)
+
+	local elements: { GuiObject } = {}
+	for _, descendant in root:GetDescendants() do
+		if descendant:IsA("GuiObject") then
+			table.insert(elements, descendant :: GuiObject)
+		end
+	end
+
+	local findings: { { [string]: any } } = {}
+	local checked = 0
+	local hidden = 0
+
+	local function report(element: GuiObject, issue: string, detail: string)
+		if #findings >= 100 then
+			return
+		end
+		table.insert(findings, {
+			path = Paths.of(element),
+			name = element.Name,
+			className = element.ClassName,
+			issue = issue,
+			detail = detail,
+		})
+	end
+
+	local visible: { GuiObject } = {}
+
+	for _, element in elements do
+		if not shown(element) then
+			hidden += 1
+			continue
+		end
+		checked += 1
+		table.insert(visible, element)
+
+		local size = element.AbsoluteSize
+		local position = element.AbsolutePosition
+
+		if size.X <= 0 or size.Y <= 0 then
+			report(element, "zero size", string.format("%.0f x %.0f -- nothing is drawn", size.X, size.Y))
+			continue
+		end
+
+		--[[
+			Off screen, and by how much.
+
+			Reported as a measurement rather than a yes/no, because the two cases
+			it covers are different bugs: an element wholly outside the screen was
+			positioned for a display that is not this one, and one clipped at an
+			edge is usually a layout that does not fit. The numbers tell them
+			apart; a boolean would not.
+		]]
+		local right = position.X + size.X
+		local bottom = position.Y + size.Y
+		if right <= 0 or bottom <= 0 or position.X >= screenWidth or position.Y >= screenHeight then
+			report(
+				element,
+				"off screen",
+				string.format(
+					"at %.0f,%.0f on a %dx%d screen -- entirely outside it",
+					position.X,
+					position.Y,
+					screenWidth,
+					screenHeight
+				)
+			)
+		elseif position.X < 0 or position.Y < 0 or right > screenWidth or bottom > screenHeight then
+			report(
+				element,
+				"clipped",
+				string.format(
+					"%.0f,%.0f to %.0f,%.0f runs past the %dx%d screen",
+					position.X,
+					position.Y,
+					right,
+					bottom,
+					screenWidth,
+					screenHeight
+				)
+			)
+		end
+
+		if element:IsA("TextLabel") or element:IsA("TextButton") or element:IsA("TextBox") then
+			local text = element :: any
+			--[[
+				The size the text is actually drawn at, which is not TextSize when
+				TextScaled is on: the engine then fits the string to the box and
+				`TextBounds` is the only honest report of the result.
+			]]
+			local drawn = if text.TextScaled then text.TextBounds.Y else text.TextSize
+			if drawn > 0 and drawn < MIN_TEXT_PIXELS and text.Text ~= "" then
+				report(
+					element,
+					"text too small",
+					string.format("%.0fpx -- under %dpx is unreadable on a phone", drawn, MIN_TEXT_PIXELS)
+				)
+			end
+			if text.TextTruncate == Enum.TextTruncate.None and not text.TextScaled and not text.TextWrapped then
+				if text.TextBounds.X > size.X + 1 then
+					report(
+						element,
+						"text overflows",
+						string.format("needs %.0fpx, has %.0fpx", text.TextBounds.X, size.X)
+					)
+				end
+			end
+		end
+	end
+
+	--[[
+		Overlap between siblings only.
+
+		A child sitting on top of its parent is the normal way UI is built, and
+		reporting it would make the check useless. Two buttons in the same frame
+		covering each other is the fault worth naming.
+	]]
+	--[[
+		Whether an element is something a user reads or presses.
+
+		Overlap between decoration is not a fault, it is how UI is built: a drop
+		shadow sits under a panel, a bevel sits under a label, a playhead sits
+		over a timeline. Measured on a real HUD, the first version of this check
+		reported four overlaps and all four were of that kind -- a Frame named
+		Shadow behind the three things it was drawn to sit behind.
+
+		Two pieces of TEXT on top of each other, or two images, is the fault
+		worth naming. So a plain coloured Frame is not counted; something
+		carrying text or an image is.
+	]]
+	local function carriesContent(element: GuiObject): boolean
+		if element:IsA("TextLabel") or element:IsA("TextButton") or element:IsA("TextBox") then
+			return (element :: any).Text ~= ""
+		end
+		if element:IsA("ImageLabel") or element:IsA("ImageButton") then
+			return (element :: any).Image ~= ""
+		end
+		return false
+	end
+
+	local pairs = 0
+	local stopped = false
+	for index = 1, #visible do
+		for other = index + 1, #visible do
+			if pairs >= MAX_OVERLAP_PAIRS then
+				stopped = true
+				break
+			end
+			local a, b = visible[index], visible[other]
+			if a.Parent == b.Parent then
+				pairs += 1
+				if
+					overlaps(a, b)
+					and a.AbsoluteSize.X > 0
+					and b.AbsoluteSize.X > 0
+					and carriesContent(a)
+					and carriesContent(b)
+				then
+					report(a, "overlaps", string.format("covers or is covered by %s", b.Name))
+				end
+			end
+		end
+		if stopped then
+			break
+		end
+	end
+
+	return {
+		screen = string.format("%dx%d", screenWidth, screenHeight),
+		device = Emulation.deviceId(),
+		root = Paths.of(root),
+		checked = checked,
+		hidden = hidden,
+		findings = findings,
+		findingCount = #findings,
+		overlapStopped = stopped,
+	}
+end
+
 function Viewport.register()
 	Dispatch.registerAll("viewport", {
+		ui = Viewport.ui,
 		textbounds = Viewport.textbounds,
 		raycast = Viewport.raycast,
 		select = Viewport.select,

@@ -272,9 +272,6 @@ local DESCRIBERS: { [string]: Describer } = {
 		return "Search the place"
 	end,
 
-	["script.debugSet"] = function()
-		return "Set breakpoints"
-	end,
 	["debug.set"] = function(params)
 		local breakpoints = params.breakpoints
 		local total = count(breakpoints)
@@ -481,19 +478,6 @@ local DESCRIBERS: { [string]: Describer } = {
 	["studio.ping"] = function()
 		return "Ping"
 	end,
-	["studio.transport"] = function(params)
-		local mode = params.mode
-		return if typeof(mode) == "string" and mode ~= ""
-			then string.format("Switch to %s transport", mode)
-			else "Check the transport"
-	end,
-
-	--[[
-		The one a person actually watches: a live playtest is the point where
-		"what is the AI doing" stops being abstract, and a console line reading
-		"Input send" says nothing a bystander could act on. One step names the
-		key or point; several collapse to a count, same as every other batch op.
-	]]
 	["input.send"] = function(params)
 		local steps = params.steps
 		local total = count(steps)
@@ -533,6 +517,158 @@ local DESCRIBERS: { [string]: Describer } = {
 		return if typeof(section) == "string" and section ~= ""
 			then "Measure the " .. section
 			else "Measure the scene"
+	end,
+
+	--[[
+		Everything below was added after the first pass over this table, and each
+		one spent time showing as the fallback -- "Anim preview", "Data set",
+		"Terrain fill". That form is honest but says nothing about the subject,
+		which is the whole point of this module: the panel is watched to see WHAT
+		an agent is touching, and 26 of 72 operations were declining to say.
+	]]
+	["anim.read"] = function(params)
+		local name = leaf(params.assetId)
+		return if name ~= nil then "Read the animation " .. name else "Read an animation"
+	end,
+	["anim.build"] = function(params)
+		local frames = count(params.keyframes)
+		return string.format("Build an animation from %s", plural(frames, "keyframe"))
+	end,
+	["anim.preview"] = function(params)
+		local rig = leaf(params.rig) or "a rig"
+		if params.op == "stop" then
+			return "Clear the pose on " .. rig
+		end
+		local at = tonumber(params.at)
+		return if at ~= nil
+			then string.format("Pose %s at %.2fs", rig, at)
+			else "Pose " .. rig
+	end,
+
+	["data.list"] = function(params)
+		local store = params.store
+		if typeof(store) == "string" and store ~= "" then
+			return string.format("List the keys in %s", store)
+		end
+		return "List the data stores"
+	end,
+	["data.get"] = function(params)
+		return string.format("Read %s from %s", tostring(params.key), tostring(params.store))
+	end,
+	["data.versions"] = function(params)
+		return string.format("Read the history of %s", tostring(params.key))
+	end,
+	["data.set"] = function(params)
+		return string.format("SAVE over %s in %s", tostring(params.key), tostring(params.store))
+	end,
+	["data.remove"] = function(params)
+		return string.format("DELETE %s from %s", tostring(params.key), tostring(params.store))
+	end,
+
+	["discover.tags"] = function(params)
+		local where = leaf(params.path)
+		return if where ~= nil then "List the tags used in " .. where else "List every tag in use"
+	end,
+
+	["viewport.ui"] = function()
+		return "Check the interface for layout faults"
+	end,
+	["viewport.textbounds"] = function(params)
+		local name = leaf(params.path)
+		return if name ~= nil then "Measure the text in " .. name else "Measure some text"
+	end,
+
+	["perf.audit"] = function()
+		return "Look for references that point at nothing"
+	end,
+
+	["assets.audio"] = function(params)
+		local keyword = params.keyword
+		return if typeof(keyword) == "string" and keyword ~= ""
+			then string.format('Search audio for "%s"', keyword)
+			else "Search the audio library"
+	end,
+	["assets.peek"] = function(params)
+		return string.format("Look inside asset %s without inserting it", tostring(params.assetId))
+	end,
+	["assets.bake"] = function(params)
+		return "Bake " .. subjectOf(params.paths, "instance")
+	end,
+
+	["character.path"] = function(params)
+		local target = leaf(params.toPath)
+		return if target ~= nil then "Check the route to " .. target else "Check a route"
+	end,
+
+	["device.network"] = function(params)
+		local preset = params.preset
+		return if typeof(preset) == "string" and preset ~= ""
+			then string.format("Simulate a %s connection", preset)
+			else "Shape the network connection"
+	end,
+
+	["geometry.sweep"] = function(params)
+		local name = leaf(params.path)
+		return if name ~= nil then "Sweep the path of " .. name else "Sweep a motion volume"
+	end,
+	["geometry.mesh"] = function(params)
+		return "Read the geometry of " .. subjectOf(params.paths, "mesh")
+	end,
+
+	["generate.model"] = function(params)
+		local prompt = params.prompt
+		return if typeof(prompt) == "string" and prompt ~= ""
+			then string.format('Generate a model: "%s"', prompt)
+			else "Generate a model"
+	end,
+	["generate.segment"] = function(params)
+		local name = leaf(params.path)
+		return if name ~= nil then "Cut " .. name .. " into named parts" else "Segment a mesh"
+	end,
+
+	["script.open"] = function(params)
+		local name = leaf(params.path)
+		return if name ~= nil then "Open " .. name .. " in the editor" else "Open a script"
+	end,
+
+	["terrain.fill"] = function(params)
+		--[[
+			The material lives inside the shapes, not beside them.
+
+			Written first against a top-level `material`, which this op has never
+			taken, so it always fell through to the bare "Fill terrain" -- seen in
+			the panel for a call that laid 50 voxels of sand. The parameters a
+			describer reads have to be the ones the handler reads.
+		]]
+		local shapes = params.shapes
+		if typeof(shapes) == "table" and #(shapes :: { any }) > 0 then
+			local list = shapes :: { any }
+			local first = list[1]
+			local material = if typeof(first) == "table" then first.material else nil
+			local named = typeof(material) == "string" and material ~= ""
+			if #list == 1 then
+				return if named
+					then string.format("Fill terrain with %s", material)
+					else "Fill terrain"
+			end
+			return if named
+				then string.format("Fill %s, starting with %s", plural(#list, "terrain shape"), material)
+				else string.format("Fill %s", plural(#list, "terrain shape"))
+		end
+		return "Fill terrain"
+	end,
+	["terrain.clear"] = function()
+		return "CLEAR terrain"
+	end,
+	["terrain.replace"] = function(params)
+		return string.format(
+			"Replace %s terrain with %s",
+			tostring(params.from or "one material"),
+			tostring(params.to or "another")
+		)
+	end,
+	["terrain.stats"] = function()
+		return "Measure the terrain"
 	end,
 
 	["device.list"] = function()
@@ -576,6 +712,18 @@ local KINDS: { [string]: string } = {
 	perf = "debug",
 	api = "read",
 	device = "read",
+	--[[
+		Absent groups defaulted to "read", which is the wrong way round for a
+		default: a missing entry made `terrain.clear` and `data.set` -- one of
+		which erases the map and the other of which overwrites a player's save
+		with no undo -- show in the panel with the same weight as an inspect.
+		A kind is a warning, so the ones that change things are named here
+		explicitly.
+	]]
+	terrain = "write",
+	generate = "write",
+	anim = "write",
+	data = "write",
 }
 
 function Phrase.kindOf(op: string): string

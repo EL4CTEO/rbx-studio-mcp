@@ -166,7 +166,7 @@ define({
 define({
 	name = "status",
 	usage = "status",
-	summary = "connection, port and build of this plugin",
+	summary = "connection, bridge, build and theme",
 	run = function()
 		local current = hooks
 		Console.log("info", "session")
@@ -333,7 +333,7 @@ local LEVELS = { "ok", "error", "warn", "info", "dim", "call", "reply" }
 define({
 	name = "log",
 	usage = "log [level|all]",
-	summary = "show only one kind of row",
+	summary = "filter the log by kind, or `all` for everything",
 	run = function(args)
 		local wanted = args[1]
 		if wanted == nil or wanted == "all" then
@@ -444,7 +444,7 @@ define({
 define({
 	name = "version",
 	usage = "version",
-	summary = "what this plugin is",
+	summary = "version, build and protocol of this plugin",
 	run = function()
 		Console.log(
 			"info",

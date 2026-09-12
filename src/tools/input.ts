@@ -60,11 +60,32 @@ function landingNote(landed: NonNullable<InputResponse["landed"]>): string {
   if (dx === 0 && dy === 0) {
     return ` The last click was aimed at (${landed.sent.x}, ${landed.sent.y}) and the client read it there, so screen coordinates are landing exactly.`;
   }
+  /*
+   * A purely vertical shift is the topbar inset, and NOT an aiming error.
+   *
+   * A screenshot includes the topbar; GUI space does not, so the client reads
+   * a click the inset lower and that is the same point described twice. The
+   * previous message told the caller to add the difference back, which moved
+   * every click down by an inset and made it miss. Measured, three times over,
+   * on a shop panel: the raw screenshot coordinate (y 316) landed inside a
+   * button spanning GUI y 238-284 and the purchase went through, while the
+   * "corrected" y 374 hit nothing and reported success anyway.
+   *
+   * A horizontal term is different: emulated landscape genuinely distorts the
+   * map (seen.x fitted 919 - 1.4 * sent.x), and there the correction is real.
+   */
+  if (dx === 0) {
+    return (
+      ` Aimed at (${landed.sent.x}, ${landed.sent.y}), read by the client at (${landed.seen.x}, ${landed.seen.y}) — ` +
+      `the same point, ${-dy}px apart because a screenshot counts from the top of the window and the game counts from below the topbar. ` +
+      "Screenshot coordinates are what to send, unchanged. The `seen` value is the one to compare against a GuiObject's AbsolutePosition."
+    );
+  }
   return (
-    ` COORDINATES ARE OFFSET: the last click was aimed at (${landed.sent.x}, ${landed.sent.y}) and the client read it at (${landed.seen.x}, ${landed.seen.y}) — ` +
-    `off by (${dx}, ${dy}). Add (${-dx}, ${-dy}) to coordinates taken from a \`screenshot\` to hit what you are aiming at. ` +
-    "That correction is a constant translation with no device emulated and in portrait, but NOT in landscape emulation, where the horizontal term inverts — " +
-    "so under an emulated device treat it as one sample: click, read this field again, and correct from the newest one rather than reusing an earlier value."
+    ` COORDINATES ARE DISTORTED: aimed at (${landed.sent.x}, ${landed.sent.y}), the client read (${landed.seen.x}, ${landed.seen.y}) — ` +
+    `off by (${dx}, ${dy}), and the horizontal term means this is not just the topbar inset. ` +
+    "Emulated landscape does this, and there the map is not a translation at all — so treat this as one sample: click, read this field again, " +
+    "and correct from the newest one rather than reusing an earlier value."
   );
 }
 
@@ -103,11 +124,18 @@ export function registerInputTools(context: ToolContext): void {
         "get an error, not a success — check where things really are with " +
         "`character op=\"state\"`.\n\n" +
         "Mouse coordinates are viewport pixels from the top-left, so pair this " +
-        "with `screenshot` to see what is where before clicking it. The client " +
-        "reads them at an offset the reply reports as `landed` — aim once, read " +
-        "where it actually landed, then correct. Under an emulated device that " +
-        "offset is large and stops being a simple translation, so re-read it " +
-        "after each click rather than reusing an earlier one.\n\n" +
+        "with `screenshot` to see what is where before clicking it, and send " +
+        "what you read off the picture unchanged. The reply's `landed` shows " +
+        "the same click in the game's own coordinates, which sit a topbar lower " +
+        "— that difference is two ways of describing one point, not an error to " +
+        "correct for. Under an emulated device it is a real distortion instead, " +
+        "and the reply says so; there, re-read it after each click rather than " +
+        "reusing an earlier one.\n\n" +
+        "Take the screenshot immediately before clicking. The reply is measured " +
+        "against the viewport as it is NOW, and a Studio window that changed " +
+        "size since the picture was taken moves everything in it — measured, a " +
+        "window that went from 435 to 952 pixels wide between a screenshot and " +
+        "a click, where the click reported success and hit nothing.\n\n" +
         "A `text` step types into the FOCUSED TextBox. Click the box in the same " +
         "call, one step before the text, and the focus is taken for you; with no " +
         "box to type into the step is reported as having done nothing rather " +

@@ -183,6 +183,141 @@ end
 	Detailed read of specific instances. `properties` is chosen server-side from
 	the live API dump, so this handler never needs its own class table.
 ]]
+--[[
+	The physical facts about a part, which no property panel shows.
+
+	"Why does this fall over", "why does it sink", "why does the door fly off
+	when you touch it" are all mass questions, and mass is not a property you can
+	read in Studio -- it is computed from volume and material and appears
+	nowhere. A 4-stud cube of Metal weighs nine times the same cube of Neon, and
+	nothing on screen distinguishes them.
+
+	`AssemblyRootPart` is the other half. Parts welded together move as one body
+	with one combined mass, and which part leads that body decides how the whole
+	thing behaves. Two parts that look joined but report different assembly roots
+	are not joined at all, which is the usual answer to "why did half of it stay
+	behind".
+]]
+local function physicsOf(target: Instance): { [string]: any }?
+	if not target:IsA("BasePart") then
+		return nil
+	end
+	local part = target :: BasePart
+
+	local facts: { [string]: any } = {
+		anchored = part.Anchored,
+		canCollide = part.CanCollide,
+		massless = part.Massless,
+		material = tostring(part.Material):gsub("Enum%.Material%.", ""),
+	}
+
+	-- Every read is guarded separately: an anchored part has no assembly, and a
+	-- part mid-destruction can refuse any of these without the others failing.
+	pcall(function()
+		facts.mass = math.round(part:GetMass() * 1000) / 1000
+	end)
+	--[[
+		Infinity is a real answer here, and JSON cannot carry it.
+
+		An anchored part has infinite assembly mass -- that is the engine saying
+		"nothing will ever move this", which is exactly the fact someone asking
+		about mass wants. Encoded raw it came back as
+		`{"m":null,"t":"numeric","v":"inf"}`, which is the serialiser's honest
+		attempt at a number JSON has no room for, and is unreadable to everybody.
+		Said in words instead.
+	]]
+	pcall(function()
+		local assembly = part.AssemblyMass
+		if assembly == math.huge then
+			facts.assemblyMass = "infinite -- anchored, so nothing moves it"
+		else
+			facts.assemblyMass = math.round(assembly * 1000) / 1000
+		end
+	end)
+	pcall(function()
+		local root = part.AssemblyRootPart
+		if root == nil then
+			--[[
+				No assembly at all, which is not the same as being welded to
+				something.
+
+				Only parts inside Workspace are simulated; one sitting in
+				StarterPack, ReplicatedStorage or ServerStorage has no assembly
+				and `AssemblyRootPart` is nil. The first version read that nil as
+				"the root is not me" and reported `movesAlone = false`, which says
+				this part is attached to another -- about a part that is not in
+				the physics world at all. A pistol in StarterPack read as welded
+				to something.
+			]]
+			facts.simulated = false
+			facts.note = "Not in Workspace, so it has no physics assembly. Mass and "
+				.. "density are still real; anything about how it moves is not."
+			return
+		end
+		facts.simulated = true
+		facts.assemblyRoot = Paths.of(root)
+		--[[
+			Whether this part leads its own body. A part that is its own assembly
+			root is moving alone; one whose root is elsewhere is welded to
+			something, and the root names what.
+		]]
+		facts.movesAlone = root == part
+	end)
+	pcall(function()
+		--[[
+			Where the WHOLE body balances, in world coordinates.
+
+			`CenterOfMass` is the part's own, in its own space, and for any
+			ordinary part it is (0, 0, 0) -- it was reported for every part in
+			the place and said nothing about any of them. The figure that
+			answers a question is the assembly's: a plank at x = 0 on a fulcrum
+			at x = 0, with a weight bolted near one end, balances at x = 7, and
+			that number is the entire explanation of why it tips. Measured on
+			exactly that see-saw.
+
+			The local one is kept only when it is not the origin, which means
+			somebody set it deliberately and it is worth seeing.
+		]]
+		facts.centerOfMass = Serialize.value(part.AssemblyCenterOfMass)
+		local own = part.CenterOfMass
+		if own.Magnitude > 0.001 then
+			facts.centerOfMassOffset = Serialize.value(own)
+		end
+	end)
+	pcall(function()
+		local velocity = part.AssemblyLinearVelocity.Magnitude
+		if velocity > 0.01 then
+			facts.speed = math.round(velocity * 100) / 100
+		end
+	end)
+	--[[
+		Density from whichever source is actually in force.
+
+		An earlier version read `PhysicalProperties.new(part.Material)` whenever
+		custom properties existed, which reported the MATERIAL's density while the
+		part was using the override -- the one number in this block that would
+		have been confidently wrong. Measured: a Metal part reads 7.85 by
+		material and weighs 75.36, and the same part with a custom density of 0.3
+		weighs 2.88. Reporting 7.85 for the second one explains nothing about a
+		part that floats.
+
+		`CustomPhysicalProperties` is nil when unset, so its presence is the test
+		for which source applies.
+	]]
+	pcall(function()
+		local custom = part.CustomPhysicalProperties
+		if custom ~= nil then
+			facts.density = math.round(custom.Density * 1000) / 1000
+			facts.densityFrom = "CustomPhysicalProperties"
+		else
+			facts.density = math.round(PhysicalProperties.new(part.Material).Density * 1000) / 1000
+			facts.densityFrom = "material"
+		end
+	end)
+
+	return facts
+end
+
 function Discover.inspect(params: { [string]: any }): { [string]: any }
 	local paths = params.paths
 	if typeof(paths) ~= "table" or #paths == 0 then
@@ -254,6 +389,10 @@ function Discover.inspect(params: { [string]: any }): { [string]: any }
 			entry.tags = tags
 		end
 
+		if params.physics == true then
+			entry.physics = physicsOf(target)
+		end
+
 		if includeChildren then
 			local children: { { [string]: any } } = {}
 			for index, child in target:GetChildren() do
@@ -278,6 +417,166 @@ end
 	answer "every anchored Part under Workspace whose name contains 'door'"
 	without the agent chaining three calls and intersecting the results itself.
 ]]
+--[[
+	Runs a selector through the engine's own matcher.
+
+	`QueryDescendants` is a CSS-like query built into Instance, and it is doing
+	the same job the loop below does -- except in C++, over the whole subtree, in
+	one call. Measured on a 3700-instance place: "Part" answered 189 matches
+	without a single Luau iteration.
+
+	What it understands, confirmed against a live session rather than guessed:
+
+		Part                class name, superclasses included
+		#Baseplate          exact name
+		[Anchored=true]     property equality, on its own or after a class
+		Part, Model         either
+		Model > Part        direct children of a Model
+		Model >> Part       descendants of a Model
+
+	What it does not: substring names, and comparisons like `>` or `<` (it
+	answers "'=' expected after property name"). That is why this is one
+	candidate source among three rather than a replacement for the filters --
+	`nameContains` still needs the loop, and composes with a selector.
+
+	A malformed selector raises from inside the engine with a readable reason, so
+	it is caught and re-raised as BAD_PARAMS with the reason kept: "Pseudo-class
+	'first' filter is not supported" tells the caller exactly what to drop.
+]]
+local function query(root: Instance, selector: string): { Instance }
+	local ok, result = pcall(function()
+		return root:QueryDescendants(selector)
+	end)
+	if not ok then
+		Dispatch.fail(
+			"BAD_PARAMS",
+			string.format("selector %q was rejected: %s", selector, tostring(result)),
+			"Selectors support a class name, #Name, [Property=Value], `A, B`, "
+				.. "`A > B` for direct children and `A >> B` for descendants. They do "
+				.. "not support substring names or < > comparisons -- use "
+				.. "`nameContains` and `propertyValue` for those."
+		)
+	end
+
+	--[[
+		Deduplicated, because a union can match the same instance twice.
+
+		`Script, LocalScript` looks like two disjoint sets and is not: LocalScript
+		inherits Script, so every LocalScript satisfies both halves and the engine
+		returns it once per half. Measured -- a place with 7 scripts answered 14
+		matches, every one of them listed twice, and the count was as wrong as the
+		listing.
+
+		The engine is not doing anything unreasonable here; a union is a union.
+		But "how many are there" is the question a caller is usually asking, and
+		an answer that doubles depending on how the class hierarchy happens to be
+		shaped is not an answer.
+	]]
+	local matches = result :: { Instance }
+	local seen: { [Instance]: boolean } = {}
+	local unique: { Instance } = {}
+	for _, instance in matches do
+		if not seen[instance] then
+			seen[instance] = true
+			table.insert(unique, instance)
+		end
+	end
+	return unique
+end
+
+--[[
+	Which tags this place actually uses.
+
+	`find` can filter by tag and could never tell you which tags exist, so using
+	it meant guessing a name: a search for "Doors" that returns nothing is
+	indistinguishable from a place whose doors are tagged "Door". On a place
+	nobody has seen before that is the difference between reading how the game is
+	organised in one call and not being able to ask the question at all -- tags
+	like Enemy, Checkpoint or Interactable name a game's systems better than its
+	folder layout does.
+
+	Counted per tag, because an empty tag and a busy one mean different things: a
+	tag with nothing on it is usually left over from something deleted, and worth
+	saying so rather than listing beside the real ones.
+]]
+
+--[[
+	Studio's own tags, which are in every place and belong to none of them.
+
+	The tag registry is shared with Studio's interface, so an unfiltered listing
+	is mostly `data-testid=--studio-foundation--stylesheet-wrapper` and its
+	relatives -- measured, 7 tags in a place that uses 5. They are recognisable
+	by prefix rather than by a list, since the set changes with Studio's own UI
+	and hardcoding today's names would silently rot.
+]]
+local function studioOwned(tag: string): boolean
+	return string.sub(tag, 1, 12) == "data-testid="
+end
+
+function Discover.tags(params: { [string]: any }): { [string]: any }
+	local root = if typeof(params.path) == "string" and params.path ~= ""
+		then Paths.resolve(params.path)
+		else nil
+
+	local rows: { { [string]: any } } = {}
+	local hidden = 0
+
+	for _, tag in CollectionService:GetAllTags() do
+		if studioOwned(tag) then
+			hidden += 1
+			continue
+		end
+
+		local tagged = CollectionService:GetTagged(tag)
+		local count = 0
+		local sample: { string } = {}
+
+		for _, instance in tagged do
+			--[[
+				Scoped the same way `find` scopes, when a path is given. A tag is
+				global, so "which tags are used in Workspace.Map" is a different
+				question from "which tags exist", and both get asked.
+			]]
+			if root ~= nil and not instance:IsDescendantOf(root) then
+				continue
+			end
+			if Scope.isNoisy(instance) then
+				continue
+			end
+			count += 1
+			if #sample < 3 then
+				table.insert(sample, Paths.of(instance))
+			end
+		end
+
+		if root ~= nil and count == 0 then
+			continue
+		end
+
+		table.insert(rows, {
+			tag = tag,
+			count = count,
+			-- A few paths, not all of them: the point is to recognise what the tag
+			-- is for, and three examples do that where two hundred would not.
+			sample = sample,
+		})
+	end
+
+	table.sort(rows, function(a, b)
+		if a.count == b.count then
+			return tostring(a.tag) < tostring(b.tag)
+		end
+		return (a.count :: number) > (b.count :: number)
+	end)
+
+	return {
+		tags = rows,
+		count = #rows,
+		scope = if root ~= nil then Paths.of(root) else nil,
+		studioTagsHidden = hidden,
+	}
+end
+
 function Discover.find(params: { [string]: any }): { [string]: any }
 	local root = if params.path then Paths.resolve(params.path) else game
 	local limit = tonumber(params.limit) or 100
@@ -288,12 +587,28 @@ function Discover.find(params: { [string]: any }): { [string]: any }
 	local propertyName = params.propertyName
 	local propertyValue = params.propertyValue
 	local tagFilter = params.tag
+	local selector = if typeof(params.selector) == "string" and params.selector ~= ""
+		then params.selector
+		else nil
 
-	-- A tag query is answered from CollectionService's index rather than by
-	-- walking the tree, which is orders of magnitude cheaper on a big place.
+	--[[
+		Three ways to produce candidates, cheapest first.
+
+		The filters below are the same in every case -- this only chooses where
+		the list to filter comes from, which is the part that decides whether a
+		search on a large place is fast or times out.
+
+		* A tag query reads CollectionService's index instead of walking the
+		  tree, which is orders of magnitude cheaper.
+		* A selector hands the whole match to `QueryDescendants`, so the walk
+		  happens in C++ and only survivors cross into Luau.
+		* Otherwise the tree is walked here.
+	]]
 	local candidates: { Instance }
 	if tagFilter then
 		candidates = CollectionService:GetTagged(tagFilter)
+	elseif selector then
+		candidates = query(root, selector :: string)
 	else
 		candidates = root:GetDescendants()
 	end
@@ -306,7 +621,9 @@ function Discover.find(params: { [string]: any }): { [string]: any }
 				#candidates,
 				MAX_VISITS
 			),
-			"Narrow it with `path` to search one service or model instead of the whole place."
+			"Narrow it with `path` to search one service or model instead of the whole "
+				.. "place, or pass a `selector` -- that filters inside the engine, so the "
+				.. "count here is what survived rather than what was visited."
 		)
 	end
 
@@ -349,11 +666,16 @@ function Discover.find(params: { [string]: any }): { [string]: any }
 		total = #matched,
 		offset = offset,
 		searched = #candidates,
+		-- Echoed so a caller can see the selector was understood. A typo in a
+		-- selector is not an error -- it matches nothing -- and "0 results" reads
+		-- the same either way without this.
+		selector = selector,
 	}
 end
 
 function Discover.register()
 	Dispatch.registerAll("discover", {
+		tags = Discover.tags,
 		tree = Discover.tree,
 		inspect = Discover.inspect,
 		find = Discover.find,

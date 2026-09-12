@@ -53,8 +53,50 @@ interface HistoryResponse {
   note?: string;
 }
 
+interface MeshResponse {
+  items: Array<{
+    path: string;
+    name: string;
+    vertices: number;
+    triangles: number;
+    meshSize: string;
+    partSize: string;
+    collisionFidelity: string;
+    renderFidelity: string;
+  }>;
+  failures: string[];
+  totalTriangles: number;
+}
+
+interface AudioResponse {
+  /** Echoed back, because the default is not the engine's and the caller should see which index answered. */
+  audioType: string;
+  items: Array<{
+    assetId: string;
+    title: string;
+    artist?: string;
+    duration: number;
+    audioType: string;
+    endorsed: boolean;
+  }>;
+  count: number;
+}
+
+interface PeekResponse {
+  assetId: number;
+  roots: string[];
+  descendants: number;
+  classes: Array<{ className: string; count: number }>;
+  scripts: string[];
+  scriptCount: number;
+}
+
 interface CollisionResponse {
-  groups?: Array<{ name: string; mask: number }>;
+  groups?: Array<{ name: string; mask: number; passesThrough?: string }>;
+  /** Which WorldRoot the call landed on; groups are per-world, not per-place. */
+  world?: string;
+  /** Ceiling on registered groups, reported by list so a loop can stop short of it. */
+  max?: number;
   group?: string;
   assigned?: number;
   parts?: string[];
@@ -81,10 +123,31 @@ interface ToolboxDetail {
     name?: string;
     description?: string;
     hasScripts?: boolean;
-    modelTechnicalDetails?: { objectMeshSummary?: { triangles?: number } };
+    /** Exact count, where hasScripts is only yes/no. */
+    scriptCount?: number;
+    isEndorsed?: boolean;
+    createdUtc?: string;
+    updatedUtc?: string;
+    /** Roblox's own categorisation, e.g. ["Door", "Furniture"]. */
+    objectTypes?: string[];
+    modelTechnicalDetails?: {
+      objectMeshSummary?: { triangles?: number };
+      instanceCounts?: Record<string, number>;
+    };
   };
   creator?: { name?: string; isVerifiedCreator?: boolean };
-  voting?: { upVotePercent?: number; voteCount?: number };
+  voting?: { upVotePercent?: number; voteCount?: number; upVotes?: number };
+  /** Not every asset is free, and inserting a paid one simply fails. */
+  fiatProduct?: { isFree?: boolean; purchasable?: boolean };
+}
+
+/** What the caller asked to exclude, applied here because the API ignores it. */
+interface StoreFilters {
+  excludeScripts?: boolean;
+  maxTriangles?: number;
+  verifiedOnly?: boolean;
+  freeOnly?: boolean;
+  minVotes?: number;
 }
 
 /**
@@ -94,34 +157,109 @@ interface ToolboxDetail {
  * while a plugin making outbound HTTP needs the user to approve each domain in
  * Plugin Management. Searching here means it works the moment the server starts.
  */
+/**
+ * Pages to pull before filtering gives up looking for more.
+ *
+ * Filtering happens here rather than at Roblox (see below), so a strict filter
+ * over one page of thirty can return nothing while the good results sit on page
+ * two. Four pages is enough to find script-free models for any ordinary search
+ * without turning one call into a crawl of the whole index.
+ */
+const MAX_PAGES = 4;
+
+/**
+ * Searches the Creator Store from the server rather than the plugin.
+ *
+ * Node already has internet access and these endpoints answer unauthenticated,
+ * while a plugin making outbound HTTP needs the user to approve each domain in
+ * Plugin Management. Searching here means it works the moment the server starts.
+ *
+ * Filtering and ranking are done HERE, on purpose. The endpoint accepts
+ * `sortType` and `creatorFilter` and ignores both — measured, Relevance,
+ * MostTaken, Favorited and Updated returned byte-identical results for the same
+ * keyword, as did a Roblox-only creator filter. Passing them through would have
+ * looked like sorting and done nothing, which is worse than not offering it. So
+ * the only server-side lever that works is the cursor, and everything else is
+ * decided from the details each result carries.
+ */
 async function searchCreatorStore(
   keyword: string,
   category: string,
   limit: number,
-): Promise<ToolboxDetail[]> {
+  filters: StoreFilters = {},
+): Promise<{ items: ToolboxDetail[]; scanned: number; total?: number }> {
   const categoryId = CATEGORIES[category] ?? 10;
-  const url =
-    `${TOOLBOX_SEARCH}/${categoryId}?keyword=${encodeURIComponent(keyword)}` +
-    `&limit=${Math.min(limit, 30)}&sortType=Relevance`;
+  const kept: ToolboxDetail[] = [];
+  let cursor = "";
+  let scanned = 0;
+  let total: number | undefined;
 
-  const found = await fetch(url, { signal: AbortSignal.timeout(15_000) });
-  if (!found.ok) {
-    throw new Error(`Creator Store search failed (${found.status}). Roblox may be rate-limiting.`);
-  }
-  const results = (await found.json()) as { data?: Array<{ id: number }> };
-  const ids = (results.data ?? []).map((entry) => entry.id).slice(0, limit);
-  if (ids.length === 0) return [];
+  for (let page = 0; page < MAX_PAGES && kept.length < limit; page += 1) {
+    const url =
+      `${TOOLBOX_SEARCH}/${categoryId}?keyword=${encodeURIComponent(keyword)}` +
+      `&limit=30${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`;
 
-  // Search returns bare ids; everything worth showing — name, creator, whether
-  // it carries scripts — needs the second call.
-  const detailed = await fetch(`${TOOLBOX_DETAILS}?assetIds=${ids.join(",")}`, {
-    signal: AbortSignal.timeout(15_000),
-  });
-  if (!detailed.ok) {
-    throw new Error(`Could not read asset details (${detailed.status}).`);
+    const found = await fetch(url, { signal: AbortSignal.timeout(15_000) });
+    if (!found.ok) {
+      throw new Error(`Creator Store search failed (${found.status}). Roblox may be rate-limiting.`);
+    }
+    const results = (await found.json()) as {
+      data?: Array<{ id: number }>;
+      nextPageCursor?: string | null;
+      totalResults?: number;
+    };
+    total = total ?? results.totalResults;
+
+    const ids = (results.data ?? []).map((entry) => entry.id);
+    if (ids.length === 0) break;
+    scanned += ids.length;
+
+    // Search returns bare ids; everything worth showing — name, creator, script
+    // count, price — needs the second call.
+    const detailed = await fetch(`${TOOLBOX_DETAILS}?assetIds=${ids.join(",")}`, {
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!detailed.ok) {
+      throw new Error(`Could not read asset details (${detailed.status}).`);
+    }
+    const payload = (await detailed.json()) as { data?: ToolboxDetail[] };
+
+    for (const entry of payload.data ?? []) {
+      if (filters.excludeScripts && entry.asset?.hasScripts) continue;
+      if (filters.verifiedOnly && !entry.creator?.isVerifiedCreator) continue;
+      if (filters.freeOnly && entry.fiatProduct?.isFree === false) continue;
+      if (filters.minVotes !== undefined && (entry.voting?.voteCount ?? 0) < filters.minVotes) {
+        continue;
+      }
+      if (filters.maxTriangles !== undefined) {
+        const triangles = entry.asset?.modelTechnicalDetails?.objectMeshSummary?.triangles;
+        if (triangles !== undefined && triangles > filters.maxTriangles) continue;
+      }
+      kept.push(entry);
+    }
+
+    cursor = results.nextPageCursor ?? "";
+    if (!cursor) break;
   }
-  const payload = (await detailed.json()) as { data?: ToolboxDetail[] };
-  return payload.data ?? [];
+
+  /*
+   * Ranked by approval WEIGHTED BY how many people voted.
+   *
+   * The raw percentage is what the API gives and it is close to meaningless on
+   * its own: 82% of 5000 votes and 100% of 2 votes sort the wrong way round
+   * every time, and the second is the one nobody should be inserting into their
+   * game. Pulling the percentage toward 50 in proportion to how little evidence
+   * there is behind it costs nothing and puts the well-used models first.
+   */
+  const score = (entry: ToolboxDetail): number => {
+    const percent = entry.voting?.upVotePercent ?? 50;
+    const votes = entry.voting?.voteCount ?? 0;
+    const confidence = votes / (votes + 50);
+    return 50 + (percent - 50) * confidence;
+  };
+  kept.sort((a, b) => score(b) - score(a));
+
+  return { items: kept.slice(0, limit), scanned, total };
 }
 
 export function registerWorldTools(context: ToolContext): void {
@@ -160,11 +298,21 @@ export function registerWorldTools(context: ToolContext): void {
         "Roblox returns bare grey MeshParts, so a brick wall with a hole cut in " +
         "it would otherwise come back as a grey slab - correct geometry that " +
         "looks like a mistake.\n\n" +
+        "`mesh` reads the real triangle and vertex counts of MeshParts, which is " +
+        "the only way to tell a 40,000-triangle tree from a 400-triangle one — " +
+        "they are identical in the Explorer and in Properties, and the difference " +
+        "is whether the place runs on a phone. It also reports mesh size against " +
+        "part size: the same triangles stretched over a bigger object is the usual " +
+        "reason a model costs more than it looks like it should.\n\n" +
+        "`mesh` only works on meshes the signed-in Studio user or the experience " +
+        "owner OWNS. Roblox refuses to open anyone else's, so a model inserted " +
+        "from the Creator Store cannot be measured this way — the tool says which " +
+        "parts were skipped rather than failing the whole batch.\n\n" +
         "`segment` runs Roblox's Cube model and takes tens of seconds; the rest " +
         "are fast. Each call is one undo step.",
       inputSchema: {
         op: z
-          .enum(["union", "subtract", "intersect", "fragment", "sweep", "segment"])
+          .enum(["union", "subtract", "intersect", "fragment", "sweep", "segment", "mesh"])
           .describe(
             "'union' merges, 'subtract' cuts `with` out of `path`, 'intersect' " +
               "keeps only the overlap, 'fragment' shatters into debris, 'sweep' " +
@@ -278,11 +426,49 @@ export function registerWorldTools(context: ToolContext): void {
           .boolean()
           .default(false)
           .describe("Return disconnected chunks as separate parts rather than one."),
+        paths: z
+          .array(z.string())
+          .max(50)
+          .optional()
+          .describe("mesh only: the MeshParts to read geometry from."),
         studioId: z.string().optional().describe("Target Studio; omit for the active one."),
       },
       destructive: true,
     },
     async (args): Promise<ToolResult> => {
+      if (args.op === "mesh") {
+        const paths = args.paths ?? (args.path !== undefined ? [args.path] : []);
+        if (paths.length === 0) {
+          return text('mesh needs `paths` — the MeshParts to read, e.g. ["Workspace.Tree"].');
+        }
+        const read = await bridge.call<MeshResponse>(
+          "geometry.mesh",
+          { paths },
+          // Each part is a separate download-and-open, so a batch of twenty is
+          // twenty round trips to Roblox's asset servers.
+          { studioId: args.studioId, timeoutMs: 120_000 },
+        );
+        if (read.items.length === 0) {
+          return text(
+            read.failures.length > 0
+              ? `Nothing readable:\n  ${read.failures.join("\n  ")}`
+              : "No MeshParts in that list.",
+          );
+        }
+        const rendered = textOf(
+          table(
+            ["name", "triangles", "vertices", "meshSize", "partSize", "renderFidelity", "collisionFidelity"],
+            read.items as unknown as Array<Record<string, unknown>>,
+            { more: `${read.totalTriangles} triangles across ${read.items.length} part(s)` },
+          ),
+        );
+        return text(
+          read.failures.length > 0
+            ? `${rendered}\n\nSkipped:\n  ${read.failures.join("\n  ")}`
+            : rendered,
+        );
+      }
+
       // `segment` is GenerationService, not GeometryService - the same job from
       // the caller's side, a different service underneath, and far slower.
       if (args.op === "segment") {
@@ -387,13 +573,32 @@ export function registerWorldTools(context: ToolContext): void {
       description:
         "Searches Roblox's Creator Store and inserts models into the place.\n\n" +
         "`search` looks through the same public index Studio's own asset browser " +
-        "uses and returns ids with names, creators, vote ratios and — the part " +
-        "that matters — whether the model contains scripts. `insert` puts one " +
-        "into the place by id.\n\n" +
+        "uses. It reports script COUNT, triangles, whether the creator is " +
+        "verified, whether the asset is free, and what Roblox thinks it is " +
+        "(\"Door/Furniture\"). `insert` puts one into the place by id.\n\n" +
+        "Results are ranked by approval WEIGHTED BY vote count, because the raw " +
+        "percentage lies: 100% from two voters outranks 82% from five thousand " +
+        "unless the count is taken into account. The vote count is shown beside " +
+        "the percentage for the same reason.\n\n" +
+        "Filters — `excludeScripts`, `maxTriangles`, `verifiedOnly`, `freeOnly`, " +
+        "`minVotes` — are applied here, not by Roblox, and several pages are " +
+        "fetched to fill the results. Roblox's own sort and creator filters are " +
+        "accepted by the endpoint and silently ignored, so they are not offered.\n\n" +
         "ALWAYS check `hasScripts` before inserting. Free models carrying " +
         "scripts are the oldest hazard on the platform, and a model dropped into " +
         "someone's game can run whatever it likes. The insert reports the script " +
         "count again, and names them, so it can still be undone.\n\n" +
+        "`peek` is the safer half of that: it loads the asset in memory WITHOUT " +
+        "putting it in the place and tells you exactly what is inside — every " +
+        "class, every script by name. Nothing is parented, so there is nothing " +
+        "to undo. Use it whenever `hasScripts` says YES and the model still " +
+        "looks worth having.\n\n" +
+        "Audio searches take a different path from everything else here. They go " +
+        "to the engine's own audio index, so results carry duration, artist and " +
+        "whether the clip is music or a sound effect — the fields that actually " +
+        "decide which sound you want. They return SOUND EFFECTS by default; pass " +
+        '`audioType: "Music"` for tracks. Filter with `minDuration` / ' +
+        "`maxDuration` — a footstep is under a second and a music bed is minutes.\n\n" +
         "Only public assets can be inserted. A private or deleted id fails with " +
         "a message saying so rather than inserting nothing quietly.\n\n" +
         "`bake` is unrelated to the Creator Store and does not upload anything. " +
@@ -410,9 +615,10 @@ export function registerWorldTools(context: ToolContext): void {
         "content, which the engine refuses to bake.",
       inputSchema: {
         op: z
-          .enum(["search", "insert", "bake"])
+          .enum(["search", "peek", "insert", "bake"])
           .describe(
-            "'search' finds assets, 'insert' adds one to the place, 'bake' makes " +
+            "'search' finds assets, 'peek' shows what is inside one without " +
+              "inserting it, 'insert' adds one to the place, 'bake' makes " +
               "in-memory mesh and image data replicate.",
           ),
         keyword: z.string().optional().describe("search only: what to look for, e.g. \"medieval door\"."),
@@ -421,7 +627,68 @@ export function registerWorldTools(context: ToolContext): void {
           .default("model")
           .describe("search only: what kind of asset. Only models insert as instances."),
         limit: z.number().int().min(1).max(20).default(8).describe("search only: how many results."),
-        assetId: z.number().int().positive().optional().describe("insert only: the asset id to insert."),
+        excludeScripts: z
+          .boolean()
+          .default(false)
+          .describe(
+            "search only: drop every result that contains scripts. The single " +
+              "safest filter — a free model's scripts run with your game's full " +
+              "permissions.",
+          ),
+        maxTriangles: z
+          .number()
+          .int()
+          .min(1)
+          .optional()
+          .describe(
+            "search only: drop models heavier than this. A prop you place fifty " +
+              "times wants to be in the hundreds, not the tens of thousands.",
+          ),
+        verifiedOnly: z
+          .boolean()
+          .default(false)
+          .describe("search only: only results from verified creators."),
+        freeOnly: z
+          .boolean()
+          .default(false)
+          .describe("search only: drop paid assets, which cannot just be inserted."),
+        minVotes: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe(
+            "search only: require at least this many votes. Filters out models " +
+              "with a perfect score from three people.",
+          ),
+        minDuration: z
+          .number()
+          .min(0)
+          .optional()
+          .describe("audio search only: shortest clip to return, in seconds."),
+        maxDuration: z
+          .number()
+          .min(0)
+          .optional()
+          .describe(
+            "audio search only: longest clip to return, in seconds. Set it to 3 " +
+              "or so for effects — otherwise full-length music dominates the results.",
+          ),
+        audioType: z
+          .enum(["SoundEffect", "Music"])
+          .default("SoundEffect")
+          .describe(
+            "audio search only. Defaults to SoundEffect, which is what a noise in " +
+              'a game is. Ask for "Music" only when you want a track — the engine\'s ' +
+              'own default is Music, and it makes "footstep" return three-minute ' +
+              "ambient songs with footsteps in the title.",
+          ),
+        assetId: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe("insert and peek only: the asset id."),
         parent: z.string().optional().describe("insert only: where to put it. Defaults to Workspace."),
         position: z
           .string()
@@ -438,28 +705,145 @@ export function registerWorldTools(context: ToolContext): void {
       destructive: false,
     },
     async (args): Promise<ToolResult> => {
+      if (args.op === "peek") {
+        if (!args.assetId) return text("peek needs an `assetId`.");
+        const inside = await bridge.call<PeekResponse>(
+          "assets.peek",
+          { assetId: args.assetId },
+          { studioId: args.studioId, timeoutMs: 60_000 },
+        );
+        const lines = [
+          `Asset ${inside.assetId}: ${inside.descendants} instances, nothing inserted.`,
+          "",
+          `Top level: ${inside.roots.join(", ")}`,
+          "",
+          textOf(table(["className", "count"], inside.classes as unknown as Array<Record<string, unknown>>)),
+        ];
+        lines.push(
+          inside.scriptCount === 0
+            ? "\nNo scripts — safe to insert."
+            : `\n${inside.scriptCount} script(s), and inserting runs them:\n  ` +
+                inside.scripts.join("\n  ") +
+                "\nRead them with `script_read` after inserting, or leave this asset alone.",
+        );
+        return text(lines.join("\n"));
+      }
+
+      if (args.op === "search" && args.category === "audio") {
+        if (!args.keyword) return text("search needs a `keyword`.");
+        const found = await bridge.call<AudioResponse>(
+          "assets.audio",
+          {
+            keyword: args.keyword,
+            limit: args.limit,
+            minDuration: args.minDuration,
+            maxDuration: args.maxDuration,
+            audioType: args.audioType,
+          },
+          { studioId: args.studioId, timeoutMs: 45_000 },
+        );
+        if (found.items.length === 0) {
+          return text(
+            `No audio matched "${args.keyword}".` +
+              (args.minDuration !== undefined || args.maxDuration !== undefined
+                ? " The duration filter may be too narrow — try it without one."
+                : ""),
+          );
+        }
+        return text(
+          textOf(
+            table(
+              ["assetId", "title", "artist", "duration", "audioType", "endorsed"],
+              found.items as unknown as Array<Record<string, unknown>>,
+              {
+                more:
+                  `${found.audioType}s only; duration in seconds; use the assetId as a ` +
+                  "Sound's SoundId" +
+                  (found.audioType === "SoundEffect"
+                    ? '. Pass audioType="Music" for tracks.'
+                    : "."),
+              },
+            ),
+          ),
+        );
+      }
+
       if (args.op === "search") {
         if (!args.keyword) return text("search needs a `keyword`.");
-        const found = await searchCreatorStore(args.keyword, args.category, args.limit);
-        if (found.length === 0) {
-          return text(`Nothing matched "${args.keyword}" in ${args.category}s.`);
+        const found = await searchCreatorStore(args.keyword, args.category, args.limit, {
+          excludeScripts: args.excludeScripts,
+          maxTriangles: args.maxTriangles,
+          verifiedOnly: args.verifiedOnly,
+          freeOnly: args.freeOnly,
+          minVotes: args.minVotes,
+        });
+
+        if (found.items.length === 0) {
+          const filtered =
+            args.excludeScripts || args.verifiedOnly || args.freeOnly || args.maxTriangles || args.minVotes;
+          return text(
+            `Nothing matched "${args.keyword}" in ${args.category}s` +
+              (filtered
+                ? `. ${found.scanned} result(s) were checked and every one was filtered out — loosen a filter.`
+                : "."),
+          );
         }
-        const rows = found.map((entry) => ({
+
+        const rows = found.items.map((entry) => ({
           assetId: entry.asset?.id ?? 0,
           name: entry.asset?.name ?? "?",
-          creator: entry.creator?.name ?? "?",
-          approval: entry.voting?.upVotePercent ? `${entry.voting.upVotePercent}%` : "—",
-          hasScripts: entry.asset?.hasScripts ? "YES" : "no",
+          creator:
+            (entry.creator?.name ?? "?") + (entry.creator?.isVerifiedCreator ? " ✓" : ""),
+          /*
+           * Votes shown beside the percentage, never alone. "100%" is what two
+           * friends upvoting looks like, and it sorts above a model used by
+           * thousands unless the count is on screen next to it.
+           */
+          approval:
+            entry.voting?.upVotePercent !== undefined
+              ? `${entry.voting.upVotePercent}% (${entry.voting.voteCount ?? 0})`
+              : "—",
+          scripts: entry.asset?.hasScripts ? (entry.asset.scriptCount ?? "yes") : "no",
           triangles: entry.asset?.modelTechnicalDetails?.objectMeshSummary?.triangles ?? "—",
+          free: entry.fiatProduct?.isFree === false ? "PAID" : "free",
+          kind: (entry.asset?.objectTypes ?? []).join("/") || "—",
         }));
-        const risky = rows.filter((row) => row.hasScripts === "YES");
+
+        const risky = rows.filter((row) => row.scripts !== "no");
+        const paid = rows.filter((row) => row.free === "PAID");
+
+        const notes: string[] = [];
+        notes.push(
+          `${found.items.length} shown of ${found.scanned} checked` +
+            (found.total !== undefined ? ` (${found.total} exist)` : "") +
+            "; ranked by approval weighted by vote count.",
+        );
+        if (risky.length > 0) {
+          notes.push(
+            `${risky.length} contain scripts (${risky.map((r) => r.name).join(", ")}). ` +
+              "Inserting one runs whatever its author put in it — use `peek` to read them " +
+              "first, or pass excludeScripts.",
+          );
+        } else {
+          notes.push("None of these contain scripts.");
+        }
+        if (paid.length > 0) {
+          notes.push(
+            `${paid.length} are PAID and cannot simply be inserted: ${paid
+              .map((r) => r.name)
+              .join(", ")}.`,
+          );
+        }
+
         return text(
-          textOf(table(["assetId", "name", "creator", "approval", "hasScripts", "triangles"], rows)) +
-            (risky.length > 0
-              ? `\n\n${risky.length} of these contain scripts (${risky
-                  .map((r) => r.name)
-                  .join(", ")}). Inserting one runs whatever its author put in it — prefer a script-free model unless the scripts are the point.`
-              : "\n\nNone of these contain scripts."),
+          textOf(
+            table(
+              ["assetId", "name", "creator", "approval", "scripts", "triangles", "free", "kind"],
+              rows,
+            ),
+          ) +
+            "\n\n" +
+            notes.join("\n"),
         );
       }
 
@@ -584,7 +968,12 @@ export function registerWorldTools(context: ToolContext): void {
         "Groups are not undoable and not scoped to a session: `remove` when one " +
         "was created to try something and is no longer wanted, rather than " +
         "leaving it registered in the place indefinitely. The built-in " +
-        "\"Default\" group cannot be removed.",
+        "\"Default\" group cannot be removed.\n\n" +
+        "Groups belong to a world, not to the place. The Workspace is the " +
+        "default and is what nearly every question is about; a `WorldModel` " +
+        "inside a ViewportFrame keeps its own separate registry, so pass " +
+        "`worldModel` to reach that one. A group of the same name in each is " +
+        "two different groups.",
       inputSchema: {
         action: z
           .enum(["list", "create", "assign", "collidable", "remove"])
@@ -605,6 +994,15 @@ export function registerWorldTools(context: ToolContext): void {
           .boolean()
           .default(true)
           .describe("collidable only: whether the two groups collide. False makes them pass through."),
+        worldModel: z
+          .string()
+          .optional()
+          .describe(
+            "Path to a WorldModel whose own collision groups this call is " +
+              "about, e.g. \"StarterGui.Preview.Viewport.WorldModel\". Omit " +
+              "for the Workspace, which is what you want unless the parts in " +
+              "question live inside a ViewportFrame.",
+          ),
         studioId: z.string().optional().describe("Target Studio; omit for the active one."),
       },
       destructive: false,
@@ -618,13 +1016,30 @@ export function registerWorldTools(context: ToolContext): void {
           paths: args.paths,
           with: args.with,
           collidable: args.collidable,
+          worldModel: args.worldModel,
         },
         { studioId: args.studioId },
       );
       if (args.action === "list") {
         const groups = response.groups ?? [];
-        if (groups.length === 0) return text("No collision groups are registered.");
-        return text(textOf(table(["name", "mask"], groups as unknown as Array<Record<string, unknown>>)));
+        const where = response.world ?? "Workspace";
+        if (groups.length === 0) return text(`No collision groups are registered in ${where}.`);
+        return text(
+          textOf(
+            table(["name", "passes through", "mask"], groups.map((group) => ({
+              name: group.name,
+              "passes through": group.passesThrough ?? "?",
+              mask: group.mask,
+            })) as unknown as Array<Record<string, unknown>>, {
+              // The ceiling is low enough to hit, and a caller registering
+              // groups in a loop has no other way to find out where it is.
+              more:
+                response.max === undefined
+                  ? where
+                  : `${where}: ${groups.length} of ${response.max} groups used`,
+            }),
+          ),
+        );
       }
       return json(response);
     },

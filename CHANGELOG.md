@@ -2,6 +2,26 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.6.5
+
+### Added
+- **Animations**: read, build and preview them on a rig without leaving edit mode.
+- **Data stores**: read and write saved player data, including old versions of a key.
+- **UI audit** finds interface faults a phone shows and a monitor hides.
+- **Tag list**, **asset audit**, **audio search**, **network simulation**, **pathfinding in playtests**.
+
+### Fixed
+- **Instance properties can be set at all** — `Part0`, `PrimaryPart`, `Adornee` and friends. Rigs and welds no longer need `execute_luau`.
+- **`FontFace` works**, so UI can be built.
+- **Built animations actually move the rig.** Poses were attached in the wrong order and the engine ignored them silently.
+- **`animation stop` restores the rig** instead of leaving it bent.
+- **Clicks land where you aim them.** The coordinate advice was backwards.
+- **`performance audit` can no longer hang Studio.**
+- **Centre of mass is the real one**, not always zero.
+- **Collision groups list in words**, not bitmasks.
+- **The Studio panel names every call.** 26 of 72 said nothing useful, and writes were labelled as reads.
+- **Panel times are honest**: a median instead of an average one slow call could ruin, and `<1ms` instead of `0ms`.
+
 ## 0.6.1
 
 ### Added

@@ -22,6 +22,8 @@ interface ReadResponse {
     source: string;
     /** Fingerprint of the whole file, handed back to script_edit. */
     revision?: string;
+  /** Set when Studio has the script bound to a file outside it. */
+  fileSync?: string;
   }>;
   failures: string[];
 }
@@ -91,8 +93,29 @@ export function registerScriptTools(context: ToolContext): void {
         "different part of each: an entry may be a bare path for the whole file, " +
         "or `{path, startLine, endLine}` for a window into that one script. The " +
         "top-level `startLine`/`endLine` are the default for entries that do not " +
-        "carry their own.",
+        "carry their own.\n\n" +
+        "A script bound to a file on disk is flagged in the result. Editing one " +
+        "of those is a race: whatever writes the file wins, and your change " +
+        "disappears the next time it does, with nothing anywhere reporting a " +
+        "failure.\n\n" +
+        "`open` puts a script on the user's screen at a line, instead of telling " +
+        "them where to look. Ask for it when you are pointing at something they " +
+        "should see; it is not automatic, and reading twenty scripts does not " +
+        "rearrange their editor.",
       inputSchema: {
+        op: z
+          .enum(["read", "open"])
+          .default("read")
+          .describe(
+            "'read' returns source. 'open' opens the first path in the user's " +
+              "Studio editor at `line` and returns nothing to read.",
+          ),
+        line: z
+          .number()
+          .int()
+          .min(1)
+          .optional()
+          .describe("open only: line to put the cursor on."),
         paths: z
           .array(
             z.union([
@@ -140,9 +163,35 @@ export function registerScriptTools(context: ToolContext): void {
           ),
         studioId: z.string().optional().describe("Target Studio; omit for the active one."),
       },
-      readOnly: true,
+      // `open` moves the user's editor, which is not a read — but it changes
+      // nothing in the place, so it is not destructive either.
+      readOnly: false,
+      destructive: false,
     },
     async (args): Promise<ToolResult> => {
+      if (args.op === "open") {
+        /*
+         * One path, not the batch. Opening is a thing that happens to the
+         * user's screen, and doing it twenty times because the read call
+         * happened to take twenty paths would be hostile.
+         */
+        const first = args.paths[0];
+        if (first === undefined) return text("open needs a path.");
+        const path = typeof first === "string" ? first : first.path;
+        const opened = await bridge.call<{ path: string; className: string; line?: number }>(
+          "script.open",
+          { path, line: args.line },
+          { studioId: args.studioId },
+        );
+        return text(
+          `Opened ${opened.path} in Studio` +
+            (opened.line !== undefined ? ` at line ${opened.line}.` : ".") +
+            (args.paths.length > 1
+              ? ` (${args.paths.length - 1} other path(s) ignored — open takes one.)`
+              : ""),
+        );
+      }
+
       const response = await bridge.call<ReadResponse>(
         "script.read",
         { paths: args.paths, startLine: args.startLine, endLine: args.endLine },
@@ -188,7 +237,17 @@ export function registerScriptTools(context: ToolContext): void {
         // it is impossible to read the source without also being handed the
         // token that makes editing it safe.
         const stamp = item.revision !== undefined ? `, rev ${item.revision}` : "";
-        return `${item.path}  (${item.className}, ${range}${stamp})\n${numbered(item.source, item.startLine)}`;
+        /*
+         * The sync warning goes above the source, not below it. Below, it is
+         * one line after two hundred and will be skimmed past; the whole point
+         * is to be read before an edit is written.
+         */
+        const synced =
+          item.fileSync !== undefined
+            ? `\n! This script is synced from a file on disk (${item.fileSync}). Editing it here ` +
+              "is a race with whatever writes that file, and the loser leaves no error.\n"
+            : "";
+        return `${item.path}  (${item.className}, ${range}${stamp})${synced}\n${numbered(item.source, item.startLine)}`;
       });
 
       if (response.failures.length > 0) {

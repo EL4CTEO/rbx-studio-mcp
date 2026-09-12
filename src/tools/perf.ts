@@ -88,6 +88,19 @@ interface SceneEntry {
   owners?: string[];
 }
 
+interface AuditResponse {
+  checked: number;
+  scanned: number;
+  truncated: boolean;
+  incomplete?: boolean;
+  dead: Array<{ path: string; property: string; id: string }>;
+  deadCount: number;
+  unset: Array<{ path: string; property: string }>;
+  unsetCount: number;
+  disabledScripts: string[];
+  duplicateNames: string[];
+}
+
 interface SceneSection {
   total?: number;
   totals?: Record<string, number>;
@@ -147,9 +160,11 @@ export function registerPerfTools(context: ToolContext): void {
         "A quiet log is not proof nothing was said. Anything the playtest CLIENT " +
         "printed is never here. Messages Studio itself emits — the ones the " +
         "Output window attributes to \"Studio\" rather than to a script — are " +
-        "inconsistent: a failing breakpoint's \"Breakpoint ... ignored\" does " +
-        "arrive, while the warning that a Script with a non-legacy RunContext " +
-        "inside StarterGui will run multiple times does not. Do not read silence " +
+        "inconsistent, and they arrive in the session that RAISED them, which is " +
+        "not always the one you are looking at: the warning that a Script with a " +
+        "non-legacy RunContext inside a starter container will run multiple times " +
+        "shows up in the playtest server's log, where the script actually loads, " +
+        "and never in the editor's, where it was created. Do not read silence " +
         "as an all-clear — when a script misbehaves in a way nothing here " +
         "explains, check the Output window yourself, or ask the user what it " +
         "says.",
@@ -255,22 +270,42 @@ export function registerPerfTools(context: ToolContext): void {
         "which the data model compiles before any plugin exists. Those report 0 " +
         "lines and are named as unmeasurable rather than counted as dead code.\n\n" +
         "`scene` breaks the place down by what it is actually made of: instances " +
-        "by category, triangles and draw calls, and the assets holding script, " +
+        "by category, triangles and draw calls FOR WHAT THE CAMERA CAN SEE, and the assets holding script, " +
         "animation and audio memory — each named, so \"2.4GB of memory\" becomes " +
         "\"this animation is 138KB and these are the Animators using it\". It also " +
         "reports UNPARENTED INSTANCES, which is the closest thing here to a leak " +
         "detector: objects still alive with nothing holding them in the tree, " +
         "invisible to `find` and to `tree` because they are in neither.\n\n" +
+        "The triangle and draw-call section is the one number here that depends " +
+        "on where the camera is pointing, and it moves enormously: the same " +
+        "place measured 332 triangles looking at empty sky and 29,060 looking at " +
+        "1,800 parts, seconds apart. So it answers \"how heavy is this view\", " +
+        "not \"how heavy is this place\" — point the camera first with " +
+        "`viewport op=\"focus\"`, and compare two views only if both were framed " +
+        "the same way.\n\n" +
+        "`audit` is a health check rather than a performance one: it finds every " +
+        "reference in the place that points at NOTHING. A Sound whose id was " +
+        "deleted or made private plays silence, a Decal shows nothing, an " +
+        "Animation does nothing — none of them errors, none warns, and the " +
+        "instance looks perfectly healthy because the id is still a string. The " +
+        "only other way to find them is to play the game and notice something " +
+        "missing. It also reports ids left blank, scripts left Disabled, and " +
+        "same-named siblings, which is what makes WaitForChild return the wrong " +
+        "one.\n\n" +
+        "`audit` fetches the assets to test them, so Studio's Output window will " +
+        "show load errors for the dead ones. That is the engine confirming the " +
+        "finding, not a fault in the tool.\n\n" +
         "Frame and network figures are only meaningful while something is " +
         "running. Instance counts and memory are useful in edit mode too.",
       inputSchema: {
         op: z
-          .enum(["snapshot", "profile", "coverage", "scene"])
+          .enum(["snapshot", "profile", "coverage", "scene", "audit"])
           .default("snapshot")
           .describe(
             "'snapshot' reads counters now; 'profile' samples running scripts; " +
               "'coverage' reports which lines have executed; 'scene' breaks the " +
-              "place down by what it is made of.",
+              "place down by what it is made of; 'audit' finds broken asset " +
+              "references and other silent faults.",
           ),
         section: z
           .enum([
@@ -457,6 +492,59 @@ export function registerPerfTools(context: ToolContext): void {
         return text(sections.join("\n\n"));
       }
 
+      if (args.op === "audit") {
+        const found = await bridge.call<AuditResponse>(
+          "perf.audit",
+          {},
+          // Every asset is fetched over the network before it can be judged.
+          { studioId: args.studioId, timeoutMs: 120_000 },
+        );
+
+        const blocks: string[] = [];
+
+        if (found.dead.length > 0) {
+          blocks.push(
+            `DEAD ASSET IDS (${found.deadCount}) — these point at nothing and fail silently\n` +
+              found.dead
+                .map((row) => `  ${row.path}.${row.property} = ${row.id}`)
+                .join("\n"),
+          );
+        }
+        if (found.unset.length > 0) {
+          blocks.push(
+            `BLANK IDS (${found.unsetCount})\n` +
+              found.unset.slice(0, 20).map((row) => `  ${row.path}.${row.property}`).join("\n") +
+              (found.unset.length > 20 ? `\n  …and ${found.unset.length - 20} more` : ""),
+          );
+        }
+        if (found.disabledScripts.length > 0) {
+          blocks.push(
+            `DISABLED SCRIPTS (${found.disabledScripts.length})\n  ` +
+              found.disabledScripts.join("\n  "),
+          );
+        }
+        if (found.duplicateNames.length > 0) {
+          blocks.push(
+            `SAME-NAMED SIBLINGS (${found.duplicateNames.length}) — scripts, remotes or GUI that code looks up by name; WaitForChild picks one at random\n  ` +
+              found.duplicateNames.join("\n  "),
+          );
+        }
+
+        const tail =
+          `${found.scanned} asset reference(s) found; ${found.checked} fetched and tested.` +
+          (found.truncated ? " Stopped at the cap — there are more in this place." : "") +
+          (found.incomplete
+            ? " The fetch did not finish in time, so assets that had not arrived were " +
+              "left out rather than called broken — a clean result here is not proof."
+            : "");
+
+        return text(
+          blocks.length === 0
+            ? `Nothing broken found. ${tail}`
+            : `${blocks.join("\n\n")}\n\n${tail}`,
+        );
+      }
+
       if (args.op === "scene") {
         const response = await bridge.call<Record<string, SceneSection>>(
           "perf.scene",
@@ -480,6 +568,15 @@ export function registerPerfTools(context: ToolContext): void {
           ([a], [b]) => ORDER.indexOf(a) - ORDER.indexOf(b),
         );
 
+        /*
+         * The camera caveat travels with the number, not just in the tool
+         * description. A reader who sees "332 triangles" under a heading about
+         * what the place is made of has no reason to suspect the camera was
+         * facing the sky, and the figure is wrong by two orders of magnitude
+         * when it is.
+         */
+        const CAMERA_DEPENDENT = new Set(["triangles"]);
+
         for (const [name, section] of ordered) {
           if (section.error !== undefined) {
             blocks.push(`${name}: unavailable (${section.error})`);
@@ -487,12 +584,15 @@ export function registerPerfTools(context: ToolContext): void {
           }
           const count = (value: number, unit: string) =>
             `${value} ${value === 1 ? unit.replace(/s$/, "") : unit}`;
-          const heading =
+          const measured =
             section.totals !== undefined
               ? `${name} — ${Object.entries(section.totals)
                   .map(([key, value]) => count(value, key.toLowerCase()))
                   .join(", ")}`
               : `${name} — ${count(section.total ?? 0, section.unit)}`;
+          const heading = CAMERA_DEPENDENT.has(name)
+            ? `${measured}  — for what the camera can currently see, not the whole place; frame it with \`viewport op="focus"\` first`
+            : measured;
 
           if (section.entries.length === 0) {
             // A total with no breakdown is not the same as nothing at all, and

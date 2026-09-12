@@ -207,10 +207,14 @@ end
 --[[
 	Nearest-neighbour downscale, RGBA in and RGB out.
 
-	Nearest rather than averaged on purpose. A screenshot is read for what is in
-	it -- is the part there, is the GUI covering it, is the material wrong -- and
-	averaging softens exactly the thin edges and one-pixel text that carry that.
-	It is also a single read per output pixel instead of four.
+	The fallback path. `Capture` scales on the engine side now -- see
+	`Capture.resample` -- because this loop is six buffer calls per output pixel
+	in Luau and nearest-neighbour is the wrong filter for the job: at the usual
+	2x reduction it does not "keep thin edges", it deletes every other row and
+	column outright, which is exactly where one-pixel GUI text lives. This stays
+	for the cases the engine path cannot take: a Studio without
+	`CreateEditableImage`, or a target wider than the 1024 an EditableImage can
+	be created at.
 ]]
 function Png.downscaleToRgb(rgba: buffer, width: number, height: number, targetWidth: number): (buffer, number, number)
 	local scale = math.min(1, targetWidth / width)

@@ -23,6 +23,8 @@ import { registerSessionTools } from "./tools/session.js";
 import { registerInputTools } from "./tools/input.js";
 import { registerDeviceTools } from "./tools/device.js";
 import { registerApiTools } from "./tools/api.js";
+import { registerDataTools } from "./tools/data.js";
+import { registerAnimTools } from "./tools/anim.js";
 import { registerResources } from "./resources.js";
 
 const VERSION = "0.3.5";
@@ -118,6 +120,8 @@ async function main(): Promise<void> {
   registerInputTools(context);
   registerDeviceTools(context);
   registerApiTools(context);
+  registerDataTools(context);
+  registerAnimTools(context);
   registerTerrainTools(context);
   registerWorldTools(context);
   registerGenerateTools(context);

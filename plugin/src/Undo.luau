@@ -21,6 +21,75 @@ local ChangeHistoryService = game:GetService("ChangeHistoryService")
 local Undo = {}
 
 --[[
+	One recording at a time, per session.
+
+	`onCommand` runs every command on its own task so a slow handler cannot
+	stall the stream, which is right -- and it means two agents pointed at the
+	same edit session have their batches in flight at once. Nothing below this
+	line is safe under that. `TryBeginRecording` returns nil while another
+	recording is open, so the second batch would run with no recording of its
+	own: its changes land inside the FIRST batch's undo step, one Ctrl+Z reverts
+	both, and if the first batch fails its `Cancel` reverts the second agent's
+	work as well -- work that was already reported as done.
+
+	Today's handlers do not yield inside a recording, so Luau's cooperative
+	scheduling hides all of that. That is an accident of how they happen to be
+	written, not a property of the design: the first `*Async` call added inside
+	a `record` body would open the window silently, and the symptom would be a
+	rolled-back edit in someone else's session. So the guarantee is made
+	structural here instead of being left to every handler to preserve.
+
+	Mutations queue; reads never come through this file at all, so they stay
+	parallel. Uncontended -- the normal case, one agent -- this costs one
+	boolean test.
+]]
+local held = false
+local owner: thread? = nil
+local waiting: { thread } = {}
+
+local function acquire()
+	--[[
+		A recording opened inside another recording is the same thread, and
+		waiting for a lock it already holds would hang the session outright.
+		Nesting is not used today; this makes adding it a coarser undo step
+		rather than a deadlock.
+	]]
+	if held and owner == coroutine.running() then
+		return false
+	end
+
+	if held then
+		table.insert(waiting, coroutine.running())
+		-- Resumed by `release`, which hands the lock over rather than dropping
+		-- it, so there is nothing to re-check on the way out.
+		coroutine.yield()
+		return true
+	end
+
+	held = true
+	owner = coroutine.running()
+	return true
+end
+
+local function release(acquired: boolean)
+	if not acquired then
+		return
+	end
+
+	local nextThread = table.remove(waiting, 1)
+	if nextThread == nil then
+		held = false
+		owner = nil
+		return
+	end
+
+	-- `held` deliberately stays true: the lock passes straight to the waiter,
+	-- so a command arriving in between cannot jump the queue.
+	owner = nextThread
+	task.spawn(nextThread)
+end
+
+--[[
 	Drops the redo entry a cancelled recording leaves behind.
 
 	`Cancel` reverts the values but Studio still files the recording on the REDO
@@ -52,10 +121,12 @@ end
 	Runs `body` inside a named recording. Returns its result, and whether a
 	recording was actually opened.
 
-	`TryBeginRecording` returns nil when another recording is already open (for
-	example the user is mid-drag in the viewport) or when history is unavailable.
-	The work still runs in that case -- refusing to act would be worse than a
-	slightly coarser undo stack -- it simply joins the surrounding recording.
+	`TryBeginRecording` returns nil when a recording is already open or when
+	history is unavailable. Since the lock above, that can no longer be another
+	MCP batch: it is Studio's own, the user mid-drag in the viewport. The work
+	still runs in that case -- refusing to act would be worse than a slightly
+	coarser undo stack -- it simply joins the surrounding recording, and the lock
+	is still held throughout so the batch stays whole.
 
 	That second return value is not decoration. Whether an operation is undoable
 	is something tools tell the agent, and therefore the user, so it has to be
@@ -63,19 +134,28 @@ end
 	to no undo entry at all is worse than no claim.
 ]]
 function Undo.record<T>(name: string, displayName: string, body: () -> T): (T, boolean)
+	local acquired = acquire()
+
 	local identifier = ChangeHistoryService:TryBeginRecording(name, displayName)
 	if not identifier then
-		return body(), false
+		local ok, result = pcall(body)
+		release(acquired)
+		if not ok then
+			error(result, 0)
+		end
+		return result, false
 	end
 
 	local ok, result = pcall(body)
 	if ok then
 		ChangeHistoryService:FinishRecording(identifier, Enum.FinishRecordingOperation.Commit)
+		release(acquired)
 		return result, true
 	end
 
 	ChangeHistoryService:FinishRecording(identifier, Enum.FinishRecordingOperation.Cancel)
 	dropRedo()
+	release(acquired)
 	error(result, 0)
 end
 
@@ -85,13 +165,21 @@ end
 	and therefore tell the agent exactly what did and did not apply.
 ]]
 function Undo.recordPartial<T>(name: string, displayName: string, body: () -> T): (T, boolean)
+	local acquired = acquire()
+
 	local identifier = ChangeHistoryService:TryBeginRecording(name, displayName)
 	if not identifier then
-		return body(), false
+		local ok, result = pcall(body)
+		release(acquired)
+		if not ok then
+			error(result, 0)
+		end
+		return result, false
 	end
 
 	local ok, result = pcall(body)
 	ChangeHistoryService:FinishRecording(identifier, Enum.FinishRecordingOperation.Commit)
+	release(acquired)
 	if not ok then
 		error(result, 0)
 	end

@@ -99,6 +99,43 @@ local function fingerprint(source: string): string
 	return string.format("%08x-%x", hash, length)
 end
 
+--[[
+	Whether a script is really the source of truth, or a copy of a file on disk.
+
+	Studio can bind a script to a file outside it -- the external-editor
+	workflows, and the Auto-Reimport beta. When that binding exists, whatever is
+	written here is overwritten the next time the file changes, and the write
+	looks like it worked right up until it silently does not. That failure is
+	invisible from inside the data model: the script has a Source property like
+	any other.
+
+	`InstanceFileSyncService` knows, and says so at plugin identity. It is read
+	only -- there is no call here that starts, stops or redirects a sync -- so
+	the worst this can do is add a sentence to a reply.
+
+	Guarded end to end, and deliberately silent when unavailable: a Studio
+	without the service, or a place with no sync set up, should cost this note
+	and nothing else.
+]]
+local function syncedFile(target: Instance): string?
+	local service = game:FindService("InstanceFileSyncService")
+	if service == nil then
+		return nil
+	end
+	local ok, status = pcall(function()
+		return (service :: any):GetStatus(target)
+	end)
+	if not ok or status == nil then
+		return nil
+	end
+	local name = tostring(status):gsub("Enum%.InstanceFileSyncStatus%.", "")
+	-- "NotSynced" is the ordinary case and saying it every time would be noise.
+	if name == "NotSynced" or name == "Unknown" or name == "nil" then
+		return nil
+	end
+	return name
+end
+
 function Scripts.read(params: { [string]: any }): { [string]: any }
 	local paths = params.paths
 	if typeof(paths) ~= "table" or #paths == 0 then
@@ -161,6 +198,9 @@ function Scripts.read(params: { [string]: any }): { [string]: any }
 			-- the live source, and a fingerprint of forty lines out of four
 			-- hundred would call an edit safe that it is not.
 			revision = fingerprint(whole),
+			-- Absent unless the script is bound to a file on disk, in which case
+			-- editing it here is a race against whatever writes that file.
+			fileSync = syncedFile(target),
 		})
 	end
 
@@ -494,20 +534,61 @@ function Scripts.create(params: { [string]: any }): { [string]: any }
 			if instance:IsA("Script") and instance.RunContext ~= Enum.RunContext.Legacy then
 				local container = starterContainer(instance)
 				if container then
-					table.insert(
-						warnings,
-						string.format(
-							'%s is a Script with RunContext %s inside %s. That container is '
-								.. "COPIED into each player, so the script runs once where it "
-								.. "sits and again in every copy. Make it a LocalScript "
-								.. "instead -- a Legacy Script there would not run at all. "
-								.. "Studio warns about this in its own Output, which `console` "
-								.. "cannot read.",
-							instance.Name,
-							instance.RunContext.Name,
-							container
+					--[[
+						A Tool is the exception, and a common enough one to be
+						worth separating.
+
+						The general warning ends "make it a LocalScript", which
+						is right for a bare script in StarterGui or StarterPack
+						and WRONG for the inside of a weapon: damage, ammo and
+						hit detection belong on the server, and a LocalScript
+						there hands all three to the client. The duplicate the
+						warning is about is harmless here too -- the copy left in
+						StarterPack is never held by anyone, so nothing it
+						listens for ever fires.
+					]]
+					local insideTool = false
+					local walk: Instance? = instance.Parent
+					while walk ~= nil and walk ~= game do
+						if walk:IsA("Tool") then
+							insideTool = true
+							break
+						end
+						walk = walk.Parent
+					end
+
+					if insideTool then
+						table.insert(
+							warnings,
+							string.format(
+								"%s is a Script with RunContext %s inside a Tool in %s. That is "
+									.. "usually right -- the Tool is copied into each player's "
+									.. "Backpack and the script runs there, on the server, which "
+									.. "is where damage and ammo belong. The copy left behind in "
+									.. "%s also runs, but nobody holds it, so nothing it waits for "
+									.. "happens. Keep it a Script, not a LocalScript.",
+								instance.Name,
+								instance.RunContext.Name,
+								container,
+								container
+							)
 						)
-					)
+					else
+						table.insert(
+							warnings,
+							string.format(
+								'%s is a Script with RunContext %s inside %s. That container is '
+									.. "COPIED into each player, so the script runs once where it "
+									.. "sits and again in every copy. Make it a LocalScript "
+									.. "instead -- a Legacy Script there would not run at all. "
+									.. "Studio warns about this in its own Output, which `console` "
+									.. "cannot read.",
+								instance.Name,
+								instance.RunContext.Name,
+								container
+							)
+						)
+					end
 				end
 			end
 
@@ -527,8 +608,61 @@ function Scripts.create(params: { [string]: any }): { [string]: any }
 	}
 end
 
+--[[
+	Opens a script in the user's editor, at a line.
+
+	The gap this closes is a conversational one. An agent that has found the bug
+	says "it is line 214 of Combat" and the user then has to go and find Combat,
+	open it, and scroll -- every time, for every finding. `ScriptEditorService`
+	can just put it on their screen.
+
+	Deliberately not automatic. Nothing else in this server opens windows, and a
+	tool that rearranged the user's editor as a side effect of reading a file
+	would be intolerable on a batch of twenty. It happens when it is asked for.
+]]
+function Scripts.open(params: { [string]: any }): { [string]: any }
+	local target = resolveScript(params.path)
+	local line = math.max(tonumber(params.line) or 1, 1)
+
+	local service = game:GetService("ScriptEditorService")
+	local ok, err = pcall(function()
+		(service :: any):OpenScriptDocumentAsync(target)
+	end)
+	if not ok then
+		Dispatch.fail(
+			"OPEN_FAILED",
+			string.format("Could not open %s: %s", target:GetFullName(), tostring(err))
+		)
+	end
+
+	--[[
+		Moving the cursor is a second, separate operation, and a failure to move
+		it is not a failure to open. A document that opened but did not scroll is
+		still in front of the user; raising here would report the whole thing as
+		broken over the smaller half.
+	]]
+	local movedTo: number? = nil
+	pcall(function()
+		for _, document in (service :: any):GetScriptDocuments() do
+			if document:GetScript() == target then
+				document:RequestSetSelectionAsync(line, 1, line, 1)
+				movedTo = line
+				break
+			end
+		end
+	end)
+
+	return {
+		path = Paths.of(target),
+		className = target.ClassName,
+		opened = true,
+		line = movedTo,
+	}
+end
+
 function Scripts.register()
 	Dispatch.registerAll("script", {
+		open = Scripts.open,
 		read = Scripts.read,
 		edit = Scripts.edit,
 		grep = Scripts.grep,

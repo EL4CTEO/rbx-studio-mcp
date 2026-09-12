@@ -1,20 +1,16 @@
 import { z } from "zod";
 import { propertiesOf, restrictionsOf, standardProperties } from "../lib/apidump.js";
-import {
-  cursorSchema,
-  decodeCursor,
-  detailSchema,
-  encodeCursor,
-  json,
-  limitSchema,
-  table,
-  text,
-  type Detail,
-  type ToolResult,
-} from "../lib/format.js";
+import { cursorSchema, decodeCursor, detailSchema, encodeCursor, json, limitSchema, table, text, textOf, type Detail, type ToolResult } from "../lib/format.js";
 import { defineTool, type ToolContext } from "../lib/tool.js";
 
 /** Shape the plugin returns for tree/find. */
+interface TagsResponse {
+  tags: Array<{ tag: string; count: number; sample: string[] }>;
+  count: number;
+  scope?: string;
+  studioTagsHidden: number;
+}
+
 interface ListResponse {
   items: Array<{ path: string; className: string; childCount: number }>;
   total: number;
@@ -228,6 +224,16 @@ export function registerDiscoverTools(context: ToolContext): void {
             "Read exactly these properties instead of the detail-level default. " +
               "Use when you want one specific value across many instances.",
           ),
+        physics: z
+          .boolean()
+          .default(false)
+          .describe(
+            "Also report mass, density, assembly root and centre of mass for any " +
+              "BasePart. Mass appears nowhere in Studio — it is computed from " +
+              "volume and material — so this is the only way to answer 'why does " +
+              "this fall over', 'why does it sink', or 'why did half the model " +
+              "stay behind when I moved it'.",
+          ),
         includeChildren: z
           .boolean()
           .default(true)
@@ -274,6 +280,7 @@ export function registerDiscoverTools(context: ToolContext): void {
           paths: args.paths,
           properties: requested,
           includeChildren: args.includeChildren,
+          physics: args.physics,
         },
         { studioId: args.studioId },
       );
@@ -309,8 +316,27 @@ export function registerDiscoverTools(context: ToolContext): void {
         "Prefer it over `tree` whenever you know what you are looking for.\n\n" +
         "Tag searches are answered from CollectionService's index rather than by " +
         "walking the tree, so they stay fast on large places. Narrow with `path` " +
-        "if a search reports TOO_BROAD.",
+        "if a search reports TOO_BROAD.\n\n" +
+        "`op=\"tags\"` lists which tags the place actually USES, with counts and a " +
+        "few example paths. Call it before filtering by tag on a place you do not " +
+        "know: a tag search that returns nothing looks the same whether you spelled " +
+        "it wrong or nothing carries it, and the tag names are often the clearest " +
+        "description of how a game is organised (Enemy, Checkpoint, Interactable " +
+        "say more than the folder layout does).\n\n" +
+        "`selector` is the engine's own query language and is the fastest option " +
+        "of all — the matching happens in C++ and only survivors come back. Reach " +
+        "for it when the shape of the tree is part of the question (`Model > Part`) " +
+        "or when one call should answer two (`Part, Model`); the filters above " +
+        "still apply on top of it.",
       inputSchema: {
+        op: z
+          .enum(["find", "tags"])
+          .default("find")
+          .describe(
+            "'find' searches for instances. 'tags' lists which CollectionService " +
+              "tags exist in the place, with counts — use it when you do not know " +
+              "the tag names yet.",
+          ),
         path: z
           .string()
           .optional()
@@ -318,6 +344,17 @@ export function registerDiscoverTools(context: ToolContext): void {
         nameContains: z.string().optional().describe("Substring of the instance name, case-insensitive."),
         className: z.string().optional().describe('Class or superclass, e.g. "BasePart", "Script".'),
         tag: z.string().optional().describe("CollectionService tag the instance must carry."),
+        selector: z
+          .string()
+          .optional()
+          .describe(
+            "Engine query selector, matched inside Studio. Supports a class name " +
+              '("Part", superclasses included), "#ExactName", "[Anchored=true]", ' +
+              'either-or with "Part, Model", direct children with "Model > Part" ' +
+              'and descendants with "Model >> Part". No substring names and no ' +
+              "< > comparisons — use nameContains and propertyValue for those. " +
+              "Combines with the other filters.",
+          ),
         propertyName: z
           .string()
           .optional()
@@ -337,9 +374,66 @@ export function registerDiscoverTools(context: ToolContext): void {
       readOnly: true,
     },
     async (args): Promise<ToolResult> => {
-      if (!args.nameContains && !args.className && !args.tag && !args.propertyName) {
+      if (args.op === "tags") {
+        const found = await bridge.call<TagsResponse>(
+          "discover.tags",
+          { path: args.path },
+          { studioId: args.studioId, timeoutMs: 30_000 },
+        );
+        if (found.tags.length === 0) {
+          return text(
+            (found.scope !== undefined
+              ? `Nothing under ${found.scope} carries a tag.`
+              : "This place uses no tags.") +
+              (found.studioTagsHidden > 0
+                ? ` (${found.studioTagsHidden} of Studio's own internal tags were hidden.)`
+                : ""),
+          );
+        }
+        /*
+         * Tags carrying nothing are listed as a sentence, not as table rows.
+         * They have no count worth reading and no examples to show, so each one
+         * is a blank line in the middle of the real answer — measured on a place
+         * using two tags, where five empty rows from Studio's own plugins
+         * (RigEdit, the tag editor, gui-object-defaults) buried both of them.
+         * Naming them still matters, because one of them may be the tag the
+         * caller was about to search for.
+         */
+        const used = found.tags.filter((entry) => entry.count > 0);
+        const empty = found.tags.filter((entry) => entry.count === 0).map((entry) => entry.tag);
+        const emptyNote =
+          empty.length > 0
+            ? `\n\nRegistered but carrying nothing: ${empty.join(", ")}. These are ` +
+              "usually left by Studio plugins or by something since deleted."
+            : "";
+
+        if (used.length === 0) {
+          return text(
+            (found.scope !== undefined
+              ? `Nothing under ${found.scope} carries a tag.`
+              : "Nothing in this place carries a tag.") + emptyNote,
+          );
+        }
+
+        const rows = used.map((entry) => ({
+          tag: entry.tag,
+          count: entry.count,
+          examples: entry.sample.join(", ") || "—",
+        }));
         return text(
-          "find needs at least one filter (nameContains, className, tag or propertyName).\n" +
+          textOf(
+            table(["tag", "count", "examples"], rows as unknown as Array<Record<string, unknown>>, {
+              more:
+                (found.scope !== undefined ? `within ${found.scope}; ` : "") +
+                `${found.studioTagsHidden} of Studio's own tags hidden`,
+            }),
+          ) + emptyNote,
+        );
+      }
+
+      if (!args.nameContains && !args.className && !args.tag && !args.propertyName && !args.selector) {
+        return text(
+          "find needs at least one filter (nameContains, className, tag, propertyName or selector).\n" +
             "To list everything under a path, use `tree` instead.",
         );
       }
@@ -351,6 +445,7 @@ export function registerDiscoverTools(context: ToolContext): void {
           nameContains: args.nameContains,
           className: args.className,
           tag: args.tag,
+          selector: args.selector,
           propertyName: args.propertyName,
           propertyValue: args.propertyValue,
           limit: args.limit,

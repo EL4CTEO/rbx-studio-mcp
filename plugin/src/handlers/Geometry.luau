@@ -20,6 +20,8 @@
 
 local GeometryService = game:GetService("GeometryService")
 
+local AssetService = game:GetService("AssetService")
+
 local Dispatch = require(script.Parent.Parent.Dispatch)
 local Paths = require(script.Parent.Parent.Paths)
 local Undo = require(script.Parent.Parent.Undo)
@@ -439,8 +441,133 @@ function Geometry.sweep(params: { [string]: any }): { [string]: any }
 	}
 end
 
+--[[
+	What a mesh is actually made of.
+
+	`inspect` on a MeshPart returns a content id, a size and a collision
+	fidelity, and none of those answer the question anyone has about a mesh,
+	which is "why is this place slow". A tree that renders as 40,000 triangles
+	and one that renders as 400 look identical in the Explorer and identical in
+	the Properties panel, and the difference between them is the difference
+	between a place that runs on a phone and one that does not.
+
+	`CreateEditableMeshAsync` opens the real geometry. It is read here and then
+	dropped -- nothing is modified, nothing is saved, and the editable copy is
+	destroyed before the reply is built, because an EditableMesh holds its data
+	outside Luau's heap and inspecting a hundred parts should not accumulate a
+	hundred copies of them.
+]]
+function Geometry.mesh(params: { [string]: any }): { [string]: any }
+	local paths = params.paths
+	if typeof(paths) ~= "table" or #(paths :: { any }) == 0 then
+		Dispatch.fail(
+			"BAD_PARAMS",
+			"mesh needs a non-empty `paths` array.",
+			'Use `find` with selector "MeshPart" to list them.'
+		)
+	end
+
+	local items: { { [string]: any } } = {}
+	local failures: { string } = {}
+	local totalTriangles = 0
+
+	for _, path in paths :: { string } do
+		local okResolve, resolved = pcall(Paths.resolve, path)
+		if not okResolve then
+			table.insert(failures, string.format("%s: not found", tostring(path)))
+			continue
+		end
+
+		local instance = resolved :: Instance
+		if not instance:IsA("MeshPart") then
+			table.insert(
+				failures,
+				string.format("%s: is a %s, not a MeshPart", tostring(path), instance.ClassName)
+			)
+			continue
+		end
+
+		local part = instance :: MeshPart
+		local okMesh, mesh = pcall(function()
+			return (AssetService :: any):CreateEditableMeshAsync((part :: any).MeshContent)
+		end)
+		if not okMesh then
+			--[[
+				Ownership, not a bug, and worth saying so in those words.
+
+				`CreateEditableMeshAsync` will only open a mesh the signed-in
+				Studio user owns, that the experience owner owns, or that has been
+				explicitly shared with one of them. Every other mesh on the
+				platform -- including anything inserted from the Creator Store --
+				refuses with "no permission to load asset", which reads like a
+				broken tool rather than a rule about whose asset it is. Measured:
+				a catalog accessory's mesh fails this way while a mesh uploaded by
+				the user opens fine.
+			]]
+			local reason = tostring(mesh)
+			if string.find(reason, "permission", 1, true) then
+				table.insert(
+					failures,
+					string.format(
+						"%s: its mesh belongs to someone else, so Roblox will not open it. "
+							.. "Only meshes owned by the signed-in Studio user or the experience "
+							.. "owner can be read this way.",
+						tostring(path)
+					)
+				)
+			else
+				table.insert(
+					failures,
+					string.format("%s: could not read its geometry (%s)", tostring(path), reason)
+				)
+			end
+			continue
+		end
+
+		local editable = mesh :: any
+		local okRead, row = pcall(function()
+			local vertices = #editable:GetVertices()
+			local faces = #editable:GetFaces()
+			local size = editable:GetSize()
+			return {
+				path = Paths.of(part),
+				name = part.Name,
+				vertices = vertices,
+				triangles = faces,
+				--[[
+					The mesh's own size against the size it is displayed at. A
+					large ratio is the usual cause of a mesh that looks fine and
+					costs far more than it should: the same triangles stretched
+					over a bigger object, or shrunk into one nobody can see.
+				]]
+				meshSize = string.format("%.2f, %.2f, %.2f", size.X, size.Y, size.Z),
+				partSize = string.format("%.2f, %.2f, %.2f", part.Size.X, part.Size.Y, part.Size.Z),
+				collisionFidelity = tostring(part.CollisionFidelity):gsub("Enum%.CollisionFidelity%.", ""),
+				renderFidelity = tostring(part.RenderFidelity):gsub("Enum%.RenderFidelity%.", ""),
+			}
+		end)
+
+		-- Freed before anything else happens with the result, on both paths.
+		pcall(function()
+			editable:Destroy()
+		end)
+
+		if not okRead then
+			table.insert(failures, string.format("%s: %s", tostring(path), tostring(row)))
+			continue
+		end
+
+		local entry = row :: { [string]: any }
+		totalTriangles += tonumber(entry.triangles) or 0
+		table.insert(items, entry)
+	end
+
+	return { items = items, failures = failures, totalTriangles = totalTriangles }
+end
+
 function Geometry.register()
 	Dispatch.registerAll("geometry", {
+		mesh = Geometry.mesh,
 		combine = Geometry.combine,
 		fragment = Geometry.fragment,
 		sweep = Geometry.sweep,

@@ -22,7 +22,7 @@
  * Usage: node scripts/check-plugin.mjs
  */
 import { spawnSync } from "node:child_process";
-import { readdirSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { locateLuau, missingLuau } from "./locate-luau.mjs";
@@ -102,6 +102,53 @@ if (analyser !== null) {
       else if (TYPE_PATTERNS.some((pattern) => pattern.test(line))) mistyped.push(line.trim());
     }
   }
+}
+
+/*
+ * Every operation the plugin answers has to have a readable name in the panel.
+ *
+ * `Phrase` falls back to tidying the wire name, so a missing entry is invisible
+ * in testing and only shows up as "Data set" where "SAVE over 4212 in PlayerData"
+ * belonged. Left unchecked it rots by default: 26 of 72 operations had drifted
+ * out of the table, which is every tool added after the table was written. A
+ * missing KIND is worse than cosmetic -- the fallback is "read", so an
+ * unregistered terrain wipe was announced with the weight of an inspect.
+ */
+const unnamed = [];
+const kindless = new Set();
+{
+  const phrase = readFileSync(join(root, "plugin", "src", "Phrase.luau"), "utf8");
+  const described = new Set([...phrase.matchAll(/\["([^"]+)"\]\s*=\s*function/g)].map((m) => m[1]));
+  const kinds = new Set([...phrase.matchAll(/^\t([a-z]+) = "/gm)].map((m) => m[1]));
+  // `script` is split by action inside Phrase.kindOf rather than by a table row.
+  kinds.add("script");
+
+  for (const file of files) {
+    const source = readFileSync(file, "utf8");
+    for (const block of source.matchAll(/Dispatch\.registerAll\("([^"]+)",\s*\{([\s\S]*?)\n\t\}\)/g)) {
+      const group = block[1];
+      if (!kinds.has(group)) kindless.add(group);
+      for (const entry of block[2].matchAll(/^\s*([A-Za-z0-9_]+)\s*=/gm)) {
+        const op = `${group}.${entry[1]}`;
+        if (!described.has(op)) unnamed.push(op);
+      }
+    }
+  }
+}
+
+if (unnamed.length > 0) {
+  failures.push(
+    "These operations have no entry in Phrase.luau, so the Studio panel shows " +
+      "the wire name instead of saying what they touch:\n  " +
+      unnamed.sort().join("\n  "),
+  );
+}
+if (kindless.size > 0) {
+  failures.push(
+    "These operation groups have no entry in Phrase KINDS, so they are announced " +
+      'as "read" whatever they do:\n  ' +
+      [...kindless].sort().join("\n  "),
+  );
 }
 
 if (failures.length > 0) {

@@ -240,6 +240,7 @@ type State = {
 	calls: number,
 	errors: number,
 	totalMs: number,
+	durations: { number },
 	-- The command in flight, shown in the footer while it runs. One value that
 	-- is replaced, never a list that grows.
 	running: string?,
@@ -329,6 +330,7 @@ local state: State = {
 	calls = 0,
 	errors = 0,
 	totalMs = 0,
+	durations = {},
 	running = nil,
 	generation = 0,
 	clients = 1,
@@ -565,6 +567,60 @@ local function redraw()
 	task.defer(paint)
 end
 
+--[[
+	How many recent calls the typical-latency figure looks at.
+]]
+local TIMING_WINDOW = 50
+
+--[[
+	The typical call time, as a median rather than a mean.
+
+	A mean is the wrong statistic for latency and the panel had it: nine calls,
+	seven of them under 65ms and two of them deliberate 45-second waits, summed
+	to "avg 5027ms". Nothing about the bridge was slow, and the one number on
+	screen said everything was. One long call is normal -- a profile, a sleep, a
+	Creator Store search -- so the summary has to survive one, and a median does
+	while a mean cannot.
+]]
+local function typicalMs(): number
+	local total = #state.durations
+	if total == 0 then
+		return 0
+	end
+	local sorted = table.clone(state.durations)
+	table.sort(sorted)
+	local middle = (total + 1) / 2
+	if total % 2 == 1 then
+		return sorted[middle]
+	end
+	return (sorted[middle - 0.5] + sorted[middle + 0.5]) / 2
+end
+
+--[[
+	A duration as the panel shows it.
+
+	Rounded to milliseconds, a handler that does its work in a fraction of one
+	reads as "0ms", and nothing takes zero time -- it is the one figure on the
+	panel that claims something impossible. Most handlers genuinely are under a
+	millisecond, so this is the common case rather than an edge.
+
+	Exported because the same number is written in two places -- the footer's
+	typical, and the time beside every row -- and they were formatted
+	separately. That showed: the footer said "typical <1ms" directly above a
+	column of rows all claiming "0ms", which reads as a bug in whichever one you
+	believe less.
+]]
+function Console.durationText(milliseconds: number): string
+	if milliseconds < 1 then
+		return "<1ms"
+	end
+	return string.format("%.0fms", milliseconds)
+end
+
+local function typicalText(): string
+	return Console.durationText(typicalMs())
+end
+
 local function refreshCounters()
 	local counters = state.countersText
 	if not counters then
@@ -585,12 +641,12 @@ local function refreshCounters()
 		return
 	end
 	counters.Text = string.format(
-		"%d call%s  %d error%s  avg %.0fms",
+		"%d call%s  %d error%s  typical %s",
 		state.calls,
 		if state.calls == 1 then "" else "s",
 		state.errors,
 		if state.errors == 1 then "" else "s",
-		state.totalMs / state.calls
+		typicalText()
 	)
 end
 
@@ -722,6 +778,15 @@ end
 function Console.recordCall(ok: boolean, milliseconds: number)
 	state.calls += 1
 	state.totalMs += milliseconds
+	--[[
+		Kept for the median. The window is bounded because this grows for as long
+		as the panel is open, and because a figure meant to say "how is it
+		feeling now" should not be answering with this morning.
+	]]
+	table.insert(state.durations, milliseconds)
+	if #state.durations > TIMING_WINDOW then
+		table.remove(state.durations, 1)
+	end
 	if not ok then
 		state.errors += 1
 	end
@@ -774,10 +839,10 @@ function Console.recordCall(ok: boolean, milliseconds: number)
 		Console.log(
 			"dim",
 			string.format(
-				"agent idle -- %d call%s, avg %.0fms",
+				"agent idle -- %d call%s, typical %s",
 				state.calls,
 				if state.calls == 1 then "" else "s",
-				state.totalMs / state.calls
+				typicalText()
 			)
 		)
 		Visuals.setQuiet()
@@ -1148,6 +1213,7 @@ function Console.clear()
 	state.calls = 0
 	state.errors = 0
 	state.totalMs = 0
+	table.clear(state.durations)
 	refreshCounters()
 	-- The bars belonged to the log that just went. Leaving forty timings from an
 	-- erased session on screen while the footer reads "idle" is two answers to

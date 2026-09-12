@@ -221,10 +221,19 @@ local function takeScreenshot(): string
 		)
 	end
 
+	--[[
+		A frame at a time to begin with, then a slower poll.
+
+		The callback normally fires within a frame or two, and a flat 0.05s wait
+		billed that to the agent as up to 50ms of doing nothing -- on a call
+		whose whole point is that it is taken often. `task.wait()` resumes on the
+		next heartbeat, so the common case now costs a frame; after a quarter of
+		a second the shot is clearly not coming back promptly and the poll drops
+		to the cheap interval for the rest of the timeout.
+	]]
 	local waited = 0
 	while contentId == nil and waited < CAPTURE_TIMEOUT do
-		task.wait(0.05)
-		waited += 0.05
+		waited += if waited < 0.25 then task.wait() else task.wait(0.05)
 	end
 
 	if contentId == nil then
@@ -311,6 +320,125 @@ function Capture.playtestId(_params: { [string]: any }): { [string]: any }
 end
 
 --[[
+	Widest image the engine will create for us.
+
+	`AssetService:CreateEditableImage` caps at 1024 on either axis, and the
+	`width` parameter goes to 1600. Above the cap there is no destination to draw
+	into, so those calls fall back to the Luau loop rather than failing -- a
+	slower big screenshot, not a missing one.
+]]
+local ENGINE_SCALE_LIMIT = 1024
+
+--[[
+	Drops alpha. RGBA in, RGB out, no scaling.
+
+	A screenshot has no alpha worth keeping and carrying it would add a quarter
+	to every byte that follows, so the channel goes here rather than on the wire.
+
+	Copied a word at a time rather than a byte at a time. Each 32-bit read takes
+	a whole pixel and each write lands three bytes further on, so the alpha byte
+	spills one place into the next pixel's slot -- where the next iteration
+	overwrites it. Only the final pixel has nothing following it, which is what
+	the one byte of slack on the buffer is for; the result is then trimmed to
+	the exact length so nothing downstream has to know about it.
+
+	Worth the trick: measured on a 799x359 frame, 16ms a byte at a time against
+	6-10ms this way, for output verified identical. That is most of what the
+	engine-side downscale costs, on a call agents make constantly.
+]]
+local function stripAlpha(rgba: buffer, width: number, height: number): buffer
+	local pixels = width * height
+	local length = pixels * 3
+
+	local wide = buffer.create(length + 1)
+	for index = 0, pixels - 1 do
+		buffer.writeu32(wide, index * 3, buffer.readu32(rgba, index * 4))
+	end
+
+	local out = buffer.create(length)
+	buffer.copy(out, 0, wide, 0, length)
+	return out
+end
+
+--[[
+	Downscales on the engine's side instead of in Luau.
+
+	This is about the picture, not the clock. `SamplingMode` defaults to bilinear,
+	so a 2x reduction averages the pixels it merges; the Luau loop it replaces
+	took every other row and column and dropped the rest, which is how one-pixel
+	GUI text and thin edges vanished from screenshots that existed to answer
+	"does this look right".
+
+	It was written expecting to be faster too, and it is not -- that guess is
+	recorded here because the measurement is the useful part. On a 1370x616 frame
+	scaled to 799: the old full-resolution read costs about 1ms, not the large
+	number the 4.4MB of RGBA suggests, and the Luau downscale that follows runs
+	in 19-22ms all in. `DrawImageTransformed` alone is 16-17ms of engine time.
+	With `stripAlpha` doing the rest a word at a time, this path lands around
+	23ms -- a couple of milliseconds behind, on a call whose round trip is
+	measured in hundreds. Paying that for legible text is the trade; pretending
+	it was free would have been the mistake.
+
+	Returns nil when the engine cannot do it -- an older Studio without
+	`CreateEditableImage`, or a target past ENGINE_SCALE_LIMIT -- and the caller
+	falls back.
+]]
+local function resample(
+	source: any,
+	sourceWidth: number,
+	sourceHeight: number,
+	targetWidth: number
+): (buffer?, number, number)
+	local scale = math.min(1, targetWidth / sourceWidth)
+	local outWidth = math.max(1, math.floor(sourceWidth * scale))
+	local outHeight = math.max(1, math.floor(sourceHeight * scale))
+
+	if outWidth > ENGINE_SCALE_LIMIT or outHeight > ENGINE_SCALE_LIMIT then
+		return nil, 0, 0
+	end
+
+	local ok, rgb = pcall(function()
+		local canvas = (AssetService :: any):CreateEditableImage({
+			Size = Vector2.new(outWidth, outHeight),
+		})
+		--[[
+			Position is the centre, not the corner: `DrawImageTransformed` places
+			the source's PIVOT at the position given, and the pivot defaults to
+			the middle of the source image. Passing Vector2.zero here puts three
+			quarters of the frame off-canvas.
+		]]
+		local okDraw = pcall(function()
+			canvas:DrawImageTransformed(
+				Vector2.new(outWidth / 2, outHeight / 2),
+				Vector2.new(scale, scale),
+				0,
+				source,
+				{
+					CombineType = Enum.ImageCombineType.Overwrite,
+					SamplingMode = Enum.ResamplerMode.Default,
+				}
+			)
+		end)
+		if not okDraw then
+			canvas:Destroy()
+			error("draw failed", 0)
+		end
+
+		local pixels = canvas:ReadPixelsBuffer(Vector2.zero, canvas.Size)
+		-- Freed here rather than left to the collector: an EditableImage holds
+		-- its pixels outside Luau's heap, and a screenshot every few seconds
+		-- would otherwise pile them up for as long as Studio stays open.
+		canvas:Destroy()
+		return stripAlpha(pixels, outWidth, outHeight)
+	end)
+
+	if not ok then
+		return nil, 0, 0
+	end
+	return rgb :: buffer, outWidth, outHeight
+end
+
+--[[
 	Turns a content id into pixels on the wire.
 
 	Split out from `screenshot` because a playtest shot is taken in one session
@@ -332,23 +460,30 @@ local function encode(contentId: string, width: number, context: string): { [str
 	local sourceWidth = math.floor(size.X)
 	local sourceHeight = math.floor(size.Y)
 
-	--[[
-		Both arguments are required. Called with none it reports "expects 2
-		arguments" rather than defaulting to the whole image, which is worth
-		stating because every other read on this object takes none.
-	]]
-	local okPixels, pixels = pcall(function()
-		return (image :: any):ReadPixelsBuffer(Vector2.zero, size)
-	end)
-	if not okPixels then
-		Dispatch.fail(
-			"CAPTURE_UNREADABLE",
-			string.format("The screenshot's pixels could not be read: %s", tostring(pixels))
-		)
+	local rgb, outWidth, outHeight = resample(image, sourceWidth, sourceHeight, width)
+
+	if rgb == nil then
+		--[[
+			Both arguments are required. Called with none it reports "expects 2
+			arguments" rather than defaulting to the whole image, which is worth
+			stating because every other read on this object takes none.
+		]]
+		local okPixels, pixels = pcall(function()
+			return (image :: any):ReadPixelsBuffer(Vector2.zero, size)
+		end)
+		if not okPixels then
+			Dispatch.fail(
+				"CAPTURE_UNREADABLE",
+				string.format("The screenshot's pixels could not be read: %s", tostring(pixels))
+			)
+		end
+		rgb, outWidth, outHeight = Png.downscaleToRgb(pixels, sourceWidth, sourceHeight, width)
 	end
 
-	local rgb, outWidth, outHeight = Png.downscaleToRgb(pixels, sourceWidth, sourceHeight, width)
-	local black = isFlat(rgb)
+	-- On the scaled image, not the source: the question is whether anything was
+	-- drawn, which survives the downscale, and it is a quarter of the pixels to
+	-- walk.
+	local black = isFlat(rgb :: buffer)
 
 	--[[
 		Raw pixels, compressed by the engine, assembled into a PNG by Node.
@@ -370,7 +505,7 @@ local function encode(contentId: string, width: number, context: string): { [str
 	]]
 	local okPacked, packed = pcall(function()
 		local compressed = (EncodingService :: any):CompressBuffer(
-			rgb,
+			rgb :: buffer,
 			(Enum :: any).CompressionAlgorithm.Zstd,
 			COMPRESSION_LEVEL
 		)
@@ -385,7 +520,7 @@ local function encode(contentId: string, width: number, context: string): { [str
 			height = outHeight,
 			sourceWidth = sourceWidth,
 			sourceHeight = sourceHeight,
-			rawBytes = buffer.len(rgb),
+			rawBytes = buffer.len(rgb :: buffer),
 			bytes = #(packed :: string),
 			context = context,
 			black = black,
@@ -393,7 +528,7 @@ local function encode(contentId: string, width: number, context: string): { [str
 		}
 	end
 
-	local png = Png.encode(rgb, outWidth, outHeight)
+	local png = Png.encode(rgb :: buffer, outWidth, outHeight)
 
 	return {
 		encoding = "png",

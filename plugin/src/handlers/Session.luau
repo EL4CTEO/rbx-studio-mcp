@@ -146,6 +146,9 @@ function Session.status(): { [string]: any }
 		scriptCount = totals.scripts,
 		studioVersion = studioVersion(),
 		emulatedDevice = Emulation.summary(),
+		-- Separate from the device: traffic can be shaped with no device set,
+		-- and that is the case most likely to be forgotten about.
+		emulatedNetwork = Emulation.networkSummary(),
 	}
 end
 
