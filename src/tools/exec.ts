@@ -2,7 +2,12 @@ import { z } from "zod";
 import { json, table, text, type ToolResult } from "../lib/format.js";
 import { ToolError } from "../lib/errors.js";
 import { runLiveLuau } from "../lib/liveluau.js";
-import { requireCredentials, requirePlace, requireUniverse } from "../lib/opencloud.js";
+import {
+  assertTargetsOpenPlace,
+  requireCredentials,
+  requirePlace,
+  requireUniverse,
+} from "../lib/opencloud.js";
 import { defineTool, type ToolContext } from "../lib/tool.js";
 
 interface ExecResponse {
@@ -150,10 +155,18 @@ export function registerExecTools(context: ToolContext): void {
           );
         }
         const credentials = await requireCredentials();
+        const liveUniverse = await requireUniverse(args.universeId);
+        const livePlace = await requirePlace(args.placeId);
+        await assertTargetsOpenPlace(bridge, {
+          universeId: liveUniverse,
+          placeId: livePlace,
+          explicit: args.universeId !== undefined || args.placeId !== undefined,
+          studioId: args.studioId,
+        });
         return json(
           await runLiveLuau(credentials, {
-            universeId: await requireUniverse(args.universeId),
-            placeId: await requirePlace(args.placeId),
+            universeId: liveUniverse,
+            placeId: livePlace,
             source: args.source,
             timeoutSeconds: args.timeoutSeconds ?? 30,
           }),

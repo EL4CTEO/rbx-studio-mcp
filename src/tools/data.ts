@@ -3,7 +3,11 @@ import { ToolError } from "../lib/errors.js";
 import { json, table, text, textOf, type ToolResult } from "../lib/format.js";
 import { liveDataStore } from "../lib/livedata.js";
 import { snapshotDataStores } from "../lib/liveops.js";
-import { requireCredentials, requireUniverse } from "../lib/opencloud.js";
+import {
+  assertTargetsOpenPlace,
+  requireCredentials,
+  requireUniverse,
+} from "../lib/opencloud.js";
 import { defineTool, type ToolContext } from "../lib/tool.js";
 
 interface Row {
@@ -41,7 +45,7 @@ const TIMEOUT_MS = 45_000;
  * stronger reason — this is the data of people who are playing right now, and
  * there is no undo, no recording, and no "it was only the Studio copy".
  */
-async function live(args: {
+async function live(bridge: ToolContext["bridge"], args: {
   op: "list" | "get" | "versions" | "set" | "remove" | "increment" | "snapshot";
   kind: "data" | "memory" | "ordered";
   universeId?: string;
@@ -54,6 +58,7 @@ async function live(args: {
   limit?: number;
   cursor?: string;
   confirm?: boolean;
+  studioId?: string;
 }): Promise<ToolResult> {
   if (args.kind === "memory") {
     throw new ToolError(
@@ -77,6 +82,11 @@ async function live(args: {
 
   const credentials = await requireCredentials();
   const universe = await requireUniverse(args.universeId);
+  await assertTargetsOpenPlace(bridge, {
+    universeId: universe,
+    explicit: args.universeId !== undefined,
+    studioId: args.studioId,
+  });
 
   if (args.op === "snapshot") {
     // Handled before this function is reached; narrowed here so the shared
@@ -298,12 +308,16 @@ export function registerDataTools(context: ToolContext): void {
         const { requireCredentials: needKey, requireUniverse: needUniverse } = await import(
           "../lib/opencloud.js"
         );
-        return json(
-          await snapshotDataStores(await needKey(), await needUniverse(args.universeId)),
-        );
+        const snapshotUniverse = await needUniverse(args.universeId);
+        await assertTargetsOpenPlace(bridge, {
+          universeId: snapshotUniverse,
+          explicit: args.universeId !== undefined,
+          studioId: args.studioId,
+        });
+        return json(await snapshotDataStores(await needKey(), snapshotUniverse));
       }
 
-      if (args.target === "live") return live(args);
+      if (args.target === "live") return live(bridge, args);
 
       if (args.kind === "ordered") {
         throw new ToolError(

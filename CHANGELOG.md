@@ -2,6 +2,11 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.6.8
+
+### Fixed
+- **Live calls can no longer hit the wrong game.** `cloud place` is sticky and Studio's place is not, so opening a different experience left every live call pointing at the old one — reading another game's player data, restarting its servers, with a plausible success message and no error. They now refuse when the target is not the place open in Studio. Pass `universeId` or `placeId` to override on purpose.
+
 ## 0.6.7
 
 ### Added

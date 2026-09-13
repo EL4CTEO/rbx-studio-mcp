@@ -9,7 +9,11 @@ import {
   restartServers,
   setRestriction,
 } from "../lib/liveops.js";
-import { requireCredentials, requireUniverse } from "../lib/opencloud.js";
+import {
+  assertTargetsOpenPlace,
+  requireCredentials,
+  requireUniverse,
+} from "../lib/opencloud.js";
 import { defineTool, type ToolContext } from "../lib/tool.js";
 
 /**
@@ -30,6 +34,8 @@ import { defineTool, type ToolContext } from "../lib/tool.js";
  * Everything here acts on real players. Every write asks for confirmation.
  */
 export function registerUniverseTools(context: ToolContext): void {
+  const { bridge } = context;
+
   defineTool(
     context,
     {
@@ -145,6 +151,10 @@ export function registerUniverseTools(context: ToolContext): void {
     async (args): Promise<ToolResult> => {
       const credentials = await requireCredentials();
       const universeId = await requireUniverse(args.universeId);
+      await assertTargetsOpenPlace(bridge, {
+        universeId,
+        explicit: args.universeId !== undefined,
+      });
 
       const needsConfirm = ["restart", "message", "ban", "unban"].includes(args.op);
       if (needsConfirm && args.confirm !== true) {

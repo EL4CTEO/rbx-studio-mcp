@@ -2,7 +2,12 @@ import { z } from "zod";
 import { body, cursorSchema, decodeCursor, encodeCursor, json, limitSchema, table, text, type ToolResult } from "../lib/format.js";
 import { ToolError } from "../lib/errors.js";
 import { liveChildren, liveInstance, liveScriptWrite, resolveLivePath } from "../lib/liveops.js";
-import { requireCredentials, requirePlace, requireUniverse } from "../lib/opencloud.js";
+import {
+  assertTargetsOpenPlace,
+  requireCredentials,
+  requirePlace,
+  requireUniverse,
+} from "../lib/opencloud.js";
 import { defineTool, type ToolContext } from "../lib/tool.js";
 
 interface ReadResponse {
@@ -192,6 +197,12 @@ export function registerScriptTools(context: ToolContext): void {
         const credentials = await requireCredentials();
         const universeId = await requireUniverse(args.universeId);
         const placeId = await requirePlace(args.placeId);
+        await assertTargetsOpenPlace(bridge, {
+          universeId,
+          placeId,
+          explicit: args.universeId !== undefined || args.placeId !== undefined,
+          studioId: args.studioId,
+        });
         const first = args.paths[0];
         const wanted = typeof first === "string" ? first : first?.path;
 
@@ -466,6 +477,12 @@ export function registerScriptTools(context: ToolContext): void {
         const credentials = await requireCredentials();
         const universeId = await requireUniverse(args.universeId);
         const placeId = await requirePlace(args.placeId);
+        await assertTargetsOpenPlace(bridge, {
+          universeId,
+          placeId,
+          explicit: args.universeId !== undefined || args.placeId !== undefined,
+          studioId: args.studioId,
+        });
         const at = await resolveLivePath(credentials, { universeId, placeId, path: args.path });
         if (at.className !== "Script" && at.className !== "LocalScript" && at.className !== "ModuleScript") {
           throw new ToolError(

@@ -143,6 +143,87 @@ export async function requirePlace(explicit?: string): Promise<string> {
   );
 }
 
+/** place id -> universe id, so the guard costs one request per place, not per call. */
+const universeCache = new Map<string, string | null>();
+
+async function universeOf(placeId: string): Promise<string | null> {
+  const known = universeCache.get(placeId);
+  if (known !== undefined) return known;
+  const found = await universeForPlace(placeId);
+  universeCache.set(placeId, found);
+  return found;
+}
+
+/** The shape of the bridge these tools already hold, narrowed to what is needed. */
+interface StatusSource {
+  call<T>(
+    command: string,
+    params: Record<string, unknown>,
+    options: { studioId?: string; timeoutMs?: number },
+  ): Promise<T>;
+}
+
+/**
+ * Refuses to act on a different game from the one open in Studio.
+ *
+ * The stored place is sticky and Studio's is not: someone runs `cloud place`
+ * once, opens a different experience a week later, and every live call still
+ * points at the first one. Nothing about that looks wrong from the outside. A
+ * live data store read returns another game's player saves, a restart cycles
+ * another game's servers, a ban lands on the wrong experience -- each with a
+ * plausible success message and no error anywhere. Found by opening a real game
+ * in Studio while the stored place was still a test place.
+ *
+ * Passing `placeId` or `universeId` explicitly is taken as "I mean this one"
+ * and skips the check: a deliberate cross-place call is a real thing to want,
+ * drifting into one by accident is not. So is having no Studio connected --
+ * there is nothing to compare against, and refusing would break every headless
+ * use.
+ */
+export async function assertTargetsOpenPlace(
+  bridge: StatusSource,
+  target: { universeId?: string; placeId?: string; explicit: boolean; studioId?: string },
+): Promise<void> {
+  if (target.explicit) return;
+
+  let openPlaceId: string | undefined;
+  try {
+    const status = await bridge.call<{ placeId?: number }>(
+      "studio.status",
+      {},
+      { studioId: target.studioId, timeoutMs: 5_000 },
+    );
+    // An unpublished place reports 0, which names no game and cannot be compared.
+    openPlaceId = status.placeId ? String(status.placeId) : undefined;
+  } catch {
+    return;
+  }
+  if (openPlaceId === undefined) return;
+
+  if (target.placeId !== undefined && target.placeId !== openPlaceId) {
+    throw new ToolError(
+      "WRONG_PLACE",
+      `This would act on place ${target.placeId}, but Studio has ${openPlaceId} open.`,
+      `The stored \`cloud place\` is from another session. Run \`cloud place ` +
+        `${openPlaceId}\` in the Studio panel, or pass \`placeId\` to say you ` +
+        "meant the other game on purpose.",
+    );
+  }
+
+  if (target.universeId !== undefined) {
+    const openUniverse = await universeOf(openPlaceId);
+    if (openUniverse !== null && openUniverse !== target.universeId) {
+      throw new ToolError(
+        "WRONG_PLACE",
+        `This would act on universe ${target.universeId}, but Studio has a place ` +
+          `from universe ${openUniverse} open.`,
+        `Run \`cloud place ${openPlaceId}\` in the Studio panel to point at the ` +
+          "open game, or pass `universeId` to say you meant the other one.",
+      );
+    }
+  }
+}
+
 /** Pulls something readable out of Roblox's several error body shapes. */
 function detailOf(body: string): string {
   try {
