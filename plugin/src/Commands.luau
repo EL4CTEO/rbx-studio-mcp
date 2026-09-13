@@ -27,6 +27,7 @@ local ServerStorage = game:GetService("ServerStorage")
 local Config = require(script.Parent.Config)
 local Console = require(script.Parent.Console)
 local Net = require(script.Parent.Net)
+local Secret = require(script.Parent.Secret)
 local ThemePicker = require(script.Parent.ThemePicker)
 local Themes = require(script.Parent.Themes)
 
@@ -467,6 +468,22 @@ define({
 	remote = true,
 })
 define({ name = "stop", usage = "stop", summary = "cancel the running agent", remote = true })
+--[[
+	Remote on purpose, and not only because the server does the HTTP.
+
+	The key has to live where `upload` runs, which is the Node process. Storing
+	it plugin-side with `plugin:SetSetting` would put a credential that can
+	publish under the user's name into the place file's plugin settings, where it
+	travels with the .rbxl -- into version control, into a team create session,
+	into anyone the place is shared with. It goes to a file in the user's own
+	home directory instead.
+]]
+define({
+	name = "cloud",
+	usage = "cloud [key|user|group|universe|place|test|forget]",
+	summary = "the Open Cloud key `upload` uses",
+	remote = true,
+})
 
 -- Dispatch ----------------------------------------------------------------
 
@@ -565,10 +582,17 @@ function Commands.run(line: string)
 		return
 	end
 
-	-- Echoed before anything runs, so the log shows what was asked as well as
-	-- what came back. Without it a command that prints one line looks like a
-	-- line that appeared on its own.
-	Console.log("call", trimmed, "you")
+	--[[
+		Echoed before anything runs, so the log shows what was asked as well as
+		what came back. Without it a command that prints one line looks like a
+		line that appeared on its own.
+
+		Masked first. `cloud key <secret>` is the only line that carries a
+		credential, and the log is copied, screenshotted and scrolled through --
+		see `Secret`.
+	]]
+	local shown, hidden = Secret.mask(trimmed)
+	Console.log("call", shown, if hidden then "you (hidden)" else "you")
 
 	local words: { string } = {}
 	for word in string.gmatch(trimmed, "%S+") do

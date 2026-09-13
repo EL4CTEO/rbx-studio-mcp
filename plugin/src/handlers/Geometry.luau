@@ -24,6 +24,7 @@ local AssetService = game:GetService("AssetService")
 
 local Dispatch = require(script.Parent.Parent.Dispatch)
 local Paths = require(script.Parent.Parent.Paths)
+local Serialize = require(script.Parent.Parent.Serialize)
 local Undo = require(script.Parent.Parent.Undo)
 
 local Geometry = {}
@@ -565,12 +566,156 @@ function Geometry.mesh(params: { [string]: any }): { [string]: any }
 	return { items = items, failures = failures, totalTriangles = totalTriangles }
 end
 
+--[[
+	Mirrors instances across a plane.
+
+	No engine API does this -- it is the most-asked-for missing Studio tool
+	after script-free inserts -- so it is arithmetic here.
+
+	Position is the easy half: reflect the one component across the plane. The
+	rotation is where naive implementations go wrong. Reflecting all three basis
+	vectors produces a LEFT-handed matrix, which is not a rotation at all;
+	`CFrame.fromMatrix` either refuses it or silently returns something bent.
+	Negating one reflected vector restores right-handedness, and the geometric
+	meaning of that negation is exactly "the part is now facing the other way",
+	which is what mirroring a thing means.
+
+	Asymmetric shapes are the honest limitation: a Wedge mirrored this way is a
+	wedge pointing the other way, which is right, but a MeshPart is not remade --
+	its mesh still has whatever handedness it was authored with. Said in the
+	result rather than left to be discovered.
+]]
+local function reflectVector(v: Vector3, axis: string): Vector3
+	if axis == "X" then
+		return Vector3.new(-v.X, v.Y, v.Z)
+	elseif axis == "Y" then
+		return Vector3.new(v.X, -v.Y, v.Z)
+	end
+	return Vector3.new(v.X, v.Y, -v.Z)
+end
+
+local function mirrorCFrame(cf: CFrame, axis: string, centre: Vector3): CFrame
+	local offset = cf.Position - centre
+	local position = centre + reflectVector(offset, axis)
+
+	-- One vector negated after reflection: without it the basis is left-handed
+	-- and no longer describes a rotation.
+	local right = -reflectVector(cf.RightVector, axis)
+	local up = reflectVector(cf.UpVector, axis)
+	return CFrame.fromMatrix(position, right, up)
+end
+
+function Geometry.mirror(params: { [string]: any }): { [string]: any }
+	local paths = params.paths
+	if typeof(paths) ~= "table" or #paths == 0 then
+		Dispatch.fail("BAD_PARAMS", "mirror needs `paths`.")
+	end
+
+	local axis = string.upper(tostring(params.axis or "X"))
+	if axis ~= "X" and axis ~= "Y" and axis ~= "Z" then
+		Dispatch.fail("BAD_PARAMS", string.format("unknown axis %q", axis), 'Use "X", "Y" or "Z".')
+	end
+
+	local resolved, missing = Paths.resolveMany(paths :: { string })
+	if #missing > 0 then
+		Dispatch.fail("NOT_FOUND", string.format("Could not resolve: %s", table.concat(missing, ", ")))
+	end
+
+	--[[
+		The plane defaults to the middle of what is being mirrored.
+
+		Mirroring about the world origin is almost never what someone means: a
+		building at x=200 mirrored about x=0 lands 400 studs away, off the map.
+		Mirroring about its own centre flips it in place, which is what "mirror
+		this" means when pointing at a thing.
+	]]
+	local centre: Vector3
+	if typeof(params.about) == "string" and params.about ~= "" then
+		local ok, parsed = Serialize.parse(params.about, "Vector3")
+		if not ok or typeof(parsed) ~= "Vector3" then
+			Dispatch.fail("BAD_PARAMS", '`about` is a position, e.g. "0, 0, 0".')
+		end
+		centre = parsed :: Vector3
+	else
+		local total = Vector3.zero
+		local counted = 0
+		for _, instance in resolved do
+			local pivot: CFrame? = nil
+			if instance:IsA("Model") then
+				pivot = (instance :: Model):GetPivot()
+			elseif instance:IsA("BasePart") then
+				pivot = (instance :: BasePart).CFrame
+			end
+			if pivot then
+				total += pivot.Position
+				counted += 1
+			end
+		end
+		centre = if counted > 0 then total / counted else Vector3.zero
+	end
+
+	local copy = params.copy ~= false
+	local results: { string } = {}
+	local skipped: { string } = {}
+	local meshWarning = false
+
+	local _, undoable = Undo.record("MCPMirror", "Mirror", function()
+		for _, instance in resolved do
+			local subject = instance
+			if copy then
+				local ok, clone = pcall(function()
+					return instance:Clone()
+				end)
+				if not ok or clone == nil then
+					table.insert(skipped, string.format("%s could not be copied", Paths.of(instance)))
+					continue
+				end
+				clone.Parent = instance.Parent
+				subject = clone
+			end
+
+			if subject:IsA("Model") then
+				local model = subject :: Model
+				model:PivotTo(mirrorCFrame(model:GetPivot(), axis, centre))
+			elseif subject:IsA("BasePart") then
+				local part = subject :: BasePart
+				part.CFrame = mirrorCFrame(part.CFrame, axis, centre)
+				if part:IsA("MeshPart") then
+					meshWarning = true
+				end
+			else
+				table.insert(skipped, string.format("%s is a %s, which has no position", Paths.of(subject), subject.ClassName))
+				if copy then
+					subject:Destroy()
+				end
+				continue
+			end
+			table.insert(results, Paths.of(subject))
+		end
+	end)
+
+	return {
+		axis = axis,
+		about = Serialize.value(centre),
+		copied = copy,
+		items = results,
+		count = #results,
+		skipped = if #skipped > 0 then skipped else nil,
+		undoable = undoable,
+		note = if meshWarning
+			then "MeshParts were moved and rotated, but their meshes are not remade -- "
+				.. "a mesh authored asymmetrically still reads the same way round."
+			else nil,
+	}
+end
+
 function Geometry.register()
 	Dispatch.registerAll("geometry", {
 		mesh = Geometry.mesh,
 		combine = Geometry.combine,
 		fragment = Geometry.fragment,
 		sweep = Geometry.sweep,
+		mirror = Geometry.mirror,
 	})
 end
 

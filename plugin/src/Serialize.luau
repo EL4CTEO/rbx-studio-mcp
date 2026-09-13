@@ -17,6 +17,17 @@ local Paths = require(script.Parent.Paths)
 
 local Serialize = {}
 
+--[[
+	Marks a failure that means "the instance is not there" rather than "this
+	value is wrong".
+
+	The create handler retries only these, once the whole batch is attached, so
+	a reference to a sibling made in the same call resolves. Anything else is a
+	real mistake and is reported straight away.
+]]
+local UNRESOLVED_PREFIX = "[unresolved] "
+Serialize.UNRESOLVED_PREFIX = UNRESOLVED_PREFIX
+
 -- Floats are rounded before display: Studio reports positions like
 -- 12.000000476837158, which costs tokens and means nothing to the caller.
 local PRECISION = 4
@@ -107,6 +118,24 @@ function Serialize.value(value: any): any
 	end
 	if kind == "EnumItem" then
 		return string.format("Enum.%s.%s", tostring(value.EnumType), value.Name)
+	end
+	if kind == "Content" then
+		--[[
+			Written as the bare URI so it can be read back.
+
+			`tostring` on a Content gives `Content{SourceType=Uri,
+			Uri=rbxassetid://123}`, which `parse` cannot take. A Content that
+			holds an Object or no source at all has no URI to give, so those are
+			named rather than rendered as an empty string that would read as
+			"cleared".
+		]]
+		if value.Uri then
+			return value.Uri
+		end
+		if value.Object then
+			return Paths.of(value.Object)
+		end
+		return ""
 	end
 	if kind == "Instance" then
 		--[[
@@ -204,6 +233,51 @@ local function scanTokens(text: string): { number }
 end
 
 --[[
+	ColorSequence and NumberSequence.
+
+	`Serialize.value` has always WRITTEN these -- "0=1, 0, 0 1=0, 0, 1" for a
+	red-to-blue gradient -- and `parse` had no branch for either, so every one of
+	them could be read and none could be written back. That is not a corner:
+	ColorSequence and NumberSequence are what ParticleEmitter, Beam, Trail and
+	UIGradient are made of, so recolouring any effect fell out of `modify`
+	entirely and needed `execute_luau`. Found by auditing the round trip rather
+	than by hitting it.
+
+	Keypoints are split on the "<time>=" markers rather than on whitespace,
+	because the VALUE of a ColorSequence keypoint contains both commas and
+	spaces of its own and nothing else can tell the two apart.
+
+	A bare value is also accepted and means a constant sequence: `Color3` text
+	for a ColorSequence, one number for a NumberSequence. People write
+	`Color = "1, 0, 0"` meaning solid red, and refusing that to insist on
+	"0=1, 0, 0 1=1, 0, 0" would be pedantry.
+]]
+local function splitKeypoints(text: string): { { time: number, value: string } }
+	local marks: { { at: number, finish: number, time: number } } = {}
+	local index = 1
+	while true do
+		local at, finish, captured = string.find(text, "([%d%.]+)%s*=", index)
+		if not at then
+			break
+		end
+		local time = tonumber(captured)
+		if time then
+			table.insert(marks, { at = at, finish = finish, time = time })
+		end
+		index = finish + 1
+	end
+
+	local out: { { time: number, value: string } } = {}
+	for position, mark in marks do
+		local stop = if marks[position + 1] then marks[position + 1].at - 1 else #text
+		local value = string.match(string.sub(text, mark.finish + 1, stop), "^%s*(.-)%s*$") or ""
+		table.insert(out, { time = mark.time, value = value })
+	end
+	return out
+end
+
+
+--[[
 	Parses a serialized string back into a Roblox value, given the target type
 	from the API dump. Returns ok=false with a reason the agent can act on
 	rather than raising, so batch writes can report per-property failures.
@@ -221,8 +295,47 @@ function Serialize.parse(text: any, valueType: string): (boolean, any, string?)
 		return true, text, nil
 	end
 
-	if valueType == "string" or valueType == "Content" or valueType == "ProtectedString" then
+	if valueType == "string" or valueType == "ProtectedString" then
 		return true, tostring(text), nil
+	end
+
+	--[[
+		Asset references come in two shapes with almost the same name.
+
+		`ContentId` is the old one and is still just a string: `MeshPart.MeshId`,
+		`Decal.Texture`, `SurfaceAppearance.ColorMap`. It had no branch here at
+		all, so every one of them failed with `no conversion known for type
+		"ContentId"` -- which is how a SurfaceAppearance could be created but
+		never given a texture.
+
+		`Content` is the new datatype and is NOT a string. Assigning
+		`"rbxassetid://123"` to `AudioPlayer.AudioContent` or
+		`ImageLabel.ImageContent` throws; it wants `Content.fromUri`. This branch
+		used to lump it in with `string` above, so those writes reported a parse
+		success and then failed at assignment with a message about a type the
+		caller never mentioned.
+
+		An empty string means "nothing", the same as it does for an instance
+		reference: `Content.none` is the engine's own name for that.
+	]]
+	if valueType == "ContentId" then
+		return true, tostring(text), nil
+	end
+	if valueType == "Content" then
+		if typeof(text) == "Content" then
+			return true, text, nil
+		end
+		local uri = tostring(text)
+		if uri == "" then
+			return true, Content.none, nil
+		end
+		local okContent, content = pcall(function()
+			return Content.fromUri(uri)
+		end)
+		if okContent then
+			return true, content, nil
+		end
+		return false, nil, string.format('"%s" is not a content URI', uri)
 	end
 	if valueType == "bool" then
 		if kind == "boolean" then
@@ -327,11 +440,124 @@ function Serialize.parse(text: any, valueType: string): (boolean, any, string?)
 		end
 		return false, nil, 'expected "pos x, y, z" or "pos x, y, z | rot rx, ry, rz"'
 	end
-	if valueType == "NumberRange" then
-		if #numbers < 2 then
-			return false, nil, 'expected "min..max"'
+	--[[
+		NumberRange, which the shared tokenizer cannot see.
+
+		`Serialize.value` writes one as "1..3", but `scanTokens` splits on
+		commas, whitespace and brackets -- never on "..", so "1..3" arrives as a
+		single token, `tonumber` returns nil, and the parse failed with `expected
+		"min..max"` while being handed exactly that. A value this module printed
+		could not be fed back to it, which is the one promise the whole file
+		makes. Caught in QA on ParticleEmitter.Lifetime.
+
+		Parsed here directly. A single number is accepted too, because
+		`NumberRange.new(2)` is a real range and people write it that way.
+	]]
+	if valueType == "ColorSequence" then
+		if kind ~= "string" then
+			return false, nil, "expected text like \"0=1, 0, 0 1=0, 0, 1\""
 		end
-		return true, NumberRange.new(numbers[1], numbers[2]), nil
+		local points = splitKeypoints(text)
+		if #points == 0 then
+			-- A bare colour: a sequence that is that colour the whole way.
+			local okColour, colour = Serialize.parse(text, "Color3")
+			if okColour and typeof(colour) == "Color3" then
+				return true, ColorSequence.new(colour :: Color3), nil
+			end
+			return false, nil, "expected \"0=1, 0, 0 1=0, 0, 1\", or one colour for a solid sequence"
+		end
+
+		local keypoints: { ColorSequenceKeypoint } = {}
+		for _, point in points do
+			local okColour, colour = Serialize.parse(point.value, "Color3")
+			if not okColour or typeof(colour) ~= "Color3" then
+				return false, nil, string.format("keypoint at %s is not a colour: %q", tostring(point.time), point.value)
+			end
+			table.insert(keypoints, ColorSequenceKeypoint.new(point.time, colour :: Color3))
+		end
+		-- Roblox requires the first keypoint at 0 and the last at 1, in order, and
+		-- throws an unhelpful error otherwise.
+		table.sort(keypoints, function(a, b)
+			return a.Time < b.Time
+		end)
+		if keypoints[1].Time ~= 0 or keypoints[#keypoints].Time ~= 1 then
+			return false,
+				nil,
+				"a ColorSequence must start at time 0 and end at time 1"
+		end
+		local okBuild, built = pcall(ColorSequence.new, keypoints)
+		if not okBuild then
+			return false, nil, tostring(built)
+		end
+		return true, built, nil
+	end
+
+	if valueType == "NumberSequence" then
+		if kind == "number" then
+			return true, NumberSequence.new(text), nil
+		end
+		if kind ~= "string" then
+			return false, nil, "expected text like \"0=0 1=1\""
+		end
+		local points = splitKeypoints(text)
+		if #points == 0 then
+			local single = tonumber(text)
+			if single then
+				return true, NumberSequence.new(single), nil
+			end
+			return false, nil, "expected \"0=0 1=1\", or one number for a flat sequence"
+		end
+
+		local keypoints: { NumberSequenceKeypoint } = {}
+		for _, point in points do
+			local value = tonumber(point.value)
+			if not value then
+				return false, nil, string.format("keypoint at %s is not a number: %q", tostring(point.time), point.value)
+			end
+			table.insert(keypoints, NumberSequenceKeypoint.new(point.time, value))
+		end
+		table.sort(keypoints, function(a, b)
+			return a.Time < b.Time
+		end)
+		if keypoints[1].Time ~= 0 or keypoints[#keypoints].Time ~= 1 then
+			return false, nil, "a NumberSequence must start at time 0 and end at time 1"
+		end
+		local okBuild, built = pcall(NumberSequence.new, keypoints)
+		if not okBuild then
+			return false, nil, tostring(built)
+		end
+		return true, built, nil
+	end
+
+	--[[
+		Rect, which `Serialize.value` writes and `parse` did not read.
+
+		The last of the write-but-cannot-read set, after NumberRange and the two
+		sequences. Offered in the attribute type list too, so `rect` attributes
+		were advertised and refused in the same breath. Four numbers, in the
+		order the writer emits them: min X, min Y, max X, max Y.
+	]]
+	if valueType == "Rect" then
+		if #numbers < 4 then
+			return false, nil, 'expected "minX, minY, maxX, maxY"'
+		end
+		return true, Rect.new(numbers[1], numbers[2], numbers[3], numbers[4]), nil
+	end
+
+	if valueType == "NumberRange" then
+		if kind == "string" then
+			local low, high = string.match(text, "^%s*(-?[%d%.]+)%s*%.%.%s*(-?[%d%.]+)%s*$")
+			if low and high and tonumber(low) and tonumber(high) then
+				return true, NumberRange.new(tonumber(low) :: number, tonumber(high) :: number), nil
+			end
+		end
+		if #numbers >= 2 then
+			return true, NumberRange.new(numbers[1], numbers[2]), nil
+		end
+		if #numbers == 1 then
+			return true, NumberRange.new(numbers[1]), nil
+		end
+		return false, nil, 'expected "min..max", e.g. "1..3"'
 	end
 
 	--[[
@@ -490,6 +716,40 @@ function Serialize.parse(text: any, valueType: string): (boolean, any, string?)
 					instance.ClassName,
 					valueType
 				)
+		end
+
+		--[[
+			The path did not resolve, and saying so is the whole point.
+
+			This used to fall through to the "no conversion known for type X"
+			line below, which blames the TYPE for what is really a missing
+			instance: setting `HingeConstraint.Attachment0` to a path that did
+			not exist yet reported `no conversion known for type "Attachment"`,
+			sending the reader to look for a serializer that was never the
+			problem. Measured while building a hinge in one `create` call.
+		]]
+		--[[
+			Only text that actually looks like a path is reported as a missing
+			instance -- and only that text is worth retrying later.
+
+			Without this check every unparseable string took this branch: a
+			ColorSequence written as "0=1, 0, 0" came back as `nothing at
+			"0=1, 0, 0"`, which names the wrong problem entirely and sends the
+			create handler off to retry something no amount of waiting will fix.
+
+			The test is whether the first segment names something real at the
+			root of the data model. "Workspace.Nowhere" passes it -- Workspace
+			exists, the rest does not, which is exactly the retryable case --
+			while "0.5" and "0=1, 0, 0" do not.
+		]]
+		local head = string.match(wanted, "^([%a_][%w_]*)%.") or string.match(wanted, "^([%a_][%w_]*)$")
+		local looksLikePath = head ~= nil and pcall(function()
+			return game:FindFirstChild(head :: string) ~= nil or game:GetService(head :: any) ~= nil
+		end)
+		if looksLikePath then
+			return false,
+				nil,
+				string.format('%snothing at "%s" (this property holds a %s)', UNRESOLVED_PREFIX, wanted, valueType)
 		end
 	end
 

@@ -25,6 +25,8 @@ import { registerDeviceTools } from "./tools/device.js";
 import { registerApiTools } from "./tools/api.js";
 import { registerDataTools } from "./tools/data.js";
 import { registerAnimTools } from "./tools/anim.js";
+import { registerAudioTools } from "./tools/audio.js";
+import { registerUniverseTools } from "./tools/universe.js";
 import { registerResources } from "./resources.js";
 
 const VERSION = "0.3.5";
@@ -120,6 +122,8 @@ async function main(): Promise<void> {
   registerInputTools(context);
   registerDeviceTools(context);
   registerApiTools(context);
+  registerAudioTools(context);
+  registerUniverseTools(context);
   registerDataTools(context);
   registerAnimTools(context);
   registerTerrainTools(context);

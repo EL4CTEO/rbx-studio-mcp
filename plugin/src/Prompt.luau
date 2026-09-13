@@ -43,6 +43,7 @@
 ]]
 
 local Themes = require(script.Parent.Themes)
+local Secret = require(script.Parent.Secret)
 
 local Prompt = {}
 
@@ -460,7 +461,10 @@ local function recall(offset: number)
 	showHint()
 end
 
-local function remember(line: string)
+local function remember(raw: string)
+	-- Masked on the way in, so a key cannot be recalled with the up arrow by
+	-- whoever is at the machine next. See `Secret`.
+	local line = Secret.mask(raw)
 	local history = runtime.history
 	-- A line repeated back to back is one entry. Pressing up should walk through
 	-- what was done, not through how many times it was retried.

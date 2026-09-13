@@ -1,6 +1,6 @@
 # Roblox Studio MCP
 
-Let an AI agent drive Roblox Studio: read your place, edit scripts, build geometry, run playtests, take screenshots. 31 tools. MIT.
+Let an AI agent drive Roblox Studio: read your place, edit scripts, build geometry, run playtests, take screenshots. 35 tools. MIT.
 
 ![The Studio MCP panel](docs/rbx-studio.png)
 
@@ -73,11 +73,36 @@ Port is **44755**, loopback only. Change it with `--port` and match it in the pl
 | **Discover** | `tree` `inspect` `find` `api` |
 | **Scripts** | `script_read` `script_edit` `script_grep` `script_create` |
 | **Instances** | `create` `modify` `delete` `move` |
-| **World** | `geometry` `terrain` `generate` `assets` `collision` `undo` |
+| **World** | `geometry` `terrain` `generate` `assets` `collision` `audio` `undo` |
+| **Live game** | `universe` |
 | **Run & debug** | `playtest` `execute_luau` `character` `input` `console` `debug` `performance` |
 | **Look** | `screenshot` `viewport` `device` |
 
 Write tools take arrays — ten script edits is one call, one **Ctrl+Z**, and all-or-nothing.
+
+## Open Cloud
+
+Some calls reach past Studio to Roblox itself. All need one API key; everything else works without it.
+
+| | |
+|---|---|
+| `assets op="upload"` | send a local audio/image/model/video file, get an asset id |
+| `datastore target="live"` | the running game's real player data |
+| `execute_luau target="live"` | run a script on the published place |
+| `universe` | restart servers, message them, ban players |
+| also | `assets op="grant"`, `op="publish"`, `script_read`/`script_edit target="live"` |
+
+Make a key at [Creator Dashboard → Credentials](https://create.roblox.com/dashboard/credentials), adding the permissions you want: `assets`, `universe-datastores`, `ordered-data-stores`, `luau-execution-sessions`, `universe-places`, `universe-place-instances`, `universe`, `messaging-service`, `user-restrictions`, `inventory`, `users`, `asset-permissions`.
+
+Then in the Studio panel:
+
+```
+cloud key <paste>
+cloud user <your user id>
+cloud place <place id>
+```
+
+`cloud place` works out the universe for you. The typed key is masked in the log and in the history, and stored at `~/.rbx-studio-mcp/credentials.json` (mode 0600) — never in the place file, never in the conversation. `cloud` shows what is set, `cloud test` re-checks it, `cloud forget` deletes it. `ROBLOX_API_KEY` and friends in the environment work too and take priority.
 
 Two things to watch: a playtest connects a second session, so pass `studioId` and use the edit one for changes that must last; `device` emulation stays on until `device op="stop"`.
 
@@ -93,6 +118,7 @@ Every call is logged with how long it took. At the foot of the panel is a comman
 | `studios` `use <n>` | which Studio window calls go to |
 | `theme [name]` `visuals` `autoopen [on\|off]` `log [level]` `clear` `copy` | the panel |
 | `port [n]` `reconnect` | the connection |
+| `cloud [key\|user\|group\|test\|forget]` | the Open Cloud key `upload` uses |
 | `agent [use <id>\|new]` `stop` | which agent runs your prompts |
 | anything else | sent to that agent |
 

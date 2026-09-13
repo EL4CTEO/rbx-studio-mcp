@@ -13,6 +13,17 @@
  * foreign object pasted into the session.
  */
 import { type Check, collectChecks } from "../doctor.js";
+import { universeForPlace } from "../lib/opencloud.js";
+import {
+  CREDENTIALS_PATH,
+  credentialStatus,
+  forgetCredentials,
+  loadCredentials,
+  saveApiKey,
+  saveCreator,
+  saveTarget,
+  testCredentials,
+} from "../lib/credentials.js";
 import type { Bridge } from "./rpc.js";
 import {
   type Harness,
@@ -388,6 +399,200 @@ export async function handleConsole(
         return [{ level: "ok", message: "next prompt starts a fresh conversation" }];
       }
       return [{ level: "dim", message: "usage: agent [list|use <id>|new]" }];
+    }
+
+    /**
+     * The Open Cloud credentials `upload` runs on.
+     *
+     * Everything printed here is deliberately non-secret: the key is echoed
+     * back only as its last four characters, which is enough to tell two keys
+     * apart and useless to anyone reading over a shoulder or a screenshot. The
+     * plugin masks the typed line before it reaches the log or the history —
+     * see `Secret.luau` — so the full value exists in exactly two places, the
+     * user's clipboard and a 0600 file in their home directory.
+     */
+    case "cloud": {
+      const verb = (request.args[0] ?? "status").toLowerCase();
+
+      if (verb === "status") {
+        const status = await credentialStatus();
+        if (!status.hasKey) {
+          return [
+            { level: "warn", message: "no Open Cloud key set", detail: "upload cannot run" },
+            { level: "dim", message: "1. create.roblox.com/dashboard/credentials -> Create API Key" },
+            { level: "dim", message: "2. Access Permissions -> add `assets`, tick Read and Write" },
+            { level: "dim", message: "3. add your IP, save, copy the key (it is shown once)" },
+            { level: "dim", message: "4. cloud key <paste it>", detail: "then: cloud user <your user id>" },
+          ];
+        }
+        const lines: ConsoleLine[] = [
+          {
+            level: "ok",
+            message: `key set (ends ${status.keyHint})`,
+            detail: status.source === "environment" ? "from ROBLOX_API_KEY" : CREDENTIALS_PATH,
+          },
+        ];
+        if (status.creatorId === null) {
+          lines.push({
+            level: "warn",
+            message: "no creator set, so uploads will fail",
+            detail: "cloud user <id> — the number in your roblox.com/users/NNN/profile URL",
+          });
+        } else {
+          lines.push({
+            level: "dim",
+            message: `uploading as ${status.creatorField} ${status.creatorId}`,
+          });
+        }
+        lines.push(
+          status.universeId === null
+            ? {
+                level: "dim",
+                message: "no universe set",
+                detail: "cloud universe <id> — needed for live data stores and live Luau",
+              }
+            : { level: "dim", message: `universe ${status.universeId}` },
+        );
+        if (status.placeId !== null) {
+          lines.push({ level: "dim", message: `place ${status.placeId}` });
+        }
+        return lines;
+      }
+
+      if (verb === "key") {
+        const key = request.args[1];
+        if (key === undefined) {
+          return [
+            { level: "dim", message: "usage: cloud key <your Open Cloud API key>" },
+            { level: "dim", message: "the line is masked in the log and in history" },
+          ];
+        }
+        if (request.args.length > 2) {
+          // A key with a space in it is a paste that picked up something else,
+          // and storing it would fail later with a 401 nobody could explain.
+          return [{ level: "error", message: "that key has a space in it — paste it as one word" }];
+        }
+        //[[ Checked BEFORE it is written, so a mistyped key is never stored at
+        // all. A saved-but-broken credential is the state that wastes the most
+        // time, because everything afterwards reports a permissions error.
+        //]]
+        const verdict = await testCredentials(key);
+        if (!verdict.ok) {
+          return [{ level: "error", message: "not saved", detail: verdict.detail }];
+        }
+        await saveApiKey(key);
+        const status = await credentialStatus();
+        const lines: ConsoleLine[] = [
+          { level: "ok", message: `key saved (ends ${key.slice(-4)})`, detail: CREDENTIALS_PATH },
+          { level: "dim", message: "stored for this machine only, readable by you alone" },
+        ];
+        if (status.creatorId === null) {
+          lines.push({ level: "warn", message: "now set who to upload as", detail: "cloud user <id>" });
+        }
+        return lines;
+      }
+
+      if (verb === "user" || verb === "group") {
+        const id = request.args[1];
+        if (id === undefined || !/^\d+$/.test(id)) {
+          return [
+            { level: "dim", message: `usage: cloud ${verb} <numeric id>` },
+            {
+              level: "dim",
+              message:
+                verb === "user"
+                  ? "the number in your roblox.com/users/NNN/profile URL"
+                  : "the number in your roblox.com/groups/NNN/... URL",
+            },
+          ];
+        }
+        await saveCreator(verb === "user" ? "userId" : "groupId", id);
+        return [
+          { level: "ok", message: `uploads will be created by ${verb} ${id}` },
+          { level: "dim", message: "the other kind of creator was cleared" },
+        ];
+      }
+
+      if (verb === "universe" || verb === "place") {
+        const id = request.args[1];
+        if (id === undefined || !/^\d+$/.test(id)) {
+          return [
+            { level: "dim", message: `usage: cloud ${verb} <numeric id>` },
+            {
+              level: "dim",
+              message:
+                verb === "universe"
+                  ? "Creator Dashboard -> hover the game -> ⋯ -> Copy Universe ID"
+                  : "the number after /places/ in the place's configure URL",
+            },
+          ];
+        }
+        await saveTarget(verb === "universe" ? "universeId" : "placeId", id);
+
+        //[[ Setting a place says which game you mean, so the universe is
+        // derived rather than asked for a second time. Only when it is not
+        // already set: an explicit `cloud universe` should not be undone by a
+        // later `cloud place`.
+        //]]
+        if (verb === "place") {
+          const current = await credentialStatus();
+          if (current.universeId === null) {
+            const derived = await universeForPlace(id);
+            if (derived !== null) {
+              await saveTarget("universeId", derived);
+              return [
+                { level: "ok", message: `place set to ${id}` },
+                { level: "ok", message: `universe ${derived}`, detail: "worked out from the place" },
+              ];
+            }
+          }
+        }
+
+        return [
+          { level: "ok", message: `${verb} set to ${id}` },
+          {
+            level: "dim",
+            message:
+              verb === "universe"
+                ? "live data stores and live Luau now act on this game"
+                : "place publishing and live Luau now act on this place",
+          },
+        ];
+      }
+
+      if (verb === "test") {
+        const status = await credentialStatus();
+        if (!status.hasKey) return [{ level: "warn", message: "no key set", detail: "cloud key <k>" }];
+        // Re-read rather than trusting the status: this asks Roblox, and a key
+        // can be revoked or have its IP list changed after it was saved.
+        const loaded = await loadCredentials();
+        if (loaded === null) {
+          return [{ level: "warn", message: "key set but no creator", detail: "cloud user <id>" }];
+        }
+        const verdict = await testCredentials(loaded.apiKey);
+        return [
+          { level: verdict.ok ? "ok" : "error", message: verdict.detail },
+          { level: "dim", message: `uploading as ${loaded.creatorField} ${loaded.creatorId}` },
+        ];
+      }
+
+      if (verb === "forget") {
+        const removed = await forgetCredentials();
+        return removed
+          ? [
+              { level: "ok", message: "stored credentials deleted", detail: CREDENTIALS_PATH },
+              { level: "dim", message: "revoke the key itself on the Creator Dashboard too" },
+            ]
+          : [{ level: "dim", message: "there was nothing stored to delete" }];
+      }
+
+      return [
+        {
+          level: "dim",
+          message:
+            "usage: cloud [key <k>|user <id>|group <id>|universe <id>|place <id>|test|forget]",
+        },
+      ];
     }
 
     case "stop": {

@@ -1,5 +1,8 @@
 import { z } from "zod";
 import { json, table, text, type ToolResult } from "../lib/format.js";
+import { ToolError } from "../lib/errors.js";
+import { runLiveLuau } from "../lib/liveluau.js";
+import { requireCredentials, requirePlace, requireUniverse } from "../lib/opencloud.js";
 import { defineTool, type ToolContext } from "../lib/tool.js";
 
 interface ExecResponse {
@@ -88,7 +91,18 @@ export function registerExecTools(context: ToolContext): void {
         "a zero is indistinguishable from a genuine zero. Read live state off the " +
         "DataModel instead (instances, attributes, properties), or have the game " +
         "print it and read that with `console`. The result warns when a call could " +
-        "have hit this.",
+        "have hit this.\n\n" +
+        "`target=\"live\"` runs the script on Roblox's servers against the " +
+        "PUBLISHED place instead, with no Studio involved. That is how you " +
+        "read or repair production: a real player's data store entry, what " +
+        "the live game actually holds, a migration over saved data. " +
+        "Everything the script prints comes back in `logs`.\n\n" +
+        "BE CAREFUL WITH IT. The Studio path has an undo stack and a place " +
+        "nobody is playing. This one touches live data and live players, and " +
+        "nothing here can put any of it back — so it needs `confirm: true` " +
+        "and you should read before you write. Roblox queues it as a task, " +
+        "so expect seconds, not milliseconds, and a `state` of COMPLETE or " +
+        "FAILED rather than a bare value.",
       inputSchema: {
         source: z
           .string()
@@ -97,11 +111,55 @@ export function registerExecTools(context: ToolContext): void {
             "Luau to run. In an editor session this has plugin permissions, so " +
               "`game`, `workspace` and plugin-only APIs are all reachable.",
           ),
+        target: z
+          .enum(["studio", "live"])
+          .default("studio")
+          .describe(
+            "'studio' runs in the connected Studio, with plugin " +
+              "permissions. 'live' runs on Roblox's servers against the " +
+              "published place — production, with no undo.",
+          ),
+        universeId: z.string().optional().describe("live only: which game. Omit to use `cloud universe`."),
+        placeId: z.string().optional().describe("live only: which place. Omit to use `cloud place`."),
+        timeoutSeconds: z
+          .number()
+          .int()
+          .min(1)
+          .max(300)
+          .optional()
+          .describe("live only: how long the script may run. Defaults to 30."),
+        confirm: z
+          .boolean()
+          .optional()
+          .describe(
+            "Required for target=\"live\". This runs against the game people " +
+              "are playing and nothing here can undo it.",
+          ),
         studioId: z.string().optional().describe("Target Studio; omit for the active one."),
       },
       destructive: true,
     },
     async (args): Promise<ToolResult> => {
+      if (args.target === "live") {
+        if (args.confirm !== true) {
+          throw new ToolError(
+            "NEEDS_CONFIRM",
+            "This would run against the published game, where people are playing.",
+            "There is no undo and no recording. Read the script once more, " +
+              "then pass confirm: true.",
+          );
+        }
+        const credentials = await requireCredentials();
+        return json(
+          await runLiveLuau(credentials, {
+            universeId: await requireUniverse(args.universeId),
+            placeId: await requirePlace(args.placeId),
+            source: args.source,
+            timeoutSeconds: args.timeoutSeconds ?? 30,
+          }),
+        );
+      }
+
       const response = await bridge.call<ExecResponse>(
         "exec.run",
         { source: args.source },

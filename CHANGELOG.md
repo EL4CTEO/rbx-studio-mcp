@@ -2,6 +2,21 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.6.7
+
+### Added
+- **`collision` cast and overlap** — find what is physically there: a door clipping a wall, a blocked sightline.
+- **`geometry mirror`** — flip things across a plane. Studio cannot do this.
+- **`assets insert stripScripts`** — take a free model's geometry without its code.
+- **`audio`** — build and read the modern audio graph, and find the broken wire that makes it silent.
+- **Open Cloud**, via one key set with `cloud` in the panel: upload files, read and write the **live** game's player data, run scripts on the published place, restart servers, ban players.
+
+### Fixed
+- **Hinges and rigs work in one `create` call.** References to siblings resolve now; they needed two calls before.
+- **`NumberRange`, `ColorSequence`, `NumberSequence` and `Rect` can be written**, not just read. Recolouring a ParticleEmitter or UIGradient works.
+- **Asset properties can be set at all** — `SurfaceAppearance.ColorMap`, `AudioPlayer.AudioContent` and every other `ContentId`/`Content`.
+- **A missing instance names the path** instead of blaming the type.
+
 ## 0.6.5
 
 ### Added

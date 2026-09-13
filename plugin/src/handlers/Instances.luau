@@ -116,7 +116,17 @@ end
 	model appears in the Explorer complete rather than assembling itself piece by
 	piece in front of the user.
 ]]
-local function build(spec: { [string]: any }, parent: Instance, created: { Instance })
+--[[
+	One property that could not be applied yet, kept for a second attempt.
+]]
+type Deferred = { target: Instance, name: string, spec: PropertySpec, className: string }
+
+local function build(
+	spec: { [string]: any },
+	parent: Instance,
+	created: { Instance },
+	deferred: { Deferred }
+)
 	local ok, instance = pcall(Instance.new, spec.className)
 	if not ok or typeof(instance) ~= "Instance" then
 		Dispatch.fail(
@@ -132,11 +142,37 @@ local function build(spec: { [string]: any }, parent: Instance, created: { Insta
 		target.Name = spec.name
 	end
 
+	--[[
+		A property naming an instance that does not exist YET is set aside, not
+		failed.
+
+		The whole subtree is assembled detached and attached at the very end --
+		see the last line of this function -- so while a batch is being built,
+		nothing in it is reachable by path. That made a one-call rig impossible:
+		a HingeConstraint could not point at the Attachment created two lines
+		above it, a Motor6D could not find its Part0, and the tool's own promise
+		of "build a whole model in a single call" stopped exactly where joints
+		began. Each of those needed a second `create` call, which is also a
+		second undo step.
+
+		So these are retried once the batch is attached. Anything else -- a
+		misspelled enum, a malformed Vector3 -- still fails immediately, because
+		waiting cannot make it right.
+	]]
 	local failures: { string } = {}
 	for name, property in (spec.properties or {}) :: { [string]: PropertySpec } do
 		local failure = applyProperty(target, name, property)
 		if failure then
-			table.insert(failures, failure)
+			if string.find(failure, Serialize.UNRESOLVED_PREFIX, 1, true) then
+				table.insert(deferred, {
+					target = target,
+					name = name,
+					spec = property,
+					className = tostring(spec.className),
+				})
+			else
+				table.insert(failures, failure)
+			end
 		end
 	end
 	for _, failure in applyAttributes(target, (spec.attributes or {}) :: { [string]: any }) do
@@ -158,7 +194,7 @@ local function build(spec: { [string]: any }, parent: Instance, created: { Insta
 	-- Recorded parent-first, so the response reads top-down like the Explorer.
 	table.insert(created, target)
 	for _, child in (spec.children or {}) :: { { [string]: any } } do
-		build(child, target, created)
+		build(child, target, created, deferred)
 	end
 
 	target.Parent = parent
@@ -183,8 +219,52 @@ function Instances.create(params: { [string]: any }): { [string]: any }
 
 	local created, recorded = Undo.record("StudioMCP.Create", "MCP create", function()
 		local built: { Instance } = {}
+		local deferred: { Deferred } = {}
 		for _, spec in specs do
-			build(spec, Paths.resolve(spec.parent), built)
+			build(spec, Paths.resolve(spec.parent), built, deferred)
+		end
+
+		--[[
+			Second pass, after everything is attached.
+
+			Now every instance in the batch is reachable by path, so a reference
+			to a sibling resolves. A failure here is real -- the path names
+			something that was never going to exist -- and it fails the batch,
+			which cancels the recording and leaves the place untouched.
+		]]
+		local failures: { string } = {}
+		for _, entry in deferred do
+			local failure = applyProperty(entry.target, entry.name, entry.spec)
+			if failure then
+				--[[
+					Stripped with find+sub, NOT gsub.
+
+					`string.gsub` takes a Lua PATTERN, and the marker is
+					"[unresolved] " -- which as a pattern is a character class
+					matching any one of u, n, r, e, s, o, l, v, d. It quietly
+					ate those letters out of the whole message, turning "this
+					property holds a BasePart" into "thiproperty holda
+					BasePart". Caught in QA; the message is the only thing a
+					reader gets here, so a mangled one is the whole failure.
+
+					The property name is already inside `failure`, so it is not
+					prepended a second time -- that read as "Part1: Part1: ...".
+				]]
+				local clean = failure
+				local at = string.find(clean, Serialize.UNRESOLVED_PREFIX, 1, true)
+				if at then
+					clean = string.sub(clean, 1, at - 1)
+						.. string.sub(clean, at + #Serialize.UNRESOLVED_PREFIX)
+				end
+				table.insert(failures, string.format("%s.%s", entry.className, clean))
+			end
+		end
+		if #failures > 0 then
+			Dispatch.fail(
+				"BAD_PROPERTY",
+				string.format("Could not set %d reference(s) after the batch was built.", #failures),
+				table.concat(failures, "; ")
+			)
 		end
 		return built
 	end)

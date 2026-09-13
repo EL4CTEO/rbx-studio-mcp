@@ -1,5 +1,9 @@
 import { z } from "zod";
+import { ToolError } from "../lib/errors.js";
 import { json, table, text, textOf, type ToolResult } from "../lib/format.js";
+import { liveDataStore } from "../lib/livedata.js";
+import { snapshotDataStores } from "../lib/liveops.js";
+import { requireCredentials, requireUniverse } from "../lib/opencloud.js";
 import { defineTool, type ToolContext } from "../lib/tool.js";
 
 interface Row {
@@ -29,6 +33,104 @@ interface DataResponse {
  * so the ceiling is generous on purpose.
  */
 const TIMEOUT_MS = 45_000;
+
+/**
+ * The live path: Open Cloud instead of the Studio bridge.
+ *
+ * Writes are gated on `confirm` exactly as the Studio path is, and for a
+ * stronger reason — this is the data of people who are playing right now, and
+ * there is no undo, no recording, and no "it was only the Studio copy".
+ */
+async function live(args: {
+  op: "list" | "get" | "versions" | "set" | "remove" | "increment" | "snapshot";
+  kind: "data" | "memory" | "ordered";
+  universeId?: string;
+  store?: string;
+  scope?: string;
+  key?: string;
+  value?: string;
+  amount?: number;
+  create?: boolean;
+  limit?: number;
+  cursor?: string;
+  confirm?: boolean;
+}): Promise<ToolResult> {
+  if (args.kind === "memory") {
+    throw new ToolError(
+      "UNSUPPORTED",
+      'MemoryStore over Open Cloud is not wired up here yet (target="live").',
+      'Use target="studio" for now. Roblox does expose memory stores over Open ' +
+        "Cloud (queues and sorted maps under /cloud/v2/universes/.../memory-store), " +
+        "it simply has no route through this tool yet — so this is a gap here, " +
+        "not a platform limit.",
+    );
+  }
+
+  const writing = args.op === "set" || args.op === "remove" || args.op === "increment";
+  if (writing && args.confirm !== true) {
+    throw new ToolError(
+      "NEEDS_CONFIRM",
+      `A live ${args.op} changes the data of players in the running game.`,
+      "Nothing here can undo it. Read the key first, then pass confirm: true.",
+    );
+  }
+
+  const credentials = await requireCredentials();
+  const universe = await requireUniverse(args.universeId);
+
+  if (args.op === "snapshot") {
+    // Handled before this function is reached; narrowed here so the shared
+    // LiveArgs type does not have to carry an op it has no path for.
+    throw new ToolError("UNREACHABLE", "snapshot is handled before the live path.");
+  }
+
+  const result = await liveDataStore(credentials, {
+    op: args.op,
+    kind: args.kind === "ordered" ? "ordered" : "data",
+    universe,
+    store: args.store,
+    scope: args.scope,
+    key: args.key,
+    value: args.value,
+    amount: args.amount,
+    limit: args.limit ?? 50,
+    cursor: args.cursor,
+    create: args.create,
+  });
+
+  const items = result["items"] as Array<Record<string, unknown>> | undefined;
+  if (items) {
+    if (items.length === 0) {
+      return text(
+        args.kind === "ordered"
+          ? `${args.store} has no entries in scope "${args.scope ?? "global"}". An ordered ` +
+              'store written with no scope lands in "global"; one written with a scope ' +
+              "is invisible from any other."
+          : args.store === undefined
+            ? `Universe ${universe} has no data stores.`
+            : `Nothing in ${args.store}. Check the \`scope\` — keys written under one are ` +
+                "invisible without it.",
+      );
+    }
+    const columns =
+      args.kind === "ordered"
+        ? ["rank", "key", "value"]
+        : args.op === "versions"
+          ? ["version", "created", "deleted"]
+          : args.store === undefined
+            ? ["store", "created", "state"]
+            : ["key", "state"];
+    return text(
+      textOf(
+        table(columns, items, {
+          more: result["truncated"] === true ? "more available — raise `limit`" : undefined,
+        }),
+      ),
+    );
+  }
+
+  return json(result);
+}
 
 export function registerDataTools(context: ToolContext): void {
   const { bridge } = context;
@@ -60,17 +162,65 @@ export function registerDataTools(context: ToolContext): void {
         "DataStore needs 'Enable Studio Access to API Services' ticked in Game " +
         "Settings → Security, and a published place. If it is off, this tool " +
         "says so in those words rather than reporting the raw 502. MemoryStore " +
-        "needs neither.",
+        "needs neither.\n\n" +
+        "`target=\"live\"` is the other half of this tool and the one that " +
+        "answers a real bug report. It goes to Roblox directly instead of " +
+        "through Studio, so it sees exactly what the running servers see — not " +
+        "what the place happens to be connected to, and with no Studio API " +
+        "toggle involved. Use it whenever the question is about a player who is " +
+        "actually playing. It needs an Open Cloud key and a universe id; the " +
+        "user sets both once with `cloud` in the Studio panel.\n\n" +
+        "`kind=\"ordered\"` (live only) is OrderedDataStoreService, the " +
+        "leaderboard backend: numbers only, always sorted, no history. `list` " +
+        "returns it ranked highest first, which is the leaderboard itself.\n\n" +
+        "`op=\"snapshot\"` is the safety net. It tells Roblox to snapshot " +
+        "every data store in the experience, so support can roll them back. " +
+        "TAKE ONE BEFORE ANY LIVE WRITE. Roblox allows one per experience " +
+        "per UTC day, and the result says whether this call actually took " +
+        "one — a second call the same day reports success while doing " +
+        "nothing, and anything written since the first one is not covered.",
       inputSchema: {
+        target: z
+          .enum(["studio", "live"])
+          .default("studio")
+          .describe(
+            "'studio' reads through the connected Studio — right while " +
+              "building. 'live' goes to Roblox over Open Cloud and sees what " +
+              "the published game's servers see — right for a bug report.",
+          ),
+        universeId: z
+          .string()
+          .optional()
+          .describe(
+            "live only: which game. Omit to use the one set with `cloud " +
+              "universe <id>` in the panel.",
+          ),
+        amount: z
+          .number()
+          .optional()
+          .describe(
+            'live increment only: how much to add. Negative subtracts. Safer ' +
+              "than get-then-set for currency, which loses whatever the player " +
+              "earned in between.",
+          ),
+        create: z
+          .boolean()
+          .optional()
+          .describe(
+            "live set only: allow writing a key that does not exist yet. Off " +
+              "by default — Open Cloud separates create from update, and a " +
+              "typo'd key silently creating a second empty save beside the real " +
+              "one is exactly what looks like a player's data resetting.",
+          ),
         op: z
-          .enum(["list", "get", "versions", "set", "remove"])
+          .enum(["list", "get", "versions", "set", "remove", "increment", "snapshot"])
           .default("list")
           .describe(
             "'list' shows stores (no `store`) or a store's keys (with one). " +
               "'versions' is DataStore only and is how you see a key's history.",
           ),
         kind: z
-          .enum(["data", "memory"])
+          .enum(["data", "memory", "ordered"])
           .default("data")
           .describe(
             "'data' = DataStoreService, permanent and versioned. 'memory' = " +
@@ -144,6 +294,32 @@ export function registerDataTools(context: ToolContext): void {
       destructive: true,
     },
     async (args): Promise<ToolResult> => {
+      if (args.op === "snapshot") {
+        const { requireCredentials: needKey, requireUniverse: needUniverse } = await import(
+          "../lib/opencloud.js"
+        );
+        return json(
+          await snapshotDataStores(await needKey(), await needUniverse(args.universeId)),
+        );
+      }
+
+      if (args.target === "live") return live(args);
+
+      if (args.kind === "ordered") {
+        throw new ToolError(
+          "UNSUPPORTED",
+          'kind="ordered" only works with target="live".',
+          "Studio has no way to enumerate an OrderedDataStore; Open Cloud does.",
+        );
+      }
+      if (args.op === "increment") {
+        throw new ToolError(
+          "UNSUPPORTED",
+          'op="increment" only works with target="live".',
+          'Read with `get` and write with `set` against Studio, or use target="live".',
+        );
+      }
+
       const response = await bridge.call<DataResponse>(
         `data.${args.op}`,
         {

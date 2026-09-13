@@ -1,14 +1,8 @@
 import { z } from "zod";
-import {
-  body,
-  cursorSchema,
-  decodeCursor,
-  encodeCursor,
-  limitSchema,
-  table,
-  text,
-  type ToolResult,
-} from "../lib/format.js";
+import { body, cursorSchema, decodeCursor, encodeCursor, json, limitSchema, table, text, type ToolResult } from "../lib/format.js";
+import { ToolError } from "../lib/errors.js";
+import { liveChildren, liveInstance, liveScriptWrite, resolveLivePath } from "../lib/liveops.js";
+import { requireCredentials, requirePlace, requireUniverse } from "../lib/opencloud.js";
 import { defineTool, type ToolContext } from "../lib/tool.js";
 
 interface ReadResponse {
@@ -101,7 +95,16 @@ export function registerScriptTools(context: ToolContext): void {
         "`open` puts a script on the user's screen at a line, instead of telling " +
         "them where to look. Ask for it when you are pointing at something they " +
         "should see; it is not automatic, and reading twenty scripts does not " +
-        "rearrange their editor.",
+        "rearrange their editor.\n\n" +
+        "`target=\"live\"` reads the code of the PUBLISHED place instead, with " +
+        "no Studio involved — which is how you check what is actually " +
+        "deployed rather than what is on someone's machine. Two limits are " +
+        "real and worth knowing before you reach for it: Roblox's Instance " +
+        "API can only see Folders and scripts, so a path through a Model or " +
+        "a Part cannot be walked at all; and it addresses things by GUID " +
+        "with no search, so each segment of the path costs a round trip. " +
+        "Expect seconds. `list: true` shows what is under a path instead of " +
+        "reading it, which is how you find your way down.",
       inputSchema: {
         op: z
           .enum(["read", "open"])
@@ -116,6 +119,22 @@ export function registerScriptTools(context: ToolContext): void {
           .min(1)
           .optional()
           .describe("open only: line to put the cursor on."),
+        target: z
+          .enum(["studio", "live"])
+          .default("studio")
+          .describe(
+            "'studio' reads the open place. 'live' reads the published " +
+              "place over Open Cloud, Folders and scripts only.",
+          ),
+        list: z
+          .boolean()
+          .optional()
+          .describe(
+            "live only: list what is under the first path instead of reading " +
+              "it. Pass an empty path list to see the top level.",
+          ),
+        universeId: z.string().optional().describe("live only: omit to use `cloud universe`."),
+        placeId: z.string().optional().describe("live only: omit to use `cloud place`."),
         paths: z
           .array(
             z.union([
@@ -169,6 +188,53 @@ export function registerScriptTools(context: ToolContext): void {
       destructive: false,
     },
     async (args): Promise<ToolResult> => {
+      if (args.target === "live") {
+        const credentials = await requireCredentials();
+        const universeId = await requireUniverse(args.universeId);
+        const placeId = await requirePlace(args.placeId);
+        const first = args.paths[0];
+        const wanted = typeof first === "string" ? first : first?.path;
+
+        if (args.list === true) {
+          // An empty path means the root, which is how you start exploring a
+          // place you have never walked from the outside.
+          const at =
+            wanted === undefined || wanted === ""
+              ? { id: "root" }
+              : await resolveLivePath(credentials, { universeId, placeId, path: wanted });
+          const children = await liveChildren(credentials, {
+            universeId,
+            placeId,
+            instanceId: at.id,
+            limit: 100,
+          });
+          const items = children["items"] as Array<Record<string, unknown>>;
+          if (items.length === 0) {
+            return text(
+              `Nothing under ${wanted ?? "the root"} that the Instance API can see. ` +
+                "It only reports Folders and scripts.",
+            );
+          }
+          return table(["name", "className", "hasChildren"], items);
+        }
+
+        if (wanted === undefined) return text('live read needs a path in `paths`.');
+        const at = await resolveLivePath(credentials, { universeId, placeId, path: wanted });
+        const read = await liveInstance(credentials, {
+          universeId,
+          placeId,
+          instanceId: at.id,
+        });
+        const source = read["source"];
+        if (typeof source !== "string") {
+          return text(
+            `${wanted} is a ${read["className"]}, which holds no source. ` +
+              "Use `list: true` to see what is inside it.",
+          );
+        }
+        return body(source, `${wanted} (${read["className"]}, published place)`);
+      }
+
       if (args.op === "open") {
         /*
          * One path, not the batch. Opening is a thing that happens to the
@@ -298,8 +364,29 @@ export function registerScriptTools(context: ToolContext): void {
         "Writes go through `ScriptEditorService:UpdateSourceAsync`, so an open " +
         "editor tab updates in place and unsaved work is preserved. Undo for " +
         "source changes is the script editor's own, per script — Ctrl+Z in a " +
-        "script tab reverts that script, not the whole batch.",
+        "script tab reverts that script, not the whole batch.\n\n" +
+        "`target=\"live\"` edits the PUBLISHED place instead. It takes ONE " +
+        "edit, it replaces the whole `source` rather than finding and " +
+        "replacing, and there is no undo of any kind — so read the script " +
+        "with `script_read target=\"live\"` first and send back the whole " +
+        "thing. Needs `confirm: true`.\n\n" +
+        "It changes the SAVED place, not running servers: people already " +
+        "playing keep the old code until their server empties. Follow it " +
+        "with `universe op=\"restart\"` to roll them over.",
       inputSchema: {
+        target: z
+          .enum(["studio", "live"])
+          .default("studio")
+          .describe(
+            "'studio' edits the open place. 'live' rewrites a script in the " +
+              "published place over Open Cloud — one file, whole source, no " +
+              "undo.",
+          ),
+        path: z.string().optional().describe('live only: the script, e.g. "ServerScriptService.Main".'),
+        source: z.string().optional().describe("live only: the complete new source."),
+        universeId: z.string().optional().describe("live only: omit to use `cloud universe`."),
+        placeId: z.string().optional().describe("live only: omit to use `cloud place`."),
+        confirm: z.boolean().optional().describe('Required for target="live".'),
         edits: z
           .array(
             z.object({
@@ -357,7 +444,6 @@ export function registerScriptTools(context: ToolContext): void {
                 ),
             }),
           )
-          .min(1)
           .max(50)
           .describe("Edits to apply together as one undoable step."),
         studioId: z.string().optional().describe("Target Studio; omit for the active one."),
@@ -365,6 +451,42 @@ export function registerScriptTools(context: ToolContext): void {
       destructive: true,
     },
     async (args): Promise<ToolResult> => {
+      if (args.target === "live") {
+        if (!args.path || args.source === undefined) {
+          throw new ToolError("BAD_PARAMS", 'live edit needs `path` and `source`.');
+        }
+        if (args.confirm !== true) {
+          throw new ToolError(
+            "NEEDS_CONFIRM",
+            "This rewrites a script in the published place.",
+            "There is no undo. Read it with `script_read target=\"live\"` first " +
+              "and send back the whole file, then pass confirm: true.",
+          );
+        }
+        const credentials = await requireCredentials();
+        const universeId = await requireUniverse(args.universeId);
+        const placeId = await requirePlace(args.placeId);
+        const at = await resolveLivePath(credentials, { universeId, placeId, path: args.path });
+        if (at.className !== "Script" && at.className !== "LocalScript" && at.className !== "ModuleScript") {
+          throw new ToolError(
+            "WRONG_KIND",
+            `${args.path} is a ${at.className}, which has no source to write.`,
+          );
+        }
+        return json(
+          await liveScriptWrite(credentials, {
+            universeId,
+            placeId,
+            instanceId: at.id,
+            className: at.className,
+            source: args.source,
+          }),
+        );
+      }
+
+      if (!args.edits || args.edits.length === 0) {
+        throw new ToolError("BAD_PARAMS", "script_edit needs at least one entry in `edits`.");
+      }
       const response = await bridge.call<EditResponse>(
         "script.edit",
         { edits: args.edits },

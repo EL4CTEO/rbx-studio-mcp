@@ -102,6 +102,54 @@ function Assets.insert(params: { [string]: any }): { [string]: any }
 		end
 	end
 
+	--[[
+		Scripts stripped BEFORE anything is parented.
+
+		The order is the whole point. A free model's scripts run the moment the
+		place is played, and one that is parented first and cleaned up a
+		fraction of a second later has already been given a foothold -- a
+		`Script` with `RunContext = Legacy` will not execute in edit mode, but
+		`Plugin` run context does, and nothing here should depend on knowing
+		which one an unknown model used.
+
+		This is the most-requested missing piece in Studio's own Toolbox: there
+		is no way to insert a model without its code, so people take the
+		geometry they want and the scripts they did not ask for together.
+	]]
+	local stripped = 0
+	if params.stripScripts == true then
+		for _, child in children do
+			if child:IsA("LuaSourceContainer") then
+				child:Destroy()
+				stripped += 1
+			else
+				for _, descendant in child:GetDescendants() do
+					if descendant:IsA("LuaSourceContainer") then
+						descendant:Destroy()
+						stripped += 1
+					end
+				end
+			end
+		end
+		-- A model that was nothing BUT scripts is now empty, and parenting
+		-- nothing silently is worse than saying so.
+		local remaining: { Instance } = {}
+		for _, child in children do
+			if child.Parent ~= nil or child:IsDescendantOf(game) or child.Name ~= "" then
+				if not child:IsA("LuaSourceContainer") then
+					table.insert(remaining, child)
+				end
+			end
+		end
+		children = remaining
+		if #children == 0 then
+			Dispatch.fail(
+				"EMPTY_ASSET",
+				string.format("Asset %d was nothing but scripts, and stripScripts removed them all.", assetId)
+			)
+		end
+	end
+
 	local inserted: { string } = {}
 	local _, undoable = Undo.record("MCPInsertAsset", "MCP insert asset", function()
 		for _, child in children do
@@ -133,8 +181,9 @@ function Assets.insert(params: { [string]: any }): { [string]: any }
 	return {
 		inserted = inserted,
 		assetId = assetId,
-		scriptCount = scriptCount,
-		scripts = if scriptCount > 0 then scriptNames else nil,
+		scriptCount = if params.stripScripts == true then 0 else scriptCount,
+		scripts = if scriptCount > 0 and params.stripScripts ~= true then scriptNames else nil,
+		strippedScripts = if params.stripScripts == true then stripped else nil,
 		undoable = undoable,
 	}
 end

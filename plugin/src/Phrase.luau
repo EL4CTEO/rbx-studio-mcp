@@ -460,6 +460,48 @@ local DESCRIBERS: { [string]: Describer } = {
 		return string.format("Set %s against %s", group, tostring(params.with or "?"))
 	end,
 
+	["geometry.mirror"] = function(params)
+		local axis = string.upper(tostring(params.axis or "X"))
+		local what = plural(count(params.paths), "instance")
+		if params.copy == false then
+			return string.format("Flip %s across %s", what, axis)
+		end
+		return string.format("Mirror %s across %s", what, axis)
+	end,
+
+	["spatial.cast"] = function(params)
+		local shape = tostring(params.shape or "ray")
+		local target = if params.to ~= nil then tostring(params.to) else nil
+		if target ~= nil then
+			return string.format("Cast a %s at %s", shape, target)
+		end
+		return string.format("Cast a %s from %s", shape, tostring(params.from or "?"))
+	end,
+	["spatial.overlap"] = function(params)
+		local region = tostring(params.region or "box")
+		if region == "part" then
+			local name = leaf(params.path)
+			return if name ~= nil then "Find what overlaps " .. name else "Find overlapping parts"
+		end
+		return string.format("Find parts in a %s at %s", region, tostring(params.at or "?"))
+	end,
+
+	["audio.wire"] = function(params)
+		return string.format("Wire %s to %s", leaf(params.from) or "?", leaf(params.to) or "?")
+	end,
+	["audio.graph"] = function(params)
+		local kind = tostring(params.kind or "world")
+		local where = leaf(params.parent)
+		if kind == "ui" then
+			return "Build a UI sound"
+		end
+		return if where ~= nil then "Build a sound on " .. where else "Build a world sound"
+	end,
+	["audio.inspect"] = function(params)
+		local name = leaf(params.path)
+		return if name ~= nil then "Read the audio graph in " .. name else "Read the audio graph"
+	end,
+
 	["character.moveTo"] = function(params)
 		local name = leaf(params.path)
 		return if name ~= nil then "Walk to " .. name else string.format("Walk to %s", tostring(params.to or "?"))
@@ -712,6 +754,10 @@ local KINDS: { [string]: string } = {
 	perf = "debug",
 	api = "read",
 	device = "read",
+	-- Casts and overlap tests only look; nothing in the group writes.
+	spatial = "read",
+	-- Wiring and graph building write; `audio.inspect` is carved out below.
+	audio = "write",
 	--[[
 		Absent groups defaulted to "read", which is the wrong way round for a
 		default: a missing entry made `terrain.clear` and `data.set` -- one of
@@ -733,6 +779,10 @@ function Phrase.kindOf(op: string): string
 	if group == "script" then
 		local action = string.match(op, "%.(.+)$") or ""
 		return if action == "read" or action == "grep" then "read" else "write"
+	end
+	-- Same shape as the script group: one read sitting among writes.
+	if op == "audio.inspect" then
+		return "read"
 	end
 	return KINDS[group] or "read"
 end

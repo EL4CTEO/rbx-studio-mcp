@@ -1,5 +1,9 @@
 import { z } from "zod";
+import { grantAssets, publishPlace, uploadAsset } from "../lib/cloudassets.js";
+import { ToolError } from "../lib/errors.js";
 import { json, table, text, textOf, type ToolResult } from "../lib/format.js";
+import { assetQuotas, restartServers } from "../lib/liveops.js";
+import { requireCredentials, requirePlace, requireUniverse } from "../lib/opencloud.js";
 import { defineTool, type ToolContext } from "../lib/tool.js";
 
 interface GeometryResponse {
@@ -308,17 +312,40 @@ export function registerWorldTools(context: ToolContext): void {
         "owner OWNS. Roblox refuses to open anyone else's, so a model inserted " +
         "from the Creator Store cannot be measured this way — the tool says which " +
         "parts were skipped rather than failing the whole batch.\n\n" +
+        "`mirror` flips instances across a plane and has no engine API behind " +
+        "it — Studio simply cannot do this, which is why people ask for it. " +
+        "Mirroring about the middle of the selection is the default, because " +
+        "mirroring a building at x=200 about the world origin puts it 400 " +
+        "studs away rather than flipping it in place. It COPIES by default; " +
+        "pass `copy: false` to flip the originals. MeshParts move and rotate " +
+        "correctly but their meshes are not remade, so an asymmetric mesh " +
+        "still reads the same way round.\n\n" +
         "`segment` runs Roblox's Cube model and takes tens of seconds; the rest " +
         "are fast. Each call is one undo step.",
       inputSchema: {
         op: z
-          .enum(["union", "subtract", "intersect", "fragment", "sweep", "segment", "mesh"])
+          .enum(["union", "subtract", "intersect", "fragment", "sweep", "segment", "mesh", "mirror"])
           .describe(
             "'union' merges, 'subtract' cuts `with` out of `path`, 'intersect' " +
               "keeps only the overlap, 'fragment' shatters into debris, 'sweep' " +
               "builds a motion volume, 'segment' cuts a mesh into named parts.",
           ),
         path: z.string().describe("The part being operated on - the one cut from, for subtract."),
+        about: z
+          .string()
+          .optional()
+          .describe(
+            'mirror only: the plane position, e.g. "0, 0, 0". Defaults to ' +
+              "the middle of what is being mirrored, which flips it in place.",
+          ),
+        copy: z
+          .boolean()
+          .optional()
+          .describe(
+            "mirror only: leave the originals and add mirrored copies. True by " +
+              "default — that is what builds a symmetrical structure from half " +
+              "of one. False flips the originals in place.",
+          ),
         with: z
           .array(z.string())
           .max(50)
@@ -361,7 +388,11 @@ export function registerWorldTools(context: ToolContext): void {
         axis: z
           .string()
           .optional()
-          .describe('sweep only: axis to spin around, e.g. "0, 1, 0". Defaults to up.'),
+          .describe(
+            'sweep: axis to spin around, e.g. "0, 1, 0" (defaults to up). ' +
+              'mirror: which axis to flip across — "X", "Y" or "Z", ' +
+              "defaulting to X.",
+          ),
         pivot: z
           .string()
           .optional()
@@ -436,6 +467,20 @@ export function registerWorldTools(context: ToolContext): void {
       destructive: true,
     },
     async (args): Promise<ToolResult> => {
+      if (args.op === "mirror") {
+        const paths = args.paths ?? (args.path !== undefined ? [args.path] : []);
+        if (paths.length === 0) {
+          return text("mirror needs `paths` — the instances to flip.");
+        }
+        return json(
+          await bridge.call<Record<string, unknown>>(
+            "geometry.mirror",
+            { paths, axis: args.axis, about: args.about, copy: args.copy },
+            { studioId: args.studioId, timeoutMs: 60_000 },
+          ),
+        );
+      }
+
       if (args.op === "mesh") {
         const paths = args.paths ?? (args.path !== undefined ? [args.path] : []);
         if (paths.length === 0) {
@@ -612,14 +657,121 @@ export function registerWorldTools(context: ToolContext): void {
         "against a RUNNING playtest server session: pass that `studioId`, and " +
         "baking a mesh the game just built is what lets clients see it.\n\n" +
         "It does not help `generate` at all. Generated meshes hold opaque " +
-        "content, which the engine refuses to bake.",
+        "content, which the engine refuses to bake.\n\n" +
+        "THE OTHER DIRECTION: `upload` sends a local file TO Roblox and " +
+        "gives you the asset id. Audio, an image, a 3D model or a video, " +
+        "picked by extension — .mp3/.ogg/.wav/.flac, .png/.jpg/.bmp/.tga, " +
+        ".fbx/.gltf/.glb, .mp4/.mov. This closes the one hole nothing else " +
+        "here covers: a sound effect sitting in a folder on disk used to " +
+        "need Studio's import dialog before anything could reference it.\n\n" +
+        "Uploads are moderated and count against a real monthly quota. Do not " +
+        "guess what it is — Roblox's own guide and the live API disagree, and " +
+        "the account's verification level changes it. Ask `op=\"quota\"`. Do " +
+        "not upload speculatively, and do not re-upload to retry: the first " +
+        "one probably worked.\n\n" +
+        "`grant` gives a game or a person permission to use assets you own. " +
+        "You do NOT need this for your own assets in your own game — those " +
+        "always work. It is for a collaborator's place, or a group game you " +
+        "do not own. A grant to a game is PERMANENT; Roblox provides no way " +
+        "to revoke one, so it needs `confirm: true`.\n\n" +
+        "`publish` sends a .rbxl or .rbxlx from disk to a place. It SAVES a " +
+        "new version by default and only goes live with `confirm: true`. " +
+        "Note a real limitation: Roblox's publishing API does not update " +
+        "EditableImage, EditableMesh, PartOperation, SurfaceAppearance or " +
+        "BaseWrap instances, and reports success anyway — publish from " +
+        "Studio if the place uses any of those.\n\n" +
+        "Publishing alone does NOT move anyone already playing — they stay " +
+        "on their server running the old code until it empties. Pass " +
+        "`restart: true` to roll live servers onto the new version, which " +
+        "bleeds them off over 10 minutes rather than dropping players.\n\n" +
+        "`quota` reports how many uploads are left before Roblox starts " +
+        "refusing them, per asset type, read from the account itself. Check it " +
+        "before a batch rather than discovering the ceiling halfway through.\n\n" +
+        "All of these need an Open Cloud API key. The user sets it once by " +
+        "typing `cloud` in the Studio panel; never ask them to paste a key " +
+        "into this conversation.",
       inputSchema: {
         op: z
-          .enum(["search", "peek", "insert", "bake"])
+          .enum(["search", "peek", "insert", "bake", "upload", "grant", "publish", "quota"])
           .describe(
             "'search' finds assets, 'peek' shows what is inside one without " +
               "inserting it, 'insert' adds one to the place, 'bake' makes " +
-              "in-memory mesh and image data replicate.",
+              "in-memory mesh and image data replicate, 'upload' sends a " +
+              "local file to Roblox, 'grant' shares one you own with " +
+              "another game or person, 'publish' pushes a place file live.",
+          ),
+        file: z
+          .string()
+          .optional()
+          .describe(
+            "upload/publish: path to the file on disk. Omit on `upload` to " +
+              "check whether the credentials are set up without sending " +
+              "anything.",
+          ),
+        description: z
+          .string()
+          .optional()
+          .describe("upload only: public description. Moderated."),
+        assetType: z
+          .enum(["Audio", "Decal", "Model", "Video"])
+          .optional()
+          .describe(
+            "upload only: override the type derived from the extension. " +
+              "Rarely right — Roblox validates the type against the file's " +
+              "real content.",
+          ),
+        insertAs: z
+          .string()
+          .optional()
+          .describe(
+            "upload only: put the finished asset in the place at this " +
+              "parent path once it is approved. Decals and Models only — an " +
+              "audio id belongs in an AudioPlayer, so use `audio " +
+              "op=\"graph\"` with the id this returns.",
+          ),
+        assetIds: z
+          .array(z.number().int())
+          .max(50)
+          .optional()
+          .describe("grant only: the assets to share. You must own them."),
+        subjectType: z
+          .enum(["Universe", "User", "Group"])
+          .optional()
+          .describe(
+            "grant only: who gets access. 'Universe' is a game and is the " +
+              "usual one. Defaults to 'Universe'.",
+          ),
+        subjectId: z
+          .string()
+          .optional()
+          .describe(
+            "grant only: the universe, user or group id. Omit for a " +
+              "Universe grant to use the one set with `cloud universe <id>`.",
+          ),
+        universeId: z.string().optional().describe("publish only: which game. Omit to use `cloud universe`."),
+        placeId: z.string().optional().describe("publish only: which place. Omit to use `cloud place`."),
+        restart: z
+          .boolean()
+          .optional()
+          .describe(
+            "publish only: also roll live servers onto the new version. " +
+              "Without this, players already in a server keep running the " +
+              "old code until it empties.",
+          ),
+        stripScripts: z
+          .boolean()
+          .optional()
+          .describe(
+            "insert only: delete every Script, LocalScript and ModuleScript " +
+              "from the asset on the way in. The safe way to take geometry " +
+              "from a free model without taking whatever its scripts do.",
+          ),
+        confirm: z
+          .boolean()
+          .optional()
+          .describe(
+            "Required to make a `publish` go live rather than only save, " +
+              "and required for `grant`, whose effect Roblox cannot undo.",
           ),
         keyword: z.string().optional().describe("search only: what to look for, e.g. \"medieval door\"."),
         category: z
@@ -847,6 +999,148 @@ export function registerWorldTools(context: ToolContext): void {
         );
       }
 
+      if (args.op === "quota") {
+        return json(await assetQuotas(await requireCredentials()));
+      }
+
+      if (args.op === "upload") {
+        if (!args.file) {
+          const { credentialStatus } = await import("../lib/credentials.js");
+          const status = await credentialStatus();
+          if (!status.hasKey || status.creatorId === null) {
+            throw new ToolError(
+              "NO_CREDENTIALS",
+              "No Open Cloud key is set up, so nothing can be uploaded.",
+              "Ask the user to type `cloud` in the Studio panel \u2014 it walks " +
+                "through creating the key and stores it safely. Never ask them " +
+                "to paste a key into this conversation.",
+            );
+          }
+          return text(
+            `Ready to upload: key set, uploading as ${status.creatorField} ` +
+              `${status.creatorId}. Call again with \`file\`.`,
+          );
+        }
+
+        const credentials = await requireCredentials();
+        const uploaded = await uploadAsset(credentials, {
+          file: args.file,
+          name: args.name,
+          description: args.description,
+          assetType: args.assetType,
+        });
+
+        const assetId = String(uploaded["assetId"]);
+        const approved = uploaded["approved"] === true;
+
+        /*
+         * Only inserted once Roblox says it is approved. Putting a rejected
+         * asset into the place leaves an instance pointing at nothing, which
+         * reads as a bug here rather than as a moderation decision.
+         */
+        if (args.insertAs && approved) {
+          if (uploaded["assetType"] === "Audio") {
+            uploaded["inserted"] = false;
+            uploaded["note"] =
+              "Audio is not inserted on its own \u2014 the id goes into an " +
+              `AudioPlayer. Build one with \`audio op="graph" ` +
+              `asset="rbxassetid://${assetId}"\`.`;
+          } else if (uploaded["assetType"] === "Decal") {
+            uploaded["inserted"] = await bridge.call<Record<string, unknown>>(
+              "instances.create",
+              {
+                instances: [
+                  {
+                    className: "Decal",
+                    name: args.name ?? "Decal",
+                    parent: args.insertAs,
+                    properties: {
+                      Texture: { value: `rbxassetid://${assetId}`, type: "ContentId" },
+                    },
+                  },
+                ],
+              },
+              { studioId: args.studioId, timeoutMs: 30_000 },
+            );
+          } else {
+            uploaded["inserted"] = await bridge.call<Record<string, unknown>>(
+              "assets.insert",
+              { assetId: Number(assetId), parent: args.insertAs },
+              { studioId: args.studioId, timeoutMs: 90_000 },
+            );
+          }
+        }
+
+        return json(
+          uploaded,
+          approved
+            ? `Use it as rbxassetid://${assetId}.`
+            : `Moderation says ${uploaded["moderation"]}. The id exists but may ` +
+                "not load until review finishes.",
+        );
+      }
+
+      if (args.op === "grant") {
+        if (!args.assetIds || args.assetIds.length === 0) {
+          throw new ToolError("BAD_PARAMS", "grant needs `assetIds`.");
+        }
+        const subjectType = args.subjectType ?? "Universe";
+        const subjectId =
+          subjectType === "Universe"
+            ? await requireUniverse(args.subjectId)
+            : args.subjectId;
+        if (!subjectId) {
+          throw new ToolError("BAD_PARAMS", `grant to a ${subjectType} needs a \`subjectId\`.`);
+        }
+        if (args.confirm !== true) {
+          throw new ToolError(
+            "NEEDS_CONFIRM",
+            "Granting a game access to an asset is permanent.",
+            "Roblox provides no way to revoke it. Pass confirm: true once you " +
+              "are sure of the asset ids and the subject.",
+          );
+        }
+
+        const credentials = await requireCredentials();
+        return json(
+          await grantAssets(credentials, {
+            assetIds: args.assetIds,
+            subjectType,
+            subjectId,
+          }),
+        );
+      }
+
+      if (args.op === "publish") {
+        if (!args.file) throw new ToolError("BAD_PARAMS", "publish needs a `file` (.rbxl or .rbxlx).");
+        const credentials = await requireCredentials();
+        const universeId = await requireUniverse(args.universeId);
+        const placeId = await requirePlace(args.placeId);
+        const published = await publishPlace(credentials, {
+          file: args.file,
+          universeId,
+          placeId,
+          publish: args.confirm === true,
+        });
+
+        /*
+         * Restarting a version that was only SAVED would roll servers onto
+         * the version before it, which is the opposite of what was asked
+         * for. So the two flags are checked together rather than
+         * separately.
+         */
+        if (args.restart === true) {
+          published['restart'] =
+            args.confirm === true
+              ? await restartServers(credentials, {
+                  universeId,
+                  placeIds: [Number(placeId)],
+                })
+              : "Not restarted: the file was only saved, not published. A restart now would roll servers onto the PREVIOUS version.";
+        }
+        return json(published);
+      }
+
       if (args.op === "bake") {
         if (!args.paths || args.paths.length === 0) {
           return text("bake needs `paths` — the MeshParts or models to convert.");
@@ -888,6 +1182,7 @@ export function registerWorldTools(context: ToolContext): void {
           parent: args.parent,
           position: args.position,
           name: args.name,
+          stripScripts: args.stripScripts,
         },
         // Downloading an asset goes out to Roblox and back.
         { studioId: args.studioId, timeoutMs: 90_000 },
@@ -973,16 +1268,117 @@ export function registerWorldTools(context: ToolContext): void {
         "default and is what nearly every question is about; a `WorldModel` " +
         "inside a ViewportFrame keeps its own separate registry, so pass " +
         "`worldModel` to reach that one. A group of the same name in each is " +
-        "two different groups.",
+        "two different groups.\n\n" +
+        "THE SAME TOOL ANSWERS WHAT IS ACTUALLY THERE. `cast` fires a ray, " +
+        "block or sphere and reports the first thing it meets — the part, the " +
+        "hit point, the surface normal, the material and the distance. " +
+        "`overlap` lists everything inside a box, a radius, or overlapping " +
+        "an existing part.\n\n" +
+        "That is the one question the Explorer cannot answer. A path tells " +
+        "you an instance exists and where its pivot sits; it does not tell " +
+        "you the door frame is clipping into the wall, that the spawn is " +
+        "buried a stud inside the floor, or that nothing stands between the " +
+        "turret and the player. Geometry wrong in exactly those ways looks " +
+        "perfect in `inspect`.\n\n" +
+        "The queries live here because they ARE collision queries: they " +
+        "honour the very groups the other half of this tool manages. A cast " +
+        "run in the wrong `collisionGroup` reports a clear path through a " +
+        "wall the player cannot walk through — a wrong answer " +
+        "indistinguishable from a right one. A miss comes back as " +
+        "`hit: false`, which is a real answer and usually the one being " +
+        "checked for.",
       inputSchema: {
         action: z
-          .enum(["list", "create", "assign", "collidable", "remove"])
+          .enum(["list", "create", "assign", "collidable", "remove", "cast", "overlap"])
           .default("list")
           .describe(
-            "'list' shows existing groups and changes nothing. 'remove' " +
-              "unregisters a group entirely — not the same as un-assigning " +
-              "parts from it.",
+            "Groups: 'list' shows them and changes nothing, then 'create', " +
+              "'assign', 'collidable', 'remove' (which unregisters a group " +
+              "entirely — not the same as un-assigning parts). Queries: " +
+              "'cast' fires a shape and reports the first hit, 'overlap' " +
+              "lists what is inside a volume.",
           ),
+        shape: z
+          .enum(["ray", "block", "sphere"])
+          .optional()
+          .describe(
+            "cast only: 'ray' is a line and the usual choice. 'block' and " +
+              "'sphere' sweep a volume along the same path — use them when " +
+              "the thing moving has width, e.g. whether a character fits " +
+              "through a gap rather than whether a point does.",
+          ),
+        from: z.string().optional().describe('cast only: where the cast starts, e.g. "12, 0, 5".'),
+        to: z
+          .string()
+          .optional()
+          .describe(
+            "cast only: a point to aim at. Use this for sightlines — it saves " +
+              "working out a direction vector, which is where sign errors live.",
+          ),
+        direction: z
+          .string()
+          .optional()
+          .describe('cast only: which way to go, e.g. "0, -1, 0" for down. Used with `distance`.'),
+        distance: z
+          .number()
+          .optional()
+          .describe("cast only: how far along `direction`. Defaults to 100."),
+        size: z
+          .string()
+          .optional()
+          .describe('cast shape="block" or overlap region="box": the volume size.'),
+        radius: z
+          .number()
+          .optional()
+          .describe('cast shape="sphere" or overlap region="radius": the radius.'),
+        region: z
+          .enum(["box", "radius", "part"])
+          .optional()
+          .describe(
+            "overlap only: 'box' and 'radius' need `at`; 'part' takes " +
+              "`path` and reports what overlaps that part — the fastest way " +
+              "to find things clipping through each other. Defaults to 'box'.",
+          ),
+        at: z.string().optional().describe('overlap only: the centre, for region "box" or "radius".'),
+        path: z.string().optional().describe('overlap region="part" only: the part to test against.'),
+        only: z
+          .array(z.string())
+          .optional()
+          .describe("cast/overlap: consider ONLY these instances and their descendants."),
+        ignore: z
+          .array(z.string())
+          .optional()
+          .describe(
+            "cast/overlap: skip these and their descendants. The usual case " +
+              "is the character doing the looking, which otherwise blocks its " +
+              "own cast at zero distance.",
+          ),
+        collisionGroup: z
+          .string()
+          .optional()
+          .describe(
+            "cast/overlap: run the query as if from a part in this group. " +
+              "Required for a truthful answer in any place that uses groups.",
+          ),
+        respectCanCollide: z
+          .boolean()
+          .optional()
+          .describe(
+            "cast/overlap: skip parts with CanCollide off. Off by default, " +
+              "matching the engine — leave it off to ask what is there, turn " +
+              "it on to ask what would stop a player.",
+          ),
+        ignoreWater: z
+          .boolean()
+          .optional()
+          .describe("cast only: pass through terrain water instead of hitting it."),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(500)
+          .optional()
+          .describe("overlap only: how many parts to list. Defaults to 50."),
         group: z.string().optional().describe("The group's name. Required for everything but list."),
         paths: z
           .array(z.string())
@@ -1008,6 +1404,41 @@ export function registerWorldTools(context: ToolContext): void {
       destructive: false,
     },
     async (args): Promise<ToolResult> => {
+      if (args.action === "cast" || args.action === "overlap") {
+        const query = await bridge.call<Record<string, unknown>>(
+          args.action === "cast" ? "spatial.cast" : "spatial.overlap",
+          {
+            shape: args.shape,
+            from: args.from,
+            to: args.to,
+            direction: args.direction,
+            distance: args.distance,
+            size: args.size,
+            radius: args.radius,
+            region: args.region,
+            at: args.at,
+            path: args.path,
+            only: args.only,
+            ignore: args.ignore,
+            collisionGroup: args.collisionGroup,
+            respectCanCollide: args.respectCanCollide,
+            ignoreWater: args.ignoreWater,
+            limit: args.limit,
+            worldModel: args.worldModel,
+          },
+          { studioId: args.studioId, timeoutMs: 30_000 },
+        );
+        if (args.action === "cast" && query["hit"] === false) {
+          return json(
+            query,
+            "Nothing was hit. If that is a surprise: a `direction` pointing " +
+              "the wrong way, a `distance` shorter than the gap, or an " +
+              "`only` filter excluding what you meant to find.",
+          );
+        }
+        return json(query);
+      }
+
       const response = await bridge.call<CollisionResponse>(
         "world.collision",
         {
