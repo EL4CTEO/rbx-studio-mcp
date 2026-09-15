@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -29,7 +30,12 @@ import { registerAudioTools } from "./tools/audio.js";
 import { registerUniverseTools } from "./tools/universe.js";
 import { registerResources } from "./resources.js";
 
-const VERSION = "0.3.5";
+const VERSION = JSON.parse(
+  readFileSync(
+    resolve(dirname(fileURLToPath(import.meta.url)), "..", "package.json"),
+    "utf8",
+  ),
+).version as string;
 
 function parsePort(argv: string[]): number {
   const flag = argv.indexOf("--port");
