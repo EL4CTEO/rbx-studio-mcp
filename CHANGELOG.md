@@ -2,6 +2,11 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.6.9
+
+### Fixed
+- **The MCP server now reports the package version instead of a stale hardcoded `0.3.5`.** Future version bumps are picked up automatically from the package metadata.
+
 ## 0.6.8
 
 ### Fixed
