@@ -423,17 +423,25 @@ async function handleEvents(
     })}\n\n`,
   );
   const heartbeat = setInterval(() => {
-    if (res.writableEnded) return;
+    if (res.writableEnded || res.destroyed) return;
     res.write(": ping\n\n");
     bridge.touch(studioId);
   }, HEARTBEAT_MS);
 
+  //[[ On the response, not the request.
+  //
+  // `req` emits "close" once its body has been read, which `readBody` above has
+  // already done -- so a listener added to it here never fired. A Studio that
+  // crashed or was force-quit (no /bye) then stayed listed forever: the
+  // heartbeat kept touching it and the reaper skips streaming sessions, so the
+  // next window to connect made every call AMBIGUOUS_STUDIO.
+  //]]
   const teardown = (): void => {
     clearInterval(heartbeat);
-    bridge.detach(studioId);
+    bridge.detachStream(studioId, res);
   };
-  req.on("close", teardown);
-  req.on("error", teardown);
+  res.on("close", teardown);
+  res.on("error", teardown);
 }
 
 async function handlePoll(

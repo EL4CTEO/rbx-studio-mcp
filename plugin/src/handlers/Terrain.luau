@@ -188,7 +188,7 @@ function Terrain.fill(params: { [string]: any }): { [string]: any }
 	local _, recorded = Undo.record("StudioMCP.TerrainFill", "MCP terrain fill", function()
 		for index, shape in shapes :: { any } do
 			if typeof(shape) ~= "table" then
-				Dispatch.fail("BAD_PARAMS", string.format("shapes[%d] must be an object.", index))
+				Dispatch.fail("BAD_PARAMS", string.format("shapes[%d] must be an object.", index - 1))
 			end
 
 			local kind = string.lower(tostring(shape.shape or "block"))
@@ -201,14 +201,14 @@ function Terrain.fill(params: { [string]: any }): { [string]: any }
 
 			if kind == "block" then
 				local size = need(shape, "size", "Vector3") :: Vector3
-				voxels = guard(size, string.format("shapes[%d]", index))
+				voxels = guard(size, string.format("shapes[%d]", index - 1))
 				field:FillBlock(at, size, chosen)
 			elseif kind == "ball" then
 				local radius = optionalNumber(shape, "radius", 0)
 				if radius <= 0 then
-					Dispatch.fail("BAD_PARAMS", string.format("shapes[%d] needs a `radius`.", index))
+					Dispatch.fail("BAD_PARAMS", string.format("shapes[%d] needs a `radius`.", index - 1))
 				end
-				voxels = guard(Vector3.new(radius, radius, radius) * 2, string.format("shapes[%d]", index))
+				voxels = guard(Vector3.new(radius, radius, radius) * 2, string.format("shapes[%d]", index - 1))
 				field:FillBall(at.Position, radius, chosen)
 			elseif kind == "cylinder" then
 				local radius = optionalNumber(shape, "radius", 0)
@@ -216,19 +216,19 @@ function Terrain.fill(params: { [string]: any }): { [string]: any }
 				if radius <= 0 or height <= 0 then
 					Dispatch.fail(
 						"BAD_PARAMS",
-						string.format("shapes[%d] needs a `radius` and a `height`.", index)
+						string.format("shapes[%d] needs a `radius` and a `height`.", index - 1)
 					)
 				end
-				voxels = guard(Vector3.new(radius * 2, height, radius * 2), string.format("shapes[%d]", index))
+				voxels = guard(Vector3.new(radius * 2, height, radius * 2), string.format("shapes[%d]", index - 1))
 				field:FillCylinder(at, height, radius, chosen)
 			elseif kind == "wedge" then
 				local size = need(shape, "size", "Vector3") :: Vector3
-				voxels = guard(size, string.format("shapes[%d]", index))
+				voxels = guard(size, string.format("shapes[%d]", index - 1))
 				field:FillWedge(at, size, chosen)
 			else
 				Dispatch.fail(
 					"BAD_PARAMS",
-					string.format("shapes[%d]: unknown shape %q.", index, kind),
+					string.format("shapes[%d]: unknown shape %q.", index - 1, kind),
 					"Use block, ball, cylinder or wedge."
 				)
 			end

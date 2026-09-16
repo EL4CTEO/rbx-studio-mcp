@@ -34,6 +34,8 @@ interface EditResponse {
     edits: number;
     lineCount: number;
     lineDelta: number;
+    /** Revision of the source as written, for chaining a second edit. */
+    rev?: string;
   }>;
 }
 
@@ -456,7 +458,11 @@ export function registerScriptTools(context: ToolContext): void {
             }),
           )
           .max(50)
-          .describe("Edits to apply together as one undoable step."),
+          .optional()
+          .describe(
+            "Edits to apply together as one undoable step. Required unless target is \"live\". " +
+              "The result carries each script's new `rev`, so a follow-up edit needs no re-read.",
+          ),
         studioId: z.string().optional().describe("Target Studio; omit for the active one."),
       },
       destructive: true,
@@ -511,7 +517,7 @@ export function registerScriptTools(context: ToolContext): void {
       );
 
       return table(
-        ["path", "className", "edits", "lineCount", "lineDelta"],
+        ["path", "className", "edits", "lineCount", "lineDelta", "rev"],
         response.items as unknown as Array<Record<string, unknown>>,
       );
     },

@@ -190,6 +190,16 @@ export class Bridge {
     return identity.studioId;
   }
 
+  /**
+   * Drops a session because its SSE stream closed -- unless that stream was
+   * already replaced by a newer one, whose session must survive.
+   */
+  detachStream(studioId: string, stream: ServerResponse): void {
+    const session = this.sessions.get(studioId);
+    if (!session || session.stream !== stream) return;
+    this.detach(studioId);
+  }
+
   detach(studioId: string): void {
     const session = this.sessions.get(studioId);
     if (!session) return;
@@ -481,8 +491,13 @@ export class Bridge {
   private resolveSession(clientId: string, studioId?: string): Session {
     if (studioId) {
       const session = this.sessions.get(studioId);
-      if (!session) throw NO_STUDIO();
-      return session;
+      if (session) return session;
+      if (this.sessions.size === 0) throw NO_STUDIO();
+      throw new ToolError(
+        "UNKNOWN_STUDIO",
+        `No connected Studio has id "${studioId}".`,
+        "It may have closed or reconnected. Call list_studios to see the connected instances and their ids.",
+      );
     }
     if (this.sessions.size === 0) throw NO_STUDIO();
 
@@ -493,6 +508,13 @@ export class Bridge {
     const picked = this.chosen.get(clientId);
     if (picked !== undefined) {
       const session = this.sessions.get(picked);
+      if (session) return session;
+    }
+    // The user's `use` from the console panel. `activeId` already honours it, so
+    // leaving it out here made studio_status name a target that every call then
+    // refused as ambiguous -- for any agent started after the user picked.
+    if (this.defaultStudio !== null) {
+      const session = this.sessions.get(this.defaultStudio);
       if (session) return session;
     }
     const connected = this.list();

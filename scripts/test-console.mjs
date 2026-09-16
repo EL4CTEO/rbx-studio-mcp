@@ -17,7 +17,7 @@ import { readFileSync } from "node:fs";
 import { Bridge } from "../dist/bridge/rpc.js";
 import { LocalBridge } from "../dist/bridge/api.js";
 import { frame, handleConsole } from "../dist/bridge/console.js";
-import { find, installed, matchesClient } from "../dist/bridge/harness.js";
+import { cmdQuote, find, installed, matchesClient } from "../dist/bridge/harness.js";
 
 let checks = 0;
 const ok = (condition, what) => {
@@ -554,6 +554,38 @@ const readAll = (id, lines) => {
   for (const harness of ["amp", "qwen", "droid", "goose", "copilot", "aider", "crush"]) {
     const rows = readAll(harness, ["some unstructured output"]).rows;
     ok(rows.length > 0, harness + ": unrecognised output is shown, not swallowed");
+  }
+}
+
+// A prompt reaches a Windows .cmd shim as ONE argument, byte for byte. Before
+// cmdQuote, `&` in a prompt ran the rest of it as a second shell command.
+if (process.platform === "win32") {
+  const { mkdtempSync, writeFileSync } = await import("node:fs");
+  const { spawnSync } = await import("node:child_process");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "cmd quote "));
+  writeFileSync(join(dir, "cli.js"), "console.log(JSON.stringify(process.argv.slice(2)))\n");
+  const shim = join(dir, "agent.cmd");
+  writeFileSync(shim, '@ECHO off\r\n"' + process.execPath + '" "%~dp0\\cli.js" %*\r\n');
+  const slash = "\\";
+  for (const prompt of [
+    "add a door & a window",
+    'say "hi" | more',
+    "100% %PATH% !x! ^caret",
+    "C:" + slash + "path" + slash,
+    "(a) <b> ;c, *d? `e`",
+    "tail" + slash + slash + '"q',
+  ]) {
+    const run = spawnSync(
+      process.env.ComSpec ?? "cmd.exe",
+      ["/d", "/s", "/c", `"${[shim, prompt].map(cmdQuote).join(" ")}"`],
+      { windowsVerbatimArguments: true, encoding: "utf8" },
+    );
+    ok(
+      JSON.stringify(JSON.parse(run.stdout.trim())) === JSON.stringify([prompt]),
+      "cmd.exe passes the prompt through unchanged: " + prompt,
+    );
   }
 }
 

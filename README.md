@@ -73,8 +73,8 @@ Port is **44755**, loopback only. Change it with `--port` and match it in the pl
 | **Discover** | `tree` `inspect` `find` `api` |
 | **Scripts** | `script_read` `script_edit` `script_grep` `script_create` |
 | **Instances** | `create` `modify` `delete` `move` |
-| **World** | `geometry` `terrain` `generate` `assets` `collision` `audio` `undo` |
-| **Live game** | `universe` |
+| **World** | `geometry` `terrain` `generate` `assets` `collision` `audio` `animation` `undo` |
+| **Data & live game** | `datastore` `universe` |
 | **Run & debug** | `playtest` `execute_luau` `character` `input` `console` `debug` `performance` |
 | **Look** | `screenshot` `viewport` `device` |
 

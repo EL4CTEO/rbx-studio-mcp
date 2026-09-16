@@ -98,7 +98,7 @@ function TextEdit.validate(edit: Edit, position: number)
 	if typeof(edit.path) ~= "string" or edit.path == "" then
 		Dispatch.fail(
 			"BAD_PARAMS",
-			string.format("edits[%d] has no `path`.", position),
+			string.format("edits[%d] has no `path`.", position - 1),
 			'Every edit needs the path of the script to change, e.g. "ServerScriptService.Main".'
 		)
 	end
@@ -117,7 +117,7 @@ function TextEdit.validate(edit: Edit, position: number)
 	if modes == 0 then
 		Dispatch.fail(
 			"BAD_PARAMS",
-			string.format("edits[%d] (%s) says what to edit but not how.", position, edit.path),
+			string.format("edits[%d] (%s) says what to edit but not how.", position - 1, edit.path),
 			"Give exactly one of: `find` + `replace`, `startLine` (+ `endLine`) + "
 				.. "`replacement`, or `source` to replace the whole script."
 		)
@@ -125,7 +125,7 @@ function TextEdit.validate(edit: Edit, position: number)
 	if modes > 1 then
 		Dispatch.fail(
 			"BAD_PARAMS",
-			string.format("edits[%d] (%s) combines more than one edit mode.", position, edit.path),
+			string.format("edits[%d] (%s) combines more than one edit mode.", position - 1, edit.path),
 			"Use `find`, `startLine` or `source` -- one per edit. Send several entries "
 				.. "in the array if you need several changes."
 		)
@@ -135,13 +135,13 @@ function TextEdit.validate(edit: Edit, position: number)
 		if edit.find == "" then
 			Dispatch.fail(
 				"BAD_PARAMS",
-				string.format("edits[%d] (%s) has an empty `find`.", position, edit.path)
+				string.format("edits[%d] (%s) has an empty `find`.", position - 1, edit.path)
 			)
 		end
 		if typeof(edit.replace) ~= "string" then
 			Dispatch.fail(
 				"BAD_PARAMS",
-				string.format("edits[%d] (%s) has `find` but no `replace`.", position, edit.path),
+				string.format("edits[%d] (%s) has `find` but no `replace`.", position - 1, edit.path),
 				"Pass an empty `replace` to delete the matched text."
 			)
 		end
@@ -149,7 +149,7 @@ function TextEdit.validate(edit: Edit, position: number)
 		if typeof(edit.replacement) ~= "string" then
 			Dispatch.fail(
 				"BAD_PARAMS",
-				string.format("edits[%d] (%s) has `startLine` but no `replacement`.", position, edit.path),
+				string.format("edits[%d] (%s) has `startLine` but no `replacement`.", position - 1, edit.path),
 				"Pass an empty `replacement` to delete those lines."
 			)
 		end

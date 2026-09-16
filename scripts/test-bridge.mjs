@@ -265,3 +265,64 @@ function twoStudios() {
   alice.describe({ name: "cursor", version: "1.0" });
   assert.equal(announced, 1, "a client that changes its name is announced");
 }
+
+// The console panel's `use` must route calls, not only studio_status -- and it
+// must reach an agent that started after the user picked.
+{
+  const bridge = twoStudios();
+  bridge.setActiveForAll("studio-b");
+  const late = new LocalBridge(bridge);
+  assert.equal((await late.sessions()).activeId, "studio-b");
+  await late.call("studio.ping", {}, { timeoutMs: 50 }).catch((cause) => {
+    assert.notEqual(cause.code, "AMBIGUOUS_STUDIO", "the user's pick routes the call");
+  });
+  assert.equal(bridge.sessions.get("studio-b").queue.length, 1, "the call went to the pick");
+
+  await assert.rejects(
+    async () => late.call("studio.ping", {}, { studioId: "gone", timeoutMs: 50 }),
+    (cause) => cause.code === "UNKNOWN_STUDIO",
+    "an unknown studioId is not reported as no Studio at all",
+  );
+}
+
+// A stream that dies without /bye (a crashed Studio) removes its session, and a
+// replaced stream closing late does not remove the session that replaced it.
+{
+  const { request } = await import("node:http");
+  const { createServer } = await import("node:net");
+  const { startBridgeServer } = await import("../dist/bridge/server.js");
+  const port = await new Promise((resolve) => {
+    const probe = createServer().listen(0, "127.0.0.1", () => {
+      const { port: free } = probe.address();
+      probe.close(() => resolve(free));
+    });
+  });
+  const server = await startBridgeServer({ port });
+  const open = () =>
+    new Promise((resolve) => {
+      const req = request(
+        { host: "127.0.0.1", port, path: "/events", method: "POST", headers: { "x-roblox-studio-mcp": "test" } },
+        (res) => {
+          res.resume();
+          resolve(req);
+        },
+      );
+      req.end(JSON.stringify({ studioId: "crashy", placeName: "p", placeId: 1 }));
+    });
+  const count = async () =>
+    (await (await fetch(`http://127.0.0.1:${port}/sessions`, { headers: { "x-roblox-studio-mcp": "test" } })).json())
+      .list.length;
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 150));
+
+  const first = await open();
+  const second = await open();
+  first.destroy();
+  await settle();
+  assert.equal(await count(), 1, "the old stream closing leaves the new session alone");
+  second.destroy();
+  await settle();
+  assert.equal(await count(), 0, "a stream that dies without a goodbye is dropped");
+  await server.close();
+}
+
+process.stdout.write("bridge: ok\n");

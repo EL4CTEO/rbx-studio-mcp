@@ -2,6 +2,21 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.7.0
+
+### Fixed
+- A crashed Studio no longer blocks every tool with `AMBIGUOUS_STUDIO`.
+- The panel's `use` command now works for tool calls.
+- Panel prompts with `&`, `"` or `%` no longer break on Windows.
+- `geometry mesh` and `mirror` work without a `path`.
+- `inf` and `nan` values read correctly.
+- `execute_luau` keeps `nil` returns and flags errors.
+- `tree` shows top-level items first.
+- `script_edit` returns the new `rev`.
+
+### Changed
+- Dependencies updated.
+
 ## 0.6.9
 
 ### Fixed

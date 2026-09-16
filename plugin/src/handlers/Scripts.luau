@@ -328,6 +328,10 @@ function Scripts.edit(params: { [string]: any }): { [string]: any }
 			edits = #(grouped[entry.target] :: { TextEdit.Edit }),
 			lineCount = #TextEdit.toLines(entry.after),
 			lineDelta = #TextEdit.toLines(entry.after) - #TextEdit.toLines(entry.before),
+			-- Of what is there now, not of what was asked for: the editor can
+			-- normalise the text it is handed, and a rev that does not match the
+			-- live buffer would refuse the very next edit as stale.
+			rev = fingerprint(ScriptEdit.read(entry.target)),
 		})
 	end
 
@@ -481,12 +485,12 @@ function Scripts.create(params: { [string]: any }): { [string]: any }
 
 	for position, request in requests do
 		if typeof(request.name) ~= "string" or request.name == "" then
-			Dispatch.fail("BAD_PARAMS", string.format("scripts[%d] has no `name`.", position))
+			Dispatch.fail("BAD_PARAMS", string.format("scripts[%d] has no `name`.", position - 1))
 		end
 		if not CREATABLE[request.className] then
 			Dispatch.fail(
 				"BAD_PARAMS",
-				string.format('scripts[%d] has className "%s".', position, tostring(request.className)),
+				string.format('scripts[%d] has className "%s".', position - 1, tostring(request.className)),
 				"Use Script, LocalScript or ModuleScript. Prefer a Script with "
 					.. "runContext Client over LocalScript in new work -- except inside "
 					.. "StarterGui, StarterPack, StarterPlayerScripts or "

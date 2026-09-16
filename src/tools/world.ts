@@ -328,9 +328,16 @@ export function registerWorldTools(context: ToolContext): void {
           .describe(
             "'union' merges, 'subtract' cuts `with` out of `path`, 'intersect' " +
               "keeps only the overlap, 'fragment' shatters into debris, 'sweep' " +
-              "builds a motion volume, 'segment' cuts a mesh into named parts.",
+              "builds a motion volume, 'segment' cuts a mesh into named parts, " +
+              "'mesh' reads triangle counts, 'mirror' flips instances across a plane.",
           ),
-        path: z.string().describe("The part being operated on - the one cut from, for subtract."),
+        path: z
+          .string()
+          .optional()
+          .describe(
+            "The part being operated on - the one cut from, for subtract. Required for " +
+              "every op except mesh and mirror, which take `paths`.",
+          ),
         about: z
           .string()
           .optional()
@@ -461,7 +468,7 @@ export function registerWorldTools(context: ToolContext): void {
           .array(z.string())
           .max(50)
           .optional()
-          .describe("mesh only: the MeshParts to read geometry from."),
+          .describe("mesh and mirror: the instances to read or flip."),
         studioId: z.string().optional().describe("Target Studio; omit for the active one."),
       },
       destructive: true,
@@ -512,6 +519,10 @@ export function registerWorldTools(context: ToolContext): void {
             ? `${rendered}\n\nSkipped:\n  ${read.failures.join("\n  ")}`
             : rendered,
         );
+      }
+
+      if (args.path === undefined || args.path === "") {
+        throw new ToolError("BAD_PARAMS", `${args.op} needs \`path\` — the part to operate on.`);
       }
 
       // `segment` is GenerationService, not GeometryService - the same job from

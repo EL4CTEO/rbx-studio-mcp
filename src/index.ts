@@ -39,10 +39,18 @@ const VERSION = JSON.parse(
 
 function parsePort(argv: string[]): number {
   const flag = argv.indexOf("--port");
-  const raw =
-    flag !== -1 ? argv[flag + 1] : process.env["ROBLOX_STUDIO_MCP_PORT"];
-  const port = raw ? Number.parseInt(raw, 10) : DEFAULT_PORT;
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+  const raw = flag !== -1 ? argv[flag + 1] : process.env["ROBLOX_STUDIO_MCP_PORT"];
+  if (flag !== -1 && (raw === undefined || raw === "")) {
+    throw new Error("Missing value for --port");
+  }
+
+  const port = raw === undefined || raw === "" ? DEFAULT_PORT : Number(raw);
+  if (
+    !Number.isInteger(port) ||
+    port < 1 ||
+    port > 65535 ||
+    (raw !== undefined && raw !== "" && !/^\d+$/.test(raw))
+  ) {
     throw new Error(`Invalid port: ${raw}`);
   }
   return port;

@@ -124,6 +124,11 @@ function Discover.tree(params: { [string]: any }): { [string]: any }
 
 	for level = 1, depth do
 		local nextFrontier: { Instance } = {}
+		-- This level's matches, ordered on their own and appended after the
+		-- shallower ones. Sorting the whole list at the end instead ordered it by
+		-- name alone, so a truncated page could hold "Lighting.Sky" and drop
+		-- "Workspace" -- the opposite of what a breadth-first walk is for.
+		local levelMatches: { Instance } = {}
 		for _, parent in frontier do
 			for _, child in parent:GetChildren() do
 				visits += 1
@@ -145,7 +150,7 @@ function Discover.tree(params: { [string]: any }): { [string]: any }
 					keep = false
 				end
 				if keep then
-					table.insert(matched, child)
+					table.insert(levelMatches, child)
 				end
 				if level < depth then
 					table.insert(nextFrontier, child)
@@ -155,14 +160,14 @@ function Discover.tree(params: { [string]: any }): { [string]: any }
 		-- Sorted per level rather than at the end, so the breadth-first shape is
 		-- kept -- shallow instances still come before deep ones -- while the
 		-- siblings inside each level stop reshuffling between calls.
+		stableOrder(levelMatches)
+		table.move(levelMatches, 1, #levelMatches, #matched + 1, matched)
 		stableOrder(nextFrontier)
 		frontier = nextFrontier
 		if #frontier == 0 or visits > MAX_VISITS then
 			break
 		end
 	end
-
-	stableOrder(matched)
 
 	local items: { { [string]: any } } = {}
 	local memo: Paths.NameIndex = {}

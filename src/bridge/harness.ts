@@ -717,12 +717,10 @@ export function matchesClient(harness: Harness, clientName: string): boolean {
  * Running `--version` to find out costs a process per candidate on every
  * `agent` listing, and several of these tools take a second to start.
  *
- * The full path matters beyond the yes/no answer. On Windows every one of these
- * tools is installed as a `.cmd` shim, and Node only applies its cmd-specific
- * argument escaping when it can SEE that extension. Handed a bare "claude" with
- * `shell: true` it concatenates instead, which strips every quote in the
- * command line -- that is not just a formatting bug, it is the difference
- * between passing a prompt and pasting whatever is in it into a shell.
+ * The full path matters beyond the yes/no answer. On Windows most of these
+ * tools are installed as a `.cmd` shim, which has to be started through
+ * cmd.exe with every argument escaped for it -- see `cmdQuote` -- and the
+ * extension is how `run` knows to do that.
  */
 function whereIs(bin: string): string | null {
   const paths = (process.env["PATH"] ?? "").split(delimiter).filter((entry) => entry !== "");
@@ -740,6 +738,27 @@ function whereIs(bin: string): string | null {
     }
   }
   return null;
+}
+
+/**
+ * Quotes one argument for a `cmd.exe /d /s /c "..."` command line.
+ *
+ * Two layers, in this order: the quoting the target program's argument parser
+ * expects (backslashes before a quote doubled, the quote escaped), then a caret
+ * before every character cmd.exe itself treats specially -- the surrounding
+ * quotes included, so cmd never sees a quoted region and every caret applies.
+ * The same scheme cross-spawn uses. cmd cannot carry a line break inside an
+ * argument at all, so those become spaces.
+ */
+export function cmdQuote(arg: string): string {
+  const quoted =
+    '"' +
+    arg
+      .replace(/\r?\n/g, " ")
+      .replace(/(\\*)"/g, '$1$1\\"')
+      .replace(/(\\*)$/, "$1$1") +
+    '"';
+  return quoted.replace(/[()[\]%!^"`<>&|;, *?]/g, "^$&");
 }
 
 export function installed(): Harness[] {
@@ -906,15 +925,26 @@ export function run(
     return { cancel: () => {}, done: Promise.resolve(null) };
   }
 
+  //[[ .cmd shims go through cmd.exe, escaped here rather than by Node.
+  //
+  // CreateProcess will not run a .cmd directly, and `shell: true` does NOT
+  // escape anything -- Node only joins the arguments with spaces (DEP0190). A
+  // prompt typed in the panel as `add a door & a window` ran `a window` as a
+  // second command, and any quote, pipe or percent sign broke the prompt.
+  //]]
+  const viaCmd = process.platform === "win32" && /\.(cmd|bat)$/i.test(executable);
+  const [file, args] = viaCmd
+    ? [
+        process.env["ComSpec"] ?? "cmd.exe",
+        ["/d", "/s", "/c", `"${[executable, ...argv].map(cmdQuote).join(" ")}"`],
+      ]
+    : [executable, argv];
+
   let child: ChildProcess;
   try {
-    child = spawn(executable, argv, {
+    child = spawn(file, args, {
       cwd: options.cwd,
-      // Only for the .cmd shims Windows installs these as, which CreateProcess
-      // will not run. Node escapes arguments correctly for those precisely
-      // because the extension is visible in the path; anything else is spawned
-      // directly, with no shell to quote for.
-      shell: /\.(cmd|bat)$/i.test(executable),
+      windowsVerbatimArguments: viaCmd,
       stdio: ["ignore", "pipe", "pipe"],
       // Its own process group, so cancelling can take the whole tree down with
       // one signal. See `kill`.

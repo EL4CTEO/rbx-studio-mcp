@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { json, table, text, type ToolResult } from "../lib/format.js";
+import { errorText, json, table, text, type ToolResult } from "../lib/format.js";
 import { ToolError } from "../lib/errors.js";
 import { runLiveLuau } from "../lib/liveluau.js";
 import {
@@ -198,14 +198,15 @@ export function registerExecTools(context: ToolContext): void {
           parts.push("Ran successfully. Nothing was printed or returned.");
         }
       } else {
-        // A thrown error is reported as content rather than a tool failure: the
-        // output captured before the throw is usually what explains it.
+        // The output captured before the throw is usually what explains it, so
+        // it stays in the reply -- but flagged as an error, so a client or agent
+        // reading only `isError` does not take a failed run for a good one.
         parts.push(`Error: ${response.error ?? "unknown"}`);
       }
 
       if (response.note) parts.push(`Note: ${response.note}`);
       parts.push(`(${response.milliseconds}ms)`);
-      return text(parts.join("\n\n"));
+      return response.ok ? text(parts.join("\n\n")) : errorText(parts.join("\n\n"));
     },
   );
 

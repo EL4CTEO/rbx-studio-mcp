@@ -305,7 +305,11 @@ function Exec.run(params: { [string]: any }): { [string]: any }
 
 	local returned: { any } = {}
 	for index = 2, math.min(results.n, MAX_RETURN_VALUES + 1) do
-		table.insert(returned, describe(results[index]))
+		-- A nil return is written out rather than dropped. `table.insert` of nil
+		-- does nothing, so `return a, nil, b` came back as two values and every
+		-- one after the nil shifted into the wrong position.
+		local value = results[index]
+		table.insert(returned, if value == nil then "nil" else describe(value))
 	end
 
 	return {

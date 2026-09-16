@@ -60,6 +60,16 @@ function Serialize.value(value: any): any
 		return value
 	end
 	if kind == "number" then
+		-- JSON has no inf or nan, and HttpService:JSONEncode turns them into a
+		-- `{"m":null,"t":"numeric","v":"inf"}` object nobody asked for. Written as
+		-- text instead, in the same words `modify` accepts back.
+		if value ~= value then
+			return "nan"
+		elseif value == math.huge then
+			return "inf"
+		elseif value == -math.huge then
+			return "-inf"
+		end
 		-- Kept numeric so the agent can do arithmetic without parsing.
 		return math.round(value * 10 ^ PRECISION) / 10 ^ PRECISION
 	end
