@@ -27,8 +27,10 @@ jobs:
       # reason that check exists.
       - name: Fetch Luau
         run: |
-          version=$(curl -sSf https://api.github.com/repos/luau-lang/luau/releases/latest | jq -r .tag_name)
-          curl -sSfL -o luau.zip "https://github.com/luau-lang/luau/releases/download/${version}/luau-ubuntu.zip"
+          # The permanent "latest" redirect, not the API: an unauthenticated
+          # api.github.com call is rate limited per runner IP, and when it is
+          # refused the version comes back empty and the download 404s.
+          curl -sSfL -o luau.zip https://github.com/luau-lang/luau/releases/latest/download/luau-ubuntu.zip
           mkdir -p tools && unzip -o -q luau.zip -d tools
           chmod +x tools/luau tools/luau-compile tools/luau-analyze
 
