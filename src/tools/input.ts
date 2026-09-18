@@ -102,9 +102,13 @@ export function registerInputTools(context: ToolContext): void {
         "events a person pressing the keys would produce.\n\n" +
         "This is how to test what `character` cannot reach. `character` drives " +
         "the Humanoid directly, which answers 'can it get to the door'; this " +
-        "answers 'does pressing E open it', 'does the sprint key work', 'does " +
-        "the menu close on Escape' — anything bound to input rather than to " +
-        "movement. Use `character` for going places and this for controls.\n\n" +
+        "answers 'does pressing E open it', 'does the sprint key work' — " +
+        "anything bound to input rather than to movement. Use `character` for " +
+        "going places and this for controls.\n\n" +
+        "Roblox reserves some keys for its own menus and refuses to send them — " +
+        "Escape, Tab, F9, and others depending on the place (One is the backpack " +
+        "hotbar). A refused key comes back as a WARNING naming it; the other steps " +
+        "still run.\n\n" +
         "Steps run in order, so a sequence is one call: tap E, wait, click at a " +
         "point, type a name. `hold` is how long a key or button stays down, " +
         "`after` is how long to wait before the next step — a jump held for a " +
@@ -156,7 +160,7 @@ export function registerInputTools(context: ToolContext): void {
                   .string()
                   .optional()
                   .describe(
-                    'key only: an Enum.KeyCode name — "W", "Space", "E", "LeftShift", "Escape".',
+                    'key only: an Enum.KeyCode name — "W", "Space", "E", "LeftShift".',
                   ),
                 action: z
                   .enum(["tap", "press", "release"])
@@ -266,9 +270,7 @@ export function registerInputTools(context: ToolContext): void {
        * it go at the front where they cannot be skimmed past.
        */
       if (Array.isArray(response.notes)) {
-        for (const line of response.notes) {
-          parts.unshift(`WARNING: ${line}`);
-        }
+        parts.unshift(...response.notes.map((line) => `WARNING: ${line}`));
       }
       const note = parts.join(" ");
       return json(response, note);

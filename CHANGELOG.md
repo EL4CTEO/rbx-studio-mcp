@@ -2,6 +2,13 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.7.1
+
+### Fixed
+- The panel stays where you dock it, instead of floating in the middle every time a place is opened.
+- The panel no longer opens over the game during a playtest. Studio will not dock it there, so it stays shut; the toolbar button still opens it.
+- `input` no longer dies on a key Roblox reserves (Escape, Tab, F9). It names the key and runs the rest of the steps.
+
 ## 0.7.0
 
 ### Fixed

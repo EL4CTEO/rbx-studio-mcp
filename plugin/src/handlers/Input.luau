@@ -301,18 +301,42 @@ end
 
 makeCursor()
 
-for _, step in plan do
+--[[
+	Some keys cannot be sent at all. Roblox keeps them for its own menus --
+	Escape, Tab, F9, and in this place's case also One -- and `SendKey` THROWS
+	for them ("permanently bound to a CoreGUI core action"). Uncaught, that
+	killed this script mid-plan: the rest of the steps never ran, nothing was
+	reported, and the tool gave up with NO_ACK after its full timeout while the
+	error sat in Studio's Output. Which keys are reserved depends on the place
+	(One is the backpack hotbar), so it is caught here rather than listed.
+]]
+local function refusedKey(key, err)
+	local message = tostring(err)
+	if string.find(message, "CoreGUI", 1, true) then
+		return string.format(
+			"%s was not sent: Roblox reserves it for its own menus, so no script can press it. "
+				.. "Test what the game does on that key by calling its handler another way.",
+			key
+		)
+	end
+	return string.format("%s was not sent: %s", key, message)
+end
+
+local function runStep(step): boolean
 	local kind = step.kind
 	if kind == "key" then
 		local code = Enum.KeyCode[step.key]
-		if step.action == "release" then
+		local down = step.action ~= "release"
+		local sent, err = pcall(function()
+			virtual:SendKey(down, code, false)
+		end)
+		if not sent then
+			table.insert(notes, refusedKey(step.key, err))
+			return false
+		end
+		if down and step.action ~= "press" then
+			task.wait(step.hold or 0.08)
 			virtual:SendKey(false, code, false)
-		else
-			virtual:SendKey(true, code, false)
-			if step.action ~= "press" then
-				task.wait(step.hold or 0.08)
-				virtual:SendKey(false, code, false)
-			end
 		end
 	elseif kind == "move" then
 		moveCursor(step.x, step.y, 0.3)
@@ -364,7 +388,17 @@ for _, step in plan do
 			virtual:SendTextInput(step.text)
 		end
 	end
-	table.insert(performed, kind)
+	return true
+end
+
+for index, step in plan do
+	-- Guarded so one failing step can never stop the report going back.
+	local ok, done = pcall(runStep, step)
+	if not ok then
+		table.insert(notes, string.format("step %d (%s) failed: %s", index - 1, tostring(step.kind), tostring(done)))
+	elseif done then
+		table.insert(performed, step.kind)
+	end
 	if step.after ~= nil and step.after > 0 then
 		task.wait(step.after)
 	end

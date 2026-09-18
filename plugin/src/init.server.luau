@@ -223,10 +223,18 @@ button.ClickableWhenViewportHidden = true
 	as a 560x320 float with whatever size they had chosen thrown away.
 
 	Studio's own restore does not cross that boundary, so the preference is kept
-	here instead and passed in as the INITIAL state, with `overrideEnabledRestore`
-	set so it is honoured rather than second-guessed. Written only from the
+	here instead and applied AFTER the widget exists. Written only from the
 	editor session -- see below -- so a playtest starting or ending can never
 	record a decision the user did not make.
+
+	It used to be passed as `overrideEnabledRestore` instead, and that cost the
+	panel its position. That flag does not only override the remembered Enabled:
+	the widget comes back with `HostWidgetWasRestored` false, so Studio drops the
+	whole saved layout with it and builds the widget from `InitialDockState` --
+	Float, in the middle of the screen. Docking it lasted exactly as long as the
+	session, and every reopened place, every playtest and every plugin reload put
+	it back in the centre. Setting `Enabled` a line later says the same thing
+	without throwing the layout away.
 ]]
 local storedOpen = plugin:GetSetting(SETTING_WIDGET_OPEN)
 local wantOpen = if typeof(storedOpen) == "boolean" then storedOpen else true
@@ -265,15 +273,53 @@ if typeof(storedSize) == "table" then
 	end
 end
 
+--[[
+	One id per DataModel, because a playtest runs three of this plugin at once.
+
+	Pressing Play loads it again into the playtest's server DataModel and again
+	into its client one, and both used to ask Studio for a widget under the SAME
+	id as the editor's. Studio keeps one saved layout per id, so three widgets
+	were writing and reading one slot at the same moment -- which is why the
+	panel came up docked roughly one test in five and floating in the middle the
+	rest of the time, with nothing about the place or the plugin having changed.
+
+	Separate ids give each its own memory, so a playtest can never write over
+	where the user put the editor's panel.
+]]
+local widgetId = "StudioMCP_Console"
+if not RunService:IsEdit() then
+	widgetId = if RunService:IsServer() then "StudioMCP_Console_Server" else "StudioMCP_Console_Client"
+end
+
+--[[
+	The play view's own panel stays shut, because Studio will not place it.
+
+	A playtest's client DataModel gets a widget like any other, and it is the one
+	that ends up on screen over the game. It cannot be docked: measured, it asked
+	Studio for `Left` with nothing saved to override it -- `restored=false` -- and
+	came back 273x317 in the middle of the screen anyway. A widget's position also
+	cannot be set after it exists, so there is no second attempt to make.
+
+	It has nothing to show either. The client half cannot make HTTP requests, so
+	it never connects; all it ever said was to switch to the Server view.
+
+	So it is created and left closed. The toolbar button still opens it for
+	anyone who wants it there, and the editor's panel -- the one that docks
+	properly -- is untouched.
+]]
+local isPlayClient = not RunService:IsEdit() and not RunService:IsServer()
+local openOnLoad = wantOpen and not isPlayClient
+
 local widget = plugin:CreateDockWidgetPluginGuiAsync(
-	"StudioMCP_Console",
+	widgetId,
 	DockWidgetPluginGuiInfo.new(
+		-- Only ever used the first time an id is seen, before Studio has a
+		-- layout of its own to restore.
 		Enum.InitialDockState.Float,
-		wantOpen,
-		-- Override Studio's own enabled-restore: ours is the one that survives
-		-- the hop into a playtest DataModel, and two restores disagreeing is
-		-- what produced a panel that was open in the editor and closed in play.
-		true,
+		openOnLoad,
+		-- Left off so the saved layout -- where the user docked the panel --
+		-- survives. See above.
+		false,
 		floatWidth,
 		floatHeight,
 		360,
@@ -281,6 +327,16 @@ local widget = plugin:CreateDockWidgetPluginGuiAsync(
 	)
 )
 widget.Title = "rbx-studio"
+
+--[[
+	Ours is the enabled state that crosses into a playtest DataModel, so it is
+	applied here rather than trusted to Studio's restore. Only when it disagrees:
+	assigning the value it already holds is free, but the check keeps this from
+	looking like the thing that opens the panel.
+]]
+if widget.Enabled ~= openOnLoad then
+	widget.Enabled = openOnLoad
+end
 
 --[[
 	Remember what the user does with the panel, from the editor only.
