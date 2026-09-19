@@ -197,7 +197,7 @@ local function cleanup()
 end
 relay.Destroying:Connect(cleanup)
 local mainThread = coroutine.running()
-local watchdog = task.delay(20, function()
+local watchdog = task.delay(relay:GetAttribute("Budget") or 20, function()
 	cleanup()
 	task.cancel(mainThread)
 end)
@@ -550,9 +550,19 @@ function Input.send(params: { [string]: any }): { [string]: any }
 
 	local plan = planFrom(params)
 	local player = ClientRelay.playerFor(params.player)
+
+	--[[
+		The deadline grows with the plan. A flat 20s refused plans the schema
+		allows -- two 10s holds and a tap came back NO_ACK while the client was
+		still pressing keys. Each step also gets a little for cursor travel.
+	]]
+	local budget = ACK_TIMEOUT
+	for _, step in plan do
+		budget += (step.hold or 0) + (step.after or 0) + 0.5
+	end
 	local result = ClientRelay.run(player, "MCPInputRelay", RELAY_SOURCE, {
-		Plan = HttpService:JSONEncode(plan), Cursor = params.cursor ~= false,
-	}, ACK_TIMEOUT)
+		Plan = HttpService:JSONEncode(plan), Cursor = params.cursor ~= false, Budget = budget,
+	}, budget + 2)
 
 	if result.ok ~= true then
 		Dispatch.fail("INPUT_FAILED", tostring(result.reason or "the client refused the plan"))

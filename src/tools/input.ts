@@ -231,7 +231,13 @@ export function registerInputTools(context: ToolContext): void {
         { steps: args.steps, player: args.player, cursor: args.cursor },
         // The plugin waits for the client's acknowledgement, and the steps
         // themselves can hold keys for seconds, so the deadline must outlast both.
-        { studioId: args.studioId, timeoutMs: 90_000 },
+        // Mirrors the plugin's budget (20s + holds + waits + 0.5s a step) with
+        // room for the round trip, so a long plan is never cut off here first.
+        {
+          studioId: args.studioId,
+          timeoutMs:
+            (35 + args.steps.reduce((sum, step) => sum + (step.hold ?? 0) + (step.after ?? 0) + 0.5, 0)) * 1000,
+        },
       );
 
       /*
