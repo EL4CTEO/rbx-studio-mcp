@@ -2,7 +2,7 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
-## 0.7.4 - Client Runtime Bridge
+## 0.7.4
 
 - Extend `execute_luau` with `target="client"` and optional `player`, running in the actual playtest client VM with bounded structured returns and captured output.
 - Share temporary relay setup, player selection, acknowledgement deadlines and cleanup with `input`.
