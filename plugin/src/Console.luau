@@ -734,19 +734,6 @@ function Console.restore(rows: { Row })
 end
 
 --[[
-	Announces a command as it starts -- everywhere except the log.
-
-	This used to append a line, and then the reply appended a second one saying
-	the same thing in a different colour. Every call cost two rows and read as
-	duplicated output, which is exactly what it was: a cyan "Edit KillBrick"
-	followed by a violet "Edit KillBrick".
-
-	The log now takes one line per call, written when it finishes and carrying
-	the latency it took. What is running *right now* belongs in a place that
-	updates rather than accumulates, so it goes to the footer and the activity
-	band -- both of which show a single current value and neither of which grows.
-]]
---[[
 	Colour and pace per kind of work, so the band reads as what is happening.
 
 	Reads are cool and quick because they are constant and harmless; writes are
@@ -761,6 +748,19 @@ local KIND_LOOK: { [string]: { key: string, urgency: number } } = {
 	debug = { key = "amber", urgency = 0.5 },
 }
 
+--[[
+	Announces a command as it starts -- everywhere except the log.
+
+	This used to append a line, and then the reply appended a second one saying
+	the same thing in a different colour. Every call cost two rows and read as
+	duplicated output, which is exactly what it was: a cyan "Edit KillBrick"
+	followed by a violet "Edit KillBrick".
+
+	The log now takes one line per call, written when it finishes and carrying
+	the latency it took. What is running *right now* belongs in a place that
+	updates rather than accumulates, so it goes to the footer and the activity
+	band -- both of which show a single current value and neither of which grows.
+]]
 function Console.beginCall(title: string, kind: string)
 	state.running = title
 	state.generation += 1
@@ -1847,14 +1847,6 @@ function Console.focusPrompt()
 end
 
 --[[
-	Reports that an agent started from the prompt is working.
-
-	Two instruments, one fact. The caret says it to whoever is about to type;
-	the cell says it to whoever is glancing at the panel from across the screen.
-	Told in one place because they must never disagree -- a caret that has gone
-	back to violet beside a cell still pulsing is a panel arguing with itself.
-]]
---[[
 	Passes Studio's current selection to the prompt row.
 
 	A pass-through, and worth having anyway: `init.server` owns the watcher and
@@ -1865,6 +1857,14 @@ function Console.setSelection(text: string)
 	Prompt.setSelection(text)
 end
 
+--[[
+	Reports that an agent started from the prompt is working.
+
+	Two instruments, one fact. The caret says it to whoever is about to type;
+	the cell says it to whoever is glancing at the panel from across the screen.
+	Told in one place because they must never disagree -- a caret that has gone
+	back to violet beside a cell still pulsing is a panel arguing with itself.
+]]
 function Console.setPromptBusy(busy: boolean)
 	Prompt.setBusy(busy)
 	Visuals.setThinking(busy)

@@ -28,13 +28,6 @@ export interface ToolSpec<Shape extends ZodRawShape> {
 }
 
 /**
- * Registers a tool with consistent annotations and a single error boundary.
- *
- * Failures come back as `isError` content rather than a protocol-level error:
- * the agent can read the hint and correct itself, where a transport error just
- * aborts the turn.
- */
-/**
  * Parsed argument object for a tool declared with `inputSchema: Shape`.
  *
  * Zod 4 dropped `objectOutputType`, so this goes through `z.object` and infers
@@ -42,6 +35,13 @@ export interface ToolSpec<Shape extends ZodRawShape> {
  */
 export type ToolArgs<Shape extends ZodRawShape> = z.infer<z.ZodObject<Shape>>;
 
+/**
+ * Registers a tool with consistent annotations and a single error boundary.
+ *
+ * Failures come back as `isError` content rather than a protocol-level error:
+ * the agent can read the hint and correct itself, where a transport error just
+ * aborts the turn.
+ */
 export function defineTool<Shape extends ZodRawShape>(
   context: ToolContext,
   spec: ToolSpec<Shape>,

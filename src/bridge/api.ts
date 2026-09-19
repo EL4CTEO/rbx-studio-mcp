@@ -83,14 +83,6 @@ export interface SessionsView {
 }
 
 /**
- * The bridge as seen from the process that actually holds the port.
- *
- * Carries a client id like any other, rather than being privileged as "the"
- * client. The process holding the port is still just one agent among however
- * many are connected, and its chosen Studio has no more right to leak into
- * everyone else's calls than a proxying peer's would.
- */
-/**
  * How often the owner reminds the bridge it is still here.
  *
  * The same cadence a proxying peer uses, because it is the same problem. The
@@ -104,6 +96,14 @@ export interface SessionsView {
  */
 const KEEPALIVE_MS = 30_000;
 
+/**
+ * The bridge as seen from the process that actually holds the port.
+ *
+ * Carries a client id like any other, rather than being privileged as "the"
+ * client. The process holding the port is still just one agent among however
+ * many are connected, and its chosen Studio has no more right to leak into
+ * everyone else's calls than a proxying peer's would.
+ */
 export class LocalBridge implements StudioBridge {
   readonly isOwner = true;
   private readonly clientId = randomUUID();

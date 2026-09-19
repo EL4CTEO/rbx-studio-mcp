@@ -179,14 +179,6 @@ local function takeControl(model: Model): boolean
 end
 
 --[[
-	Walks to a point, following a computed path around obstacles.
-
-	Reports where it ended up rather than only whether the call returned, because
-	`MoveTo` succeeds at being asked and says nothing about arriving. A route
-	blocked by a wall the agent did not know about looks identical to a
-	successful walk unless the final distance is measured.
-]]
---[[
 	Agent settings, shared by the route check and the walk.
 
 	Written once because a route that `path` calls walkable and `moveTo` then
@@ -336,6 +328,14 @@ function Character.path(params: { [string]: any }): { [string]: any }
 	}
 end
 
+--[[
+	Walks to a point, following a computed path around obstacles.
+
+	Reports where it ended up rather than only whether the call returned, because
+	`MoveTo` succeeds at being asked and says nothing about arriving. A route
+	blocked by a wall the agent did not know about looks identical to a
+	successful walk unless the final distance is measured.
+]]
 function Character.moveTo(params: { [string]: any }): { [string]: any }
 	local model, humanoid = humanoidOf(params)
 

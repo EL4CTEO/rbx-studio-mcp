@@ -39,20 +39,6 @@ function ScriptEdit.read(target: LuaSourceContainer): string
 end
 
 --[[
-	Replaces source through the editor. `transform` receives the current text and
-	returns the replacement; returning the input unchanged is a no-op.
-
-	`transform` is allowed to raise a structured Dispatch failure -- a bad line
-	range is only discoverable once the authoritative source is in hand. Such a
-	failure is stashed rather than thrown from inside the callback: throwing
-	there would surface as an opaque engine error and lose the code and hint the
-	agent needs. The callback instead returns the text untouched, making that one
-	script a no-op, and the original failure is re-raised afterwards.
-
-	Raises SCRIPT_LOCKED when the write is refused, which normally means the
-	script is a package member or is owned by another Team Create session.
-]]
---[[
 	Makes sure a write that reported success actually stuck.
 
 	`UpdateSourceAsync` returns true and the editor buffer shows the new text --
@@ -97,6 +83,20 @@ local function confirm(target: LuaSourceContainer, produced: string?)
 	end
 end
 
+--[[
+	Replaces source through the editor. `transform` receives the current text and
+	returns the replacement; returning the input unchanged is a no-op.
+
+	`transform` is allowed to raise a structured Dispatch failure -- a bad line
+	range is only discoverable once the authoritative source is in hand. Such a
+	failure is stashed rather than thrown from inside the callback: throwing
+	there would surface as an opaque engine error and lose the code and hint the
+	agent needs. The callback instead returns the text untouched, making that one
+	script a no-op, and the original failure is re-raised afterwards.
+
+	Raises SCRIPT_LOCKED when the write is refused, which normally means the
+	script is a package member or is owned by another Team Create session.
+]]
 function ScriptEdit.write(target: LuaSourceContainer, transform: (string) -> string)
 	local pending: any = nil
 

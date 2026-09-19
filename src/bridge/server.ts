@@ -3,7 +3,7 @@ import { CLIENT_HEADER, PROTOCOL_VERSION } from "../lib/protocol.js";
 import { PEER_HEADER } from "./remote.js";
 import { toToolError } from "../lib/errors.js";
 import type { CommandResult, StudioIdentity } from "../lib/protocol.js";
-import { Bridge } from "./rpc.js";
+import { Bridge, sseFrame } from "./rpc.js";
 import { LocalBridge, type StudioBridge } from "./api.js";
 import { probeOwner, RemoteBridge } from "./remote.js";
 import { FailoverBridge, type ClaimedPort } from "./failover.js";
@@ -416,11 +416,7 @@ async function handleEvents(
   // caps a stream at thirty minutes, so every long session does -- would
   // otherwise show a stale badge until the next agent came or went.
   res.write(
-    `data: ${JSON.stringify({
-      event: "clients",
-      count: bridge.clientCount(),
-      list: bridge.clientList(),
-    })}\n\n`,
+    sseFrame({ event: "clients", count: bridge.clientCount(), list: bridge.clientList() }),
   );
   const heartbeat = setInterval(() => {
     if (res.writableEnded || res.destroyed) return;
@@ -578,21 +574,6 @@ function send(res: ServerResponse, status: number, body: unknown): void {
 }
 
 /**
- * Runs a command on behalf of another instance of this server.
- *
- * The failure is returned as a body rather than an HTTP status, because the
- * code and hint are the useful part and a 500 would throw them away — the peer
- * rebuilds a ToolError from this and the agent sees the same text it would have
- * seen had this process been the one it was talking to.
- */
-/**
- * Which peer is asking, so its chosen Studio does not become everyone's.
- *
- * A peer that sends no id is treated as one anonymous client rather than
- * rejected: an older instance proxying to a newer one still works, it simply
- * shares a target with any other peer that also predates the header.
- */
-/**
  * Registers a peer and records what it says about itself.
  *
  * The description is optional and unverified, which is the right trade here:
@@ -647,12 +628,27 @@ function label(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value.slice(0, 64) : undefined;
 }
 
+/**
+ * Which peer is asking, so its chosen Studio does not become everyone's.
+ *
+ * A peer that sends no id is treated as one anonymous client rather than
+ * rejected: an older instance proxying to a newer one still works, it simply
+ * shares a target with any other peer that also predates the header.
+ */
 function peerId(req: IncomingMessage): string {
   const sent = req.headers[PEER_HEADER];
   const value = Array.isArray(sent) ? sent[0] : sent;
   return value && value.length > 0 ? value : "anonymous-peer";
 }
 
+/**
+ * Runs a command on behalf of another instance of this server.
+ *
+ * The failure is returned as a body rather than an HTTP status, because the
+ * code and hint are the useful part and a 500 would throw them away — the peer
+ * rebuilds a ToolError from this and the agent sees the same text it would have
+ * seen had this process been the one it was talking to.
+ */
 async function handlePeerCall(
   bridge: Bridge,
   req: IncomingMessage,

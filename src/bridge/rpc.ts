@@ -94,6 +94,11 @@ function summarize(value: unknown, depth = 0): unknown {
   return out;
 }
 
+/** One SSE event. JSON never holds a raw newline, so one `data:` line is enough. */
+export function sseFrame(data: unknown): string {
+  return `data: ${JSON.stringify(data)}\n\n`;
+}
+
 /** One connected Studio process, plus whatever it is using to receive commands. */
 interface Session {
   identity: StudioIdentity;
@@ -541,14 +546,6 @@ export class Bridge {
   }
 
   /**
-   * Writes one non-command frame to every plugin holding an open stream.
-   *
-   * Poll sessions are not served here -- they have no socket to write to, and
-   * their own response already carries the same value. Best-effort by design:
-   * a plugin that misses one of these has stale trim on its header, which is
-   * not worth a retry queue.
-   */
-  /**
    * Tells the other Studio sessions on the same place what just ran.
    *
    * Pressing Play gives one place two connections -- the editor's and the
@@ -567,16 +564,14 @@ export class Bridge {
    * has open and another place's traffic is not this place's history.
    */
   private announceToPeers(origin: Session, pending: Pending, ok: boolean): void {
-    const payload = `data: ${JSON.stringify({
+    const payload = sseFrame({
       event: "peer",
       op: pending.op,
       params: pending.params,
       ok,
       ms: Date.now() - pending.startedAt,
       from: origin.identity.context ?? "another session",
-    })}
-
-`;
+    });
     for (const [id, session] of this.sessions) {
       if (id === origin.identity.studioId) continue;
       if (session.identity.placeId !== origin.identity.placeId) continue;
@@ -595,9 +590,7 @@ export class Bridge {
   notify(studioId: string, frame: Record<string, unknown>): void {
     const session = this.sessions.get(studioId);
     if (session?.stream && !session.stream.writableEnded) {
-      session.stream.write(`data: ${JSON.stringify(frame)}
-
-`);
+      session.stream.write(sseFrame(frame));
     }
   }
 
@@ -622,8 +615,16 @@ export class Bridge {
     this.defaultStudio = studioId;
   }
 
+  /**
+   * Writes one non-command frame to every plugin holding an open stream.
+   *
+   * Poll sessions are not served here -- they have no socket to write to, and
+   * their own response already carries the same value. Best-effort by design:
+   * a plugin that misses one of these has stale trim on its header, which is
+   * not worth a retry queue.
+   */
   broadcast(frame: Record<string, unknown>): void {
-    const payload = `data: ${JSON.stringify(frame)}\n\n`;
+    const payload = sseFrame(frame);
     for (const session of this.sessions.values()) {
       if (session.stream && !session.stream.writableEnded) session.stream.write(payload);
     }
@@ -631,7 +632,7 @@ export class Bridge {
 
   private deliver(session: Session, command: Command): void {
     if (session.stream && !session.stream.writableEnded) {
-      session.stream.write(`data: ${JSON.stringify(command)}\n\n`);
+      session.stream.write(sseFrame(command));
       return;
     }
     if (session.waiter) {
@@ -645,7 +646,7 @@ export class Bridge {
   private flush(session: Session): void {
     if (!session.stream || session.stream.writableEnded) return;
     for (const command of session.queue.splice(0)) {
-      session.stream.write(`data: ${JSON.stringify(command)}\n\n`);
+      session.stream.write(sseFrame(command));
     }
   }
 }

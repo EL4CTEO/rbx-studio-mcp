@@ -46,7 +46,20 @@ const transport = readFileSync(join(root, "plugin", "src", "Transport.luau"), "u
 const stub = readFileSync(join(root, "tests", "jsonstub.luau"), "utf8").replace(/^return Net$/m, "");
 const cases = readFileSync(join(root, "tests", "sseframes.luau"), "utf8");
 
-const bundle = [stub, extractFunction(transport, "parseFrames"), cases].join("\n");
+/** Lifts one top-level `local NAME = ...` constant, so a lifted function can see it. */
+function extractConstant(source, name) {
+  const match = new RegExp(`^local ${name}\\b[^\\r\\n]*`, "m").exec(source);
+  if (match === null) throw new Error(`${name} is not in Transport.luau any more`);
+  return match[0];
+}
+
+const bundle = [
+  stub,
+  extractConstant(transport, "MAX_PENDING"),
+  extractFunction(transport, "parseFrames"),
+  extractFunction(transport, "frameReader"),
+  cases,
+].join("\n");
 const bundlePath = join(mkdtempSync(join(tmpdir(), "studio-mcp-sse-")), "bundle.luau");
 writeFileSync(bundlePath, bundle, "utf8");
 

@@ -57,11 +57,6 @@ local function resolveScript(path: string): LuaSourceContainer
 end
 
 --[[
-	Reads source, optionally a line window. `startLine`/`endLine` are 1-based and
-	inclusive, matching the numbers script_edit takes back, so a read and a write
-	need no off-by-one conversion between them.
-]]
---[[
 	A short fingerprint of a script's source, for detecting that it moved.
 
 	Handed out by `read` and passed back to `edit`, which refuses to write when
@@ -136,6 +131,11 @@ local function syncedFile(target: Instance): string?
 	return name
 end
 
+--[[
+	Reads source, optionally a line window. `startLine`/`endLine` are 1-based and
+	inclusive, matching the numbers script_edit takes back, so a read and a write
+	need no off-by-one conversion between them.
+]]
 function Scripts.read(params: { [string]: any }): { [string]: any }
 	local paths = params.paths
 	if typeof(paths) ~= "table" or #paths == 0 then
@@ -381,12 +381,45 @@ function Scripts.grep(params: { [string]: any }): { [string]: any }
 		)
 	end
 
+	local function badPattern(reason: any): never
+		Dispatch.fail(
+			"BAD_PATTERN",
+			string.format("%s is not a valid Lua pattern: %s", pattern, tostring(reason)),
+			"Lua patterns escape with %, not backslash, and have no alternation. "
+				.. "Set `literal` to search for the text exactly as written."
+		)
+	end
+
+	--[[
+		One search over the whole file before splitting it into lines.
+
+		Most scripts in a place do not contain what is being looked for, and
+		splitting each into a line table only to find nothing was most of the cost
+		of a place-wide search. A pattern that matches no line cannot match the
+		whole file either -- except one anchored with `^` or `$`, which mean line
+		ends here but file ends there, so those skip this shortcut.
+	]]
+	-- Any trailing `$` counts, escaped or not: skipping the shortcut costs speed,
+	-- taking it wrongly would hide matches.
+	local anchored = not literal and (string.sub(needle, 1, 1) == "^" or string.sub(needle, -1) == "$")
+
 	local matches: { { [string]: any } } = {}
 	local total = 0
 	local memo: Paths.NameIndex = {}
 
 	for _, target in targets do
-		local lines = TextEdit.toLines(ScriptEdit.read(target))
+		local source = ScriptEdit.read(target)
+		if not anchored then
+			local ok, found = pcall(string.find, if ignoreCase then string.lower(source) else source, needle, 1, literal)
+			if not ok then
+				badPattern(found)
+			end
+			if not found then
+				continue
+			end
+		end
+
+		local lines = TextEdit.toLines(source)
 		local path: string? = nil
 
 		for number, line in lines do
@@ -395,12 +428,7 @@ function Scripts.grep(params: { [string]: any }): { [string]: any }
 			-- has to be caught and reported as a pattern problem, not a no-match.
 			local ok, from = pcall(string.find, haystack, needle, 1, literal)
 			if not ok then
-				Dispatch.fail(
-					"BAD_PATTERN",
-					string.format("%s is not a valid Lua pattern: %s", pattern, tostring(from)),
-					"Lua patterns escape with %, not backslash, and have no alternation. "
-						.. "Set `literal` to search for the text exactly as written."
-				)
+				badPattern(from)
 			end
 			if not from then
 				continue
@@ -441,12 +469,6 @@ function Scripts.grep(params: { [string]: any }): { [string]: any }
 end
 
 --[[
-	Creates scripts. Source is assigned directly here rather than through
-	`UpdateSourceAsync`: the instance does not exist yet, so nothing can have it
-	open in the editor and there is no buffer to conflict with. Every later edit
-	goes through the editor path.
-]]
---[[
 	Names the starter container a script was just parented into, or nil.
 
 	These four are copied into the player rather than run where they sit, so a
@@ -457,6 +479,14 @@ end
 	Client over LocalScript" advice writes a double-running script and is given
 	no way to find out.
 ]]
+--[[
+	Assigning `Source` fails at 200,000 characters or more ("Provided string
+	length ... is greater than or equal to max length (200000)"), while
+	`UpdateSourceAsync` takes far more -- measured writing 279,000. Sources at
+	the limit are written through the editor instead of refused.
+]]
+local SOURCE_PROPERTY_LIMIT = 200000
+
 local STARTER_CONTAINERS = {
 	"StarterGui",
 	"StarterPack",
@@ -473,6 +503,12 @@ local function starterContainer(instance: Instance): string?
 	return nil
 end
 
+--[[
+	Creates scripts. Source is assigned directly here rather than through
+	`UpdateSourceAsync`: the instance does not exist yet, so nothing can have it
+	open in the editor and there is no buffer to conflict with. Every later edit
+	goes through the editor path.
+]]
 function Scripts.create(params: { [string]: any }): { [string]: any }
 	local requests = params.scripts
 	if typeof(requests) ~= "table" or #requests == 0 then
@@ -503,6 +539,7 @@ function Scripts.create(params: { [string]: any }): { [string]: any }
 	-- No shared path memo here: each creation changes its parent's children, so a
 	-- cached sibling grouping would go stale mid-batch and mis-number the paths.
 	local warnings: { string } = {}
+	local oversized: { { target: LuaSourceContainer, source: string } } = {}
 
 	local created, recorded = Undo.record("StudioMCP.ScriptCreate", "MCP create script", function()
 		local created: { { [string]: any } } = {}
@@ -513,7 +550,11 @@ function Scripts.create(params: { [string]: any }): { [string]: any }
 
 			instance.Name = request.name
 			if typeof(request.source) == "string" then
-				(instance :: ScriptEdit.SourceContainer).Source = request.source
+				if #request.source < SOURCE_PROPERTY_LIMIT then
+					(instance :: ScriptEdit.SourceContainer).Source = request.source
+				else
+					table.insert(oversized, { target = instance, source = request.source })
+				end
 			end
 
 			if typeof(request.runContext) == "string" and instance:IsA("Script") then
@@ -604,6 +645,14 @@ function Scripts.create(params: { [string]: any }): { [string]: any }
 
 		return created
 	end)
+
+	-- After the recording, because the editor write yields. Undoing the create
+	-- still removes these scripts whole, source and all.
+	for _, entry in oversized do
+		ScriptEdit.write(entry.target, function()
+			return entry.source
+		end)
+	end
 
 	return {
 		items = created,

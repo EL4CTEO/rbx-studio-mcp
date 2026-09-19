@@ -155,13 +155,6 @@ interface StoreFilters {
 }
 
 /**
- * Searches the Creator Store from the server rather than the plugin.
- *
- * Node already has internet access and these endpoints answer unauthenticated,
- * while a plugin making outbound HTTP needs the user to approve each domain in
- * Plugin Management. Searching here means it works the moment the server starts.
- */
-/**
  * Pages to pull before filtering gives up looking for more.
  *
  * Filtering happens here rather than at Roblox (see below), so a strict filter

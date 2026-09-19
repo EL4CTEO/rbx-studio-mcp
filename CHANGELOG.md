@@ -2,6 +2,18 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.7.2
+
+### Fixed
+- Big scripts no longer time out in `script_create` or `script_edit`. Studio splits large messages, and the plugin was dropping them.
+- `script_create` handles scripts of 200,000+ characters, which Roblox refused before.
+- `script_read` cuts long scripts on a whole line and says which `startLine` to read next.
+
+### Changed
+- New `npm run test:live` checks big scripts against a real Studio.
+- Tests no longer need a fixed free port.
+- Dependencies updated.
+
 ## 0.7.1
 
 ### Fixed

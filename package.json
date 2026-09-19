@@ -1,6 +1,6 @@
 {
   "name": "@el4cteo/rbx-studio-mcp",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "MCP server for Roblox Studio. 35 tools, push-based SSE bridge, editor-safe script edits, one-step undo.",
   "type": "module",
   "license": "MIT",
@@ -30,7 +30,8 @@
     "start": "node dist/index.js",
     "build:plugin": "node scripts/check-plugin.mjs && node scripts/build-plugin.mjs",
     "sourcemap": "node scripts/sourcemap.mjs",
-    "test": "node scripts/test-plugin.mjs && node scripts/test-transport.mjs && node scripts/test-server.mjs && node scripts/test-bridge.mjs && node scripts/test-console.mjs && node scripts/test-failover.mjs",
+    "test:live": "node scripts/test-live.mjs",
+    "test": "node scripts/test-plugin.mjs && node scripts/test-transport.mjs && node scripts/test-server.mjs && node scripts/test-bridge.mjs && node scripts/test-console.mjs && node scripts/test-failover.mjs && node scripts/test-tools.mjs",
     "build:all": "npm run build && npm run build:plugin",
     "install:plugin": "node scripts/install-plugin.mjs",
     "check:plugin": "node scripts/check-plugin.mjs",
@@ -56,7 +57,7 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
-    "@types/node": "^26.6.1",
+    "@types/node": "^26.6.2",
     "typescript": "^7.0.2"
   },
   "author": "EL4CTEO",

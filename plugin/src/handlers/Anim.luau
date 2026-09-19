@@ -131,22 +131,6 @@ local function flatten(node: Instance, prefix: string, into: { { [string]: any }
 end
 
 --[[
-	Which rig an animation was made for, read off the joints it moves.
-
-	This matters more than it sounds. An R15 animation played on an R6 character
-	does nothing at all -- no error, no warning, no movement -- because the joint
-	names it addresses ("LeftUpperArm") do not exist on that rig ("Left Arm").
-	It is one of the quietest failures on the platform, and the asset id carries
-	no hint of which kind it is.
-
-	The two skeletons are told apart by naming rather than by counting. R6 uses
-	six limbs with spaces in their names, unchanged since 2007. R15 splits each
-	limb in two and writes them without spaces. Anything that matches neither is
-	a custom rig, and is reported as such rather than guessed at -- a wrong
-	confident answer here is worse than "unknown", because the whole point of
-	the field is to be trusted.
-]]
---[[
 	Which joint hangs off which, for the two rigs Roblox ships.
 
 	A KeyframeSequence is not a flat list of poses: the engine matches the POSE
@@ -207,6 +191,22 @@ local R15_PARTS = {
 	RightLowerArm = true,
 }
 
+--[[
+	Which rig an animation was made for, read off the joints it moves.
+
+	This matters more than it sounds. An R15 animation played on an R6 character
+	does nothing at all -- no error, no warning, no movement -- because the joint
+	names it addresses ("LeftUpperArm") do not exist on that rig ("Left Arm").
+	It is one of the quietest failures on the platform, and the asset id carries
+	no hint of which kind it is.
+
+	The two skeletons are told apart by naming rather than by counting. R6 uses
+	six limbs with spaces in their names, unchanged since 2007. R15 splits each
+	limb in two and writes them without spaces. Anything that matches neither is
+	a custom rig, and is reported as such rather than guessed at -- a wrong
+	confident answer here is worse than "unknown", because the whole point of
+	the field is to be trusted.
+]]
 local function rigOf(joints: { [string]: boolean }): (string, string?)
 	local r6, r15 = 0, 0
 	for joint in joints do
@@ -419,21 +419,6 @@ function Anim.read(params: { [string]: any }): { [string]: any }
 end
 
 --[[
-	Builds a KeyframeSequence in memory and registers it for playback.
-
-	The registration is what makes this more than an instance tree: it returns a
-	content id that an Animation can use immediately, in this Studio, with no
-	upload and no moderation wait. That is the whole loop an agent needs to try
-	an idea -- build, set AnimationId, look -- and it is entirely reversible,
-	because nothing left the session.
-
-	Poses arrive flat, named by joint, and are nested under one root pose here.
-	Flat is what a caller can write and nesting is what the engine resolves, and
-	the rig's own hierarchy is not knowable from a list of joint names -- so a
-	single root is the honest structure: it animates the named joints and claims
-	nothing about how they connect.
-]]
---[[
 	The joint tree to nest poses against.
 
 	A named rig wins, because it is the truth: a custom rig, a tool, a door, a
@@ -477,6 +462,21 @@ local function parentMap(params: { [string]: any }, joints: { [string]: boolean 
 	return R6_PARENT, "R6"
 end
 
+--[[
+	Builds a KeyframeSequence in memory and registers it for playback.
+
+	The registration is what makes this more than an instance tree: it returns a
+	content id that an Animation can use immediately, in this Studio, with no
+	upload and no moderation wait. That is the whole loop an agent needs to try
+	an idea -- build, set AnimationId, look -- and it is entirely reversible,
+	because nothing left the session.
+
+	Poses arrive flat, named by joint, and are nested under one root pose here.
+	Flat is what a caller can write and nesting is what the engine resolves, and
+	the rig's own hierarchy is not knowable from a list of joint names -- so a
+	single root is the honest structure: it animates the named joints and claims
+	nothing about how they connect.
+]]
 function Anim.build(params: { [string]: any }): { [string]: any }
 	local frames = params.keyframes
 	if typeof(frames) ~= "table" or #(frames :: { any }) == 0 then
@@ -637,25 +637,6 @@ function Anim.build(params: { [string]: any }): { [string]: any }
 end
 
 --[[
-	Plays an animation on a real rig, in edit mode, so it can be looked at.
-
-	`read` says what an animation contains and `build` makes one; neither answers
-	"does it look right", which for a piece of motion is most of the question.
-	Measured: an `Animator` loads and plays a track in an ordinary edit session
-	-- `Length` comes back populated and `IsPlaying` is true -- so the rig in the
-	place can be posed without pressing Play.
-
-	The frame is the point. Playing an animation and returning immediately shows
-	whatever pose the rig happened to be in, so this seeks to a chosen moment and
-	holds it there: play, jump to `at`, pause. Then `screenshot` sees that exact
-	pose, and asking for three different moments gives three comparable frames.
-
-	Deliberately leaves the rig posed rather than restoring it. The whole purpose
-	is to leave something on screen to photograph, and a tool that tidied up
-	before returning would always photograph the idle pose. `op="stop"` puts it
-	back.
-]]
---[[
 	Puts a rig back the way it was before anything was played on it.
 
 	Four steps, and every one of them is load-bearing -- this took three wrong
@@ -722,6 +703,25 @@ local function restPose(model: Instance, animator: Animator)
 	animator:StepAnimations(1 / 60)
 end
 
+--[[
+	Plays an animation on a real rig, in edit mode, so it can be looked at.
+
+	`read` says what an animation contains and `build` makes one; neither answers
+	"does it look right", which for a piece of motion is most of the question.
+	Measured: an `Animator` loads and plays a track in an ordinary edit session
+	-- `Length` comes back populated and `IsPlaying` is true -- so the rig in the
+	place can be posed without pressing Play.
+
+	The frame is the point. Playing an animation and returning immediately shows
+	whatever pose the rig happened to be in, so this seeks to a chosen moment and
+	holds it there: play, jump to `at`, pause. Then `screenshot` sees that exact
+	pose, and asking for three different moments gives three comparable frames.
+
+	Deliberately leaves the rig posed rather than restoring it. The whole purpose
+	is to leave something on screen to photograph, and a tool that tidied up
+	before returning would always photograph the idle pose. `op="stop"` puts it
+	back.
+]]
 function Anim.preview(params: { [string]: any }): { [string]: any }
 	local rigPath = params.rig
 	if typeof(rigPath) ~= "string" or rigPath == "" then

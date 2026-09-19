@@ -26,15 +26,6 @@ local Secret = {}
 	Commands whose arguments are secret, and from which word onwards.
 
 	Keyed by "command subcommand" so `cloud key <secret>` is covered and `cloud
-	test` -- which carries nothing -- is not masked into uselessness. The user id
-	is masked too. It is not a credential and it is on a public profile URL, but
-	it names the account the key belongs to, and a screenshot showing both is
-	worth more to somebody than a screenshot showing either.
-]]
---[[
-	Commands whose arguments are secret, and from which word onwards.
-
-	Keyed by "command subcommand" so `cloud key <secret>` is covered and `cloud
 	test` -- which carries nothing -- is not masked into uselessness.
 
 	ONLY the key. The user, group, universe and place ids were masked here too

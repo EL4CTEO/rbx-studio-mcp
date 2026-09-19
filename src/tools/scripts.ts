@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { body, cursorSchema, decodeCursor, encodeCursor, json, limitSchema, table, text, type ToolResult } from "../lib/format.js";
+import { body, CHARACTER_LIMIT, cursorSchema, decodeCursor, encodeCursor, json, limitSchema, table, text, type ToolResult } from "../lib/format.js";
 import { ToolError } from "../lib/errors.js";
 import { liveChildren, liveInstance, liveScriptWrite, resolveLivePath } from "../lib/liveops.js";
 import {
@@ -21,8 +21,8 @@ interface ReadResponse {
     source: string;
     /** Fingerprint of the whole file, handed back to script_edit. */
     revision?: string;
-  /** Set when Studio has the script bound to a file outside it. */
-  fileSync?: string;
+    /** Set when Studio has the script bound to a file outside it. */
+    fileSync?: string;
   }>;
   failures: string[];
 }
@@ -67,12 +67,61 @@ interface CreateResponse {
  * values, so an agent that reads a window can write back to it without counting
  * newlines itself.
  */
-function numbered(source: string, startLine: number): string {
+export function numbered(source: string, startLine: number): string {
   const lines = source.length === 0 ? [] : source.split("\n");
   const width = String(startLine + lines.length - 1).length;
   return lines
     .map((line, index) => `${String(startLine + index).padStart(width)}│ ${line}`)
     .join("\n");
+}
+
+/**
+ * Joins script listings, cutting a too-long one on a whole line.
+ *
+ * A generic clip at the character limit used to end mid-line with advice to
+ * "narrow with startLine/endLine" -- without saying where the cut fell, so the
+ * agent had to guess the next window of a big script. Here the cut lands after
+ * the last complete line and the note names the exact entry to read next.
+ * Failures go first, because a note about missing paths is short and must not
+ * be the part that gets clipped away.
+ */
+export function clipListing(
+  blocks: string[],
+  items: ReadResponse["items"],
+  failures: string | null,
+): string {
+  const head = failures !== null ? `${failures}\n\n` : "";
+  const whole = head + blocks.join("\n\n");
+  if (whole.length <= CHARACTER_LIMIT) return whole;
+
+  const budget = CHARACTER_LIMIT - 400;
+  let shown = head;
+  for (const [index, block] of blocks.entries()) {
+    const separator = index === 0 ? "" : "\n\n";
+    if (shown.length + separator.length + block.length <= budget) {
+      shown += separator + block;
+      continue;
+    }
+
+    const room = budget - shown.length - separator.length;
+    const cut = block.lastIndexOf("\n", room);
+    const kept = cut > 0 ? block.slice(0, cut) : "";
+    const item = items[index];
+    const lastLine = /(\d+)│[^\n]*$/.exec(kept)?.[1];
+    const untouched = blocks.length - index - 1;
+    const rest = untouched > 0 ? ` ${untouched} more script(s) after it were not shown.` : "";
+
+    if (kept !== "") shown += separator + kept;
+    const next =
+      item !== undefined && lastLine !== undefined
+        ? `${item.path} stops at line ${lastLine} of ${item.lineCount}. Continue with ` +
+          `{ path: "${item.path}", startLine: ${Number(lastLine) + 1}` +
+          (item.endLine !== undefined ? `, endLine: ${item.endLine}` : "") +
+          " }."
+        : `${item?.path ?? "The next script"} was not shown.`;
+    return `${shown}\n\n[clipped at ${CHARACTER_LIMIT} characters: ${next}${rest}]`;
+  }
+  return shown;
 }
 
 export function registerScriptTools(context: ToolContext): void {
@@ -329,18 +378,14 @@ export function registerScriptTools(context: ToolContext): void {
         return `${item.path}  (${item.className}, ${range}${stamp})${synced}\n${numbered(item.source, item.startLine)}`;
       });
 
-      if (response.failures.length > 0) {
-        blocks.push(
-          `Could not read ${response.failures.length} path(s):\n` +
-            response.failures.map((failure) => `  - ${failure}`).join("\n"),
-        );
-      }
-      if (blocks.length === 0) return text("No scripts read.");
+      const failures =
+        response.failures.length > 0
+          ? `Could not read ${response.failures.length} path(s):\n` +
+            response.failures.map((failure) => `  - ${failure}`).join("\n")
+          : null;
+      if (blocks.length === 0) return text(failures ?? "No scripts read.");
 
-      return body(
-        blocks.join("\n\n"),
-        "read fewer scripts per call, or narrow with startLine/endLine",
-      );
+      return text(clipListing(blocks, response.items, failures));
     },
   );
 
@@ -715,10 +760,11 @@ export function registerScriptTools(context: ToolContext): void {
       const response = await bridge.call<CreateResponse>(
         "script.create",
         { scripts: args.scripts },
-        // A batch of full script sources is the largest payload any tool sends,
-        // and the default 15s was seen timing out on ~12KB across three scripts.
-        // Splitting the batch is the wrong fix when the point of the tool is to
-        // create related scripts as one undo step.
+        // A batch of full script sources is the largest payload any tool sends.
+        // The timeouts once blamed on its size were the plugin dropping any
+        // command the stream delivered in more than one piece (see frameReader
+        // in Transport.luau); the longer budget stays for big batches that
+        // Studio is slow to parent.
         { studioId: args.studioId, timeoutMs: 60_000 },
       );
 

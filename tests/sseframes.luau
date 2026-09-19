@@ -35,3 +35,45 @@ assert(count(parseFrames("")) == 0, "empty yields nothing")
 assert(count(parseFrames("not json\n\n")) == 0, "garbage is dropped, not raised")
 
 print("all parser cases pass")
+
+-- One frame split over several reads: the case that timed out every big
+-- script_create. Nothing may come out until the last piece lands, and then
+-- exactly the one command.
+local big = 'data: {"id":"big","op":"script.create","params":{"source":"' .. string.rep("x", 40000) .. '"}}\n\n'
+local read = frameReader()
+local got = {}
+for at = 1, #big, 7000 do
+	for _, frame in read(string.sub(big, at, at + 6999)) do
+		table.insert(got, frame)
+	end
+end
+assert(count(got) == 1, "split frame reassembled once, got " .. count(got))
+assert(got[1].id == "big" and #got[1].params.source == 40000, "and intact")
+
+-- The split landing between the two newlines of the terminator, then a second
+-- frame riding on the same read as the tail of the first.
+local r2 = frameReader()
+assert(count(r2('data: {"id":"a","op":"x","params":{')) == 0, "partial yields nothing")
+local rest = r2('}}\n')
+local tailFirst = count(rest)
+local rest2 = r2('\ndata: {"id":"b","op":"y","params":{}}\n\n')
+assert(tailFirst + count(rest2) == 2, "both frames, once each, got " .. (tailFirst + count(rest2)))
+
+-- A delivery that is one bare event with no framing at all still parses.
+local r3 = frameReader()
+local bare = r3('{"id":"c","op":"studio.ping","params":{}}')
+assert(count(bare) == 1 and bare[1].op == "studio.ping", "unframed event")
+assert(count(r3("\n\n")) == 0, "its late terminator adds nothing")
+
+-- CRLF split across two reads.
+local r4 = frameReader()
+local crlf = count(r4('data: {"a":1}\r')) + count(r4('\n\r\n'))
+assert(crlf == 1, "crlf split across reads, got " .. crlf)
+
+-- A keepalive between halves of nothing, and each reader is its own.
+local r5, r6 = frameReader(), frameReader()
+assert(count(r5('data: {"id":"p",')) == 0, "partial held")
+assert(count(r6(': ping\n\n')) == 0, "other reader unaffected")
+assert(count(r5('"op":"q","params":{}}\n\n')) == 1, "first reader completes")
+
+print("all reader cases pass")

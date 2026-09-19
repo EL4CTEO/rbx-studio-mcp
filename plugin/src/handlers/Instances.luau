@@ -110,17 +110,17 @@ local function applyTags(target: Instance, tags: { [string]: any })
 end
 
 --[[
+	One property that could not be applied yet, kept for a second attempt.
+]]
+type Deferred = { target: Instance, name: string, spec: PropertySpec, className: string }
+
+--[[
 	Builds one instance and its descendants.
 
 	Children are created before the parent is attached to the data model, so a
 	model appears in the Explorer complete rather than assembling itself piece by
 	piece in front of the user.
 ]]
---[[
-	One property that could not be applied yet, kept for a second attempt.
-]]
-type Deferred = { target: Instance, name: string, spec: PropertySpec, className: string }
-
 local function build(
 	spec: { [string]: any },
 	parent: Instance,

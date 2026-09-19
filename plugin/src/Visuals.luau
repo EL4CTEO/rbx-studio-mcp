@@ -625,14 +625,6 @@ function Visuals.celebrate()
 end
 
 --[[
-	Re-places every bar and hands each to the active preset to draw.
-
-	Laid out right to left so the newest bar is always at the same edge and the
-	trace reads as scrolling rather than reshuffling. The horizontal position is
-	set here and the preset is expected to keep it -- everything else about the
-	bar is the preset's to decide.
-]]
---[[
 	Where slot `number` sits, counting 1 at the right edge and rising leftwards.
 
 	The one place the trace's spacing is decided. Both the history and the wave
@@ -656,6 +648,14 @@ end
 	so the history is lifted by the same swell that lifts the empty slots beside
 	it. Absent, every bar is drawn from its own recorded timing, which is what
 	restores the true trace the moment a wave ends.
+]]
+--[[
+	Re-places every bar and hands each to the active preset to draw.
+
+	Laid out right to left so the newest bar is always at the same edge and the
+	trace reads as scrolling rather than reshuffling. The horizontal position is
+	set here and the preset is expected to keep it -- everything else about the
+	bar is the preset's to decide.
 ]]
 local function relayout(modulate: ((number, number, number) -> (number, number))?)
 	local ctx = context()

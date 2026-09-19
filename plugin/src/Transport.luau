@@ -150,6 +150,61 @@ local function parseFrames(message: string): { { [string]: any } }
 	return frames
 end
 
+--[[
+	Most bytes one stream may hold while waiting for the end of an event. Far
+	above any real command -- the bridge caps bodies at 32MB -- and only there so
+	a stream that never sends a blank line cannot grow this without limit.
+]]
+local MAX_PENDING = 48 * 1024 * 1024
+
+--[[
+	Joins stream deliveries back into whole events before parsing them.
+
+	`MessageReceived` hands over whatever the socket read, not one event: two
+	small frames can share a delivery, and one big frame is split over several.
+	Parsing each delivery alone dropped every split frame, because half a JSON
+	document does not decode -- a `script_create` carrying a 16KB script vanished
+	and the call timed out with nothing logged on either side, while a 32KB one
+	that happened to land in one read worked.
+
+	So everything up to the last blank line is parsed and the rest is held for
+	the next delivery. A tail that already decodes on its own is taken at once,
+	which keeps this correct if Studio ever delivers events without their
+	trailing blank line.
+]]
+local function frameReader(): (chunk: string) -> { { [string]: any } }
+	local pending = ""
+
+	return function(chunk: string): { { [string]: any } }
+		-- Normalised after joining, so a CRLF split across two reads still folds.
+		pending = (string.gsub(pending .. chunk, "\r\n", "\n"))
+
+		local frames: { { [string]: any } } = {}
+		local lastBreak = string.match(pending, "^.*()\n\n")
+		if lastBreak ~= nil then
+			frames = parseFrames(string.sub(pending, 1, lastBreak - 1))
+			pending = string.sub(pending, lastBreak + 2)
+		end
+
+		-- A partial JSON document never ends in "}", so the decode is only
+		-- attempted when it could succeed rather than on every read of a big one.
+		if pending ~= "" and string.match(pending, "}%s*$") then
+			local tail = parseFrames(pending)
+			if #tail > 0 then
+				for _, frame in tail do
+					table.insert(frames, frame)
+				end
+				pending = ""
+			end
+		end
+
+		if #pending > MAX_PENDING then
+			pending = ""
+		end
+		return frames
+	end
+end
+
 local function handleFrame(callbacks: Callbacks, frame: { [string]: any })
 	local id = frame.id
 	local op = frame.op
@@ -196,10 +251,12 @@ local function runStream(callbacks: Callbacks): boolean
 		end)
 	)
 
+	-- One per stream: a partial event must never be glued onto the next stream.
+	local readFrames = frameReader()
 	table.insert(
 		connections,
 		client.MessageReceived:Connect(function(message: string)
-			for _, frame in parseFrames(message) do
+			for _, frame in readFrames(message) do
 				handleFrame(callbacks, frame)
 			end
 		end)

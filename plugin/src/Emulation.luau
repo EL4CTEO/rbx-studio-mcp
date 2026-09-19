@@ -55,14 +55,6 @@ local Emulation = {}
 Emulation.networkSettings = networkSettings
 
 --[[
-	The six traffic-shaping properties, in the order a person reads them.
-
-	Inbound is what the client receives and is what a laggy connection feels
-	like; outbound is what it sends, which is what makes a player's own actions
-	arrive late to everyone else. Both are shaped separately by Studio, so both
-	are carried separately here.
-]]
---[[
 	The memory ceiling this session set, if any.
 
 	Session-local by necessity: see the note in `Emulation.network`. A cap set by
@@ -72,6 +64,14 @@ Emulation.networkSettings = networkSettings
 ]]
 local memoryCap: number? = nil
 
+--[[
+	The six traffic-shaping properties, in the order a person reads them.
+
+	Inbound is what the client receives and is what a laggy connection feels
+	like; outbound is what it sends, which is what makes a player's own actions
+	arrive late to everyone else. Both are shaped separately by Studio, so both
+	are carried separately here.
+]]
 local NETWORK_FIELDS = {
 	{ key = "inLatency", property = "InboundNetworkMinDelayMs", scale = 1 },
 	{ key = "inJitter", property = "InboundNetworkJitterMs", scale = 1 },

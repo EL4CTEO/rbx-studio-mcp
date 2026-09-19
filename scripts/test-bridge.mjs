@@ -322,6 +322,46 @@ function twoStudios() {
   second.destroy();
   await settle();
   assert.equal(await count(), 0, "a stream that dies without a goodbye is dropped");
+
+  // A command far bigger than one socket read goes down the stream as ONE
+  // event, and its answer comes back. The plugin half of this -- joining the
+  // reads back together -- is covered by the frameReader cases in
+  // tests/sseframes.luau; this pins the bridge half over real sockets.
+  const source = "local x = 1\n".repeat(100_000);
+  const events = [];
+  const plugin = await new Promise((resolve) => {
+    const req = request(
+      { host: "127.0.0.1", port, path: "/events", method: "POST", headers: { "x-roblox-studio-mcp": "test" } },
+      (res) => {
+        let pending = "";
+        res.setEncoding("utf8");
+        res.on("data", (chunk) => {
+          pending += chunk;
+          let cut;
+          while ((cut = pending.indexOf("\n\n")) !== -1) {
+            const block = pending.slice(0, cut);
+            pending = pending.slice(cut + 2);
+            if (!block.startsWith("data: ")) continue;
+            const frame = JSON.parse(block.slice(6));
+            if (typeof frame.id !== "string") continue;
+            events.push(frame);
+            void fetch(`http://127.0.0.1:${port}/result?studioId=big`, {
+              method: "POST",
+              headers: { "x-roblox-studio-mcp": "test" },
+              body: JSON.stringify({ id: frame.id, ok: true, data: { length: frame.params.source.length } }),
+            });
+          }
+        });
+        resolve(req);
+      },
+    );
+    req.end(JSON.stringify({ studioId: "big", placeName: "p", placeId: 1 }));
+  });
+  const answer = await server.bridge.call("script.create", { source }, { studioId: "big" });
+  assert.equal(answer.length, source.length, "a 1.2MB command arrives whole and is answered");
+  assert.equal(events.length, 1, "as exactly one event");
+  plugin.destroy();
+
   await server.close();
 }
 

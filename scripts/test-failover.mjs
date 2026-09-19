@@ -20,7 +20,15 @@ import { startBridgeServer } from "../dist/bridge/server.js";
 import { CLIENT_HEADER } from "../dist/lib/protocol.js";
 import { PEER_HEADER } from "../dist/bridge/remote.js";
 
-const PORT = 44799;
+// A free port, not a fixed one: a fixed port fails the whole suite whenever
+// anything else on the machine happens to hold it.
+const PORT = await new Promise((resolve, reject) => {
+  const probe = createServer().listen(0, "127.0.0.1", () => {
+    const { port } = probe.address();
+    probe.close(() => resolve(port));
+  });
+  probe.once("error", reject);
+});
 
 /** Waits for `check` to hold, or gives up loudly rather than hanging the suite. */
 async function until(check, what, timeoutMs = 20_000) {

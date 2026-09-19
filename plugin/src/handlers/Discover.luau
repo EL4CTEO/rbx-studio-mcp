@@ -185,10 +185,6 @@ function Discover.tree(params: { [string]: any }): { [string]: any }
 end
 
 --[[
-	Detailed read of specific instances. `properties` is chosen server-side from
-	the live API dump, so this handler never needs its own class table.
-]]
---[[
 	The physical facts about a part, which no property panel shows.
 
 	"Why does this fall over", "why does it sink", "why does the door fly off
@@ -323,6 +319,10 @@ local function physicsOf(target: Instance): { [string]: any }?
 	return facts
 end
 
+--[[
+	Detailed read of specific instances. `properties` is chosen server-side from
+	the live API dump, so this handler never needs its own class table.
+]]
 function Discover.inspect(params: { [string]: any }): { [string]: any }
 	local paths = params.paths
 	if typeof(paths) ~= "table" or #paths == 0 then
@@ -415,13 +415,6 @@ function Discover.inspect(params: { [string]: any }): { [string]: any }
 	return { items = results, failures = failures }
 end
 
---[[
-	One search over name, class, property value and tag.
-
-	Every filter supplied must match (AND), which is what lets a single tool
-	answer "every anchored Part under Workspace whose name contains 'door'"
-	without the agent chaining three calls and intersecting the results itself.
-]]
 --[[
 	Runs a selector through the engine's own matcher.
 
@@ -582,6 +575,13 @@ function Discover.tags(params: { [string]: any }): { [string]: any }
 	}
 end
 
+--[[
+	One search over name, class, property value and tag.
+
+	Every filter supplied must match (AND), which is what lets a single tool
+	answer "every anchored Part under Workspace whose name contains 'door'"
+	without the agent chaining three calls and intersecting the results itself.
+]]
 function Discover.find(params: { [string]: any }): { [string]: any }
 	local root = if params.path then Paths.resolve(params.path) else game
 	local limit = tonumber(params.limit) or 100

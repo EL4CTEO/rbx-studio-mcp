@@ -73,13 +73,6 @@ export async function requireCredentials(): Promise<Credentials> {
 }
 
 /**
- * The universe id, which every universe-scoped call needs and none can guess.
- *
- * Open Cloud is stateless: unlike the engine API it has no idea which game it
- * is talking about, and the Studio session cannot supply it either — a place
- * open in Studio knows its placeId but not the universe that contains it.
- */
-/**
  * Turns a place id into the universe that contains it.
  *
  * Not part of Open Cloud and not in Roblox's OpenAPI document, but it is the
@@ -104,6 +97,13 @@ export async function universeForPlace(placeId: string): Promise<string | null> 
   }
 }
 
+/**
+ * The universe id, which every universe-scoped call needs and none can guess.
+ *
+ * Open Cloud is stateless: unlike the engine API it has no idea which game it
+ * is talking about, and the Studio session cannot supply it either — a place
+ * open in Studio knows its placeId but not the universe that contains it.
+ */
 export async function requireUniverse(explicit?: string): Promise<string> {
   if (explicit && explicit.trim() !== "") return explicit.trim();
   const found = await loadCredentials();
