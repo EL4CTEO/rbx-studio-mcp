@@ -288,6 +288,9 @@ local DESCRIBERS: { [string]: Describer } = {
 		local name = leaf(params.path)
 		return if name ~= nil then "Clear breakpoints in " .. name else "Clear all breakpoints"
 	end,
+	["debug.remotes"] = function()
+		return "Observe playtest RemoteEvent traffic"
+	end,
 	["debug.snapshots"] = function()
 		return "Read what the breakpoints caught"
 	end,

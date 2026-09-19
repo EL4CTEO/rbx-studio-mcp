@@ -67,6 +67,8 @@ end
 
 local Dispatch = require(script.Parent.Parent.Dispatch)
 local Paths = require(script.Parent.Parent.Paths)
+local ClientRelay = require(script.Parent.Parent.ClientRelay)
+local RemoteTrace = require(script.Parent.Parent.RemoteTrace)
 
 -- Snapshots are far heavier than log lines: each carries a stack and its
 -- variables. A tight cap keeps a breakpoint inside a loop from exhausting memory
@@ -477,6 +479,73 @@ function Debug.exceptions(params: { [string]: any }): { [string]: any }
 	return { mode = mode }
 end
 
+-- Additive listeners only: no RemoteFunction callbacks or game remote sends.
+function Debug.remotes(params: { [string]: any }): { [string]: any }
+	local player = ClientRelay.playerFor(params.player)
+	local seconds = math.clamp(tonumber(params.seconds) or 5, 1, 15)
+	local path = if typeof(params.path) == "string" then params.path else "game"
+	local root = if path == "game" then game else Paths.resolve(path)
+	local stopServer: (() -> { [string]: any })? = nil
+	local ok, client = pcall(function()
+		return ClientRelay.run(player, "MCPRemoteTraceRelay", [==[
+local report = script:WaitForChild("Report", 10)
+if not report then return end
+local stop, handshake, destruction
+local ok, result = pcall(function()
+	assert(game:GetService("RunService"):IsClient(), "Client VM required")
+	local Trace = require(script:WaitForChild("RemoteTrace"))
+	local Paths = require(script:WaitForChild("Paths"))
+	local path = script:GetAttribute("Path")
+	local root = if path == "game" then game else Paths.resolve(path)
+	local ready = false
+	handshake = report.OnClientEvent:Connect(function() ready = true end)
+	report:FireServer({ready = true})
+	local deadline = os.clock() + 5
+	while not ready and os.clock() < deadline do task.wait() end
+	handshake:Disconnect()
+	assert(ready, "Trace startup acknowledgement timed out")
+	stop = Trace.start(root, game:GetService("Players").LocalPlayer, true, script:GetAttribute("Seconds"), script)
+	destruction = script.Destroying:Connect(function() stop() end)
+	script:SetAttribute("Capturing", true)
+	task.wait(script:GetAttribute("Seconds"))
+	return stop()
+end)
+if handshake then handshake:Disconnect() end
+if destruction then destruction:Disconnect() end
+if stop then stop() end
+report:FireServer(if ok then {ok = true, capture = result} else {ok = false, reason = tostring(result)})
+]==], { Seconds = seconds, Path = path }, seconds + 10, function(relay)
+			for _, name in { "RemoteTrace", "Paths", "Dispatch" } do
+				local copy = script.Parent.Parent[name]:Clone()
+				copy.Parent = relay
+			end
+		end, function()
+			stopServer = RemoteTrace.start(root, player, false, seconds, nil)
+		end)
+	end)
+	local server = if stopServer then stopServer() else nil
+	if not ok then error(client, 0) end
+	if client.ok ~= true or server == nil then
+		Dispatch.fail("TRACE_FAILED", tostring(client.reason or "The client did not start the capture."))
+	end
+	local received = client.capture
+	local items = server.items
+	for _, item in received.items do table.insert(items, item) end
+	local result = { items = items, player = player.Name, requestedSeconds = seconds,
+		serverSeconds = server.seconds, clientSeconds = received.seconds,
+		events = server.events + received.events,
+		truncated = server.eventLimitReached or received.eventLimitReached or server.scanLimitReached
+			or received.scanLimitReached or server.rowsOmitted or received.rowsOmitted or server.skipped > 0 or received.skipped > 0,
+		note = "Received traffic for this player only; at most 1000 events per direction, 128 remotes per VM and 40 rows. Only visible, accessible remotes are observed. Samples show the first two shapes, not every payload. Rates use each direction's observed window." }
+	-- A byte ceiling includes JSON escaping; never silently expand the MCP response.
+	local HttpService = game:GetService("HttpService")
+	while #items > 0 and #HttpService:JSONEncode(result) > 12000 do
+		table.remove(items)
+		result.truncated = true
+	end
+	return result
+end
+
 function Debug.register()
 	--[[
 		Installed at load, not on the first debug request.
@@ -498,6 +567,7 @@ function Debug.register()
 		clear = Debug.clear,
 		snapshots = Debug.snapshots,
 		exceptions = Debug.exceptions,
+		remotes = Debug.remotes,
 	})
 end
 

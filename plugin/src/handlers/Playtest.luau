@@ -28,6 +28,26 @@ local SETTLE_SECONDS = 1.5
 
 local Playtest = {}
 
+-- Supplied by the plugin entrypoint, which owns persistent plugin settings.
+-- Read on every request so another panel context's choice is not cached here.
+local readAllowed: () -> any = function() return nil end
+local writeAllowed: (boolean) -> () = function() error("Playtest settings are not initialized") end
+function Playtest.setup(read: () -> any, write: (boolean) -> ())
+	readAllowed, writeAllowed = read, write
+end
+function Playtest.isAllowed(): boolean
+	return readAllowed() ~= false
+end
+function Playtest.setAllowed(value: boolean)
+	writeAllowed(value)
+end
+local function requireAllowed()
+	if not Playtest.isAllowed() then
+		Dispatch.fail("PLAYTEST_DISABLED", "Playtests are disabled by the user.",
+			"Do not start or simulate a playtest. Continue using edit-mode tools and static inspection where possible.\nRun `playtests on` in the Studio MCP panel to re-enable playtesting.")
+	end
+end
+
 -- Outcome of the most recent test, which arrives long after the call that
 -- started it returned.
 local pending = false
@@ -48,6 +68,7 @@ end
 
 local function state(): { [string]: any }
 	return {
+		playtestsAllowed = Playtest.isAllowed(),
 		isEdit = RunService:IsEdit(),
 		isRunning = RunService:IsRunning(),
 		isRunMode = RunService:IsRunMode(),
@@ -76,19 +97,26 @@ local function launch(name: string, call: () -> any)
 	startedAt = os.clock()
 
 	task.spawn(function()
-		local ok, result = pcall(call)
+		local ok, result = pcall(function()
+			-- Recheck after scheduling: OFF may have been entered while queued.
+			requireAllowed()
+			return call()
+		end)
 		pending = false
 		startedAt = nil
 		if ok then
 			lastResult = result
 		else
-			lastError = string.format("%s failed: %s", name, tostring(result))
+			lastError = if typeof(result) == "table" and result.code == "PLAYTEST_DISABLED"
+				then result.code .. ": " .. result.message .. "\n" .. result.hint
+				else string.format("%s failed: %s", name, tostring(result))
 		end
 	end)
 end
 
 function Playtest.control(params: { [string]: any }): { [string]: any }
 	local op = params.op
+	if op == "play" or op == "run" or op == "multiplayer" then requireAllowed() end
 	local before = state()
 
 	if op == "state" then
@@ -194,6 +222,18 @@ function Playtest.control(params: { [string]: any }): { [string]: any }
 			else nil,
 		state = after,
 	}
+end
+
+-- Panel-only stop, also usable in the client view which cannot make HTTP calls.
+-- No state-change listener is installed: manual Play stays available while OFF.
+function Playtest.stopLocal()
+	if not RunService:IsEdit() and RunService:IsClient() and not RunService:IsServer() then
+		service():LeaveTest()
+	elseif not RunService:IsEdit() and not RunService:IsRunMode() then
+		Playtest.control({ op = "endTest" })
+	else
+		Playtest.control({ op = "stop" })
+	end
 end
 
 function Playtest.register()

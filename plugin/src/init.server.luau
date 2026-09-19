@@ -64,6 +64,7 @@ local SETTING_WIDGET_OPEN = "widgetOpen"
 	being opened, not a Studio launch, not pressing Play. Set by `autoopen off`.
 ]]
 local SETTING_AUTO_OPEN = "autoOpen"
+local SETTING_PLAYTESTS = "playtestsEnabled"
 local SETTING_WIDGET_SIZE = "widgetSize"
 local SETTING_WIDGET_TRACE = "widgetTrace"
 
@@ -134,6 +135,12 @@ local storedPort = plugin:GetSetting(SETTING_PORT)
 if typeof(storedPort) == "number" then
 	Config.setPort(storedPort)
 end
+
+Playtest.setup(function()
+	return plugin:GetSetting(SETTING_PLAYTESTS)
+end, function(value)
+	plugin:SetSetting(SETTING_PLAYTESTS, value)
+end)
 
 Transport.setForcePoll(plugin:GetSetting(SETTING_FORCE_POLL) == true)
 

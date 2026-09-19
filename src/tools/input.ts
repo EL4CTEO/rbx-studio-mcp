@@ -175,6 +175,7 @@ export function registerInputTools(context: ToolContext): void {
                   .enum(["MouseButton1", "MouseButton2", "MouseButton3"])
                   .optional()
                   .describe("click only: which button. Defaults to left."),
+                target: z.string().min(1).optional().describe("click/text only: client GUI path, e.g. PlayerGui.HUD.BuyButton. Clicks its centre; focuses TextBoxes before typing."),
                 x: z.number().optional().describe("click/move only: viewport pixels from the left."),
                 y: z.number().optional().describe("click/move only: viewport pixels from the top."),
                 text: z
