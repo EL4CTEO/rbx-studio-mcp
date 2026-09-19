@@ -590,3 +590,28 @@ if (process.platform === "win32") {
 }
 
 process.stdout.write(`console: ${checks} checks pass\n`);
+
+// OFF stops all detected test contexts through the existing control operation.
+{
+ const sessions = ["edit", "server", "run", "idle"].map(studioId => ({studioId,placeName:studioId}));
+ const calls = [];
+ const bridge = {
+  list: () => sessions,
+  call: async (op, params, options) => {
+   assert.equal(op, "playtest.control");
+   calls.push({params, options});
+   const id = options.studioId;
+   return {state:{isEdit:id === "edit" || id === "idle",isRunning:id === "server" || id === "run",isRunMode:id === "run",testPending:id === "edit",editModeActive:id !== "edit"}};
+  },
+ };
+ const request = {studioId:"edit",command:"playtests",args:["off"],line:"playtests off"};
+ const rows = await handleConsole(bridge,44755,request);
+ assert.deepEqual(rows, []);
+ const stops = calls.filter(call => call.params.op !== "state");
+ assert.deepEqual(stops.map(call => [call.options.studioId,call.params.op]), [["edit","stop"],["server","endTest"],["run","stop"]]);
+ const before = calls.length;
+ const refused = await handleConsole(bridge,44755,{...request,args:["on"]});
+ assert.equal(refused[0].level, "error");
+ assert.equal(calls.length,before,"bridge panel endpoint cannot enable or start playtests");
+}
+process.stdout.write("panel playtest stop routing: ok\n");

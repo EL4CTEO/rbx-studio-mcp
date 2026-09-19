@@ -24,8 +24,7 @@
 ]]
 
 local HttpService = game:GetService("HttpService")
-local Players = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ClientRelay = require(script.Parent.Parent.ClientRelay)
 local RunService = game:GetService("RunService")
 
 local Dispatch = require(script.Parent.Parent.Dispatch)
@@ -111,7 +110,7 @@ local performed = {}
 local landed = nil
 local aimed = nil
 local seenAt = nil
-UserInputService.InputBegan:Connect(function(input)
+local inputConnection = UserInputService.InputBegan:Connect(function(input)
 	local kind = input.UserInputType
 	if aimed ~= nil and (kind == Enum.UserInputType.MouseButton1 or kind == Enum.UserInputType.Touch) then
 		seenAt = { x = input.Position.X, y = input.Position.Y }
@@ -192,6 +191,16 @@ local HOTSPOT_FALLBACK = Vector2.new(0.484, 0.5)
 
 local cursor = nil
 local cursorGui = nil
+local function cleanup()
+	inputConnection:Disconnect()
+	if cursorGui then cursorGui:Destroy() end
+end
+relay.Destroying:Connect(cleanup)
+local mainThread = coroutine.running()
+local watchdog = task.delay(20, function()
+	cleanup()
+	task.cancel(mainThread)
+end)
 
 local function makeCursor()
 	if relay:GetAttribute("Cursor") ~= true then
@@ -322,7 +331,29 @@ local function refusedKey(key, err)
 	return string.format("%s was not sent: %s", key, message)
 end
 
+local function guiTarget(path)
+	local object = Players.LocalPlayer
+	for segment in string.gmatch(path, "[^%.]+") do
+		object = object:FindFirstChild(segment)
+		if object == nil then error("GUI target not found: " .. path) end
+	end
+	if not object:IsA("GuiObject") then error("Target is not a GuiObject: " .. path) end
+	return object
+end
+
 local function runStep(step): boolean
+	local target = if step.target then guiTarget(step.target) else nil
+	if target then
+		local centre = target.AbsolutePosition + target.AbsoluteSize / 2
+		local inset = game:GetService("GuiService"):GetGuiInset()
+		step.x, step.y = centre.X + inset.X, centre.Y + inset.Y
+		if target:IsA("TextBox") then
+			target:CaptureFocus()
+			task.wait(0.05)
+		elseif step.kind == "text" then
+			error("Text target must be a TextBox: " .. step.target)
+		end
+	end
 	local kind = step.kind
 	if kind == "key" then
 		local code = Enum.KeyCode[step.key]
@@ -410,6 +441,8 @@ if cursorGui ~= nil then
 	cursorGui:Destroy()
 end
 
+task.cancel(watchdog)
+inputConnection:Disconnect()
 report:FireServer({
 	ok = true,
 	performed = performed,
@@ -419,35 +452,6 @@ report:FireServer({
 	notes = if #notes > 0 then notes else nil,
 })
 ]==]
-
-local function playerFor(name: string?): Player
-	local players = Players:GetPlayers()
-	if #players == 0 then
-		Dispatch.fail(
-			"NO_PLAYER",
-			"No player is in this session.",
-			"Input needs a running playtest with a character. Use `playtest op=\"play\"`, "
-				.. "then address this at the playtest's studioId."
-		)
-	end
-	if name == nil or name == "" then
-		if #players > 1 then
-			Dispatch.fail(
-				"AMBIGUOUS_PLAYER",
-				string.format("%d players are in this session.", #players),
-				"Name one with `player`."
-			)
-		end
-		return players[1]
-	end
-	for _, player in players do
-		if player.Name == name then
-			return player
-		end
-	end
-	Dispatch.fail("NO_PLAYER", string.format("No player named %q is in this session.", name))
-	return players[1]
-end
 
 --[[
 	Turns the request into steps the relay understands, validating names here
@@ -469,6 +473,12 @@ local function planFrom(params: { [string]: any }): { { [string]: any } }
 	for index, raw in steps :: { { [string]: any } } do
 		local kind = tostring(raw.kind or "key")
 		local step: { [string]: any } = { kind = kind }
+		if raw.target ~= nil then
+			if (kind ~= "click" and kind ~= "text") or typeof(raw.target) ~= "string" or raw.target == "" then
+				Dispatch.fail("BAD_PARAMS", "target must be a GUI path on a click or text step.")
+			end
+			step.target = raw.target
+		end
 
 		if raw.after ~= nil then
 			step.after = math.clamp(tonumber(raw.after) or 0, 0, MAX_HOLD)
@@ -539,52 +549,11 @@ function Input.send(params: { [string]: any }): { [string]: any }
 	end
 
 	local plan = planFrom(params)
-	local player = playerFor(if typeof(params.player) == "string" then params.player else nil)
-	local playerGui = player:FindFirstChildOfClass("PlayerGui")
-	if playerGui == nil then
-		Dispatch.fail("NO_PLAYER", string.format("%s has no PlayerGui yet.", player.Name))
-	end
+	local player = ClientRelay.playerFor(params.player)
+	local result = ClientRelay.run(player, "MCPInputRelay", RELAY_SOURCE, {
+		Plan = HttpService:JSONEncode(plan), Cursor = params.cursor ~= false,
+	}, ACK_TIMEOUT)
 
-	local remote = Instance.new("RemoteEvent")
-	remote.Name = "Report"
-
-	local relay = Instance.new("LocalScript")
-	relay.Name = "MCPInputRelay"
-	relay.Source = RELAY_SOURCE
-	relay:SetAttribute("Plan", HttpService:JSONEncode(plan))
-	relay:SetAttribute("Cursor", params.cursor ~= false)
-
-	remote.Parent = relay
-
-	local answer: { [string]: any }? = nil
-	local connection = remote.OnServerEvent:Connect(function(_from, payload)
-		if typeof(payload) == "table" then
-			answer = payload :: { [string]: any }
-		end
-	end)
-
-	-- Parenting last: the script starts the moment it lands, and it waits for
-	-- the RemoteEvent, so both must already be in place.
-	relay.Parent = playerGui
-
-	local deadline = os.clock() + ACK_TIMEOUT
-	while answer == nil and os.clock() < deadline do
-		task.wait(0.05)
-	end
-
-	connection:Disconnect()
-	relay:Destroy()
-
-	if answer == nil then
-		Dispatch.fail(
-			"NO_ACK",
-			string.format("The client did not confirm the input within %ds.", ACK_TIMEOUT),
-			"Nothing here can tell whether some of it was delivered. Read `character op=\"state\"` "
-				.. "to see where things actually are."
-		)
-	end
-
-	local result = answer :: { [string]: any }
 	if result.ok ~= true then
 		Dispatch.fail("INPUT_FAILED", tostring(result.reason or "the client refused the plan"))
 	end

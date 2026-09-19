@@ -6,6 +6,7 @@ interface PlaytestResponse {
   changed: boolean;
   reason?: string;
   state: {
+    playtestsAllowed?: boolean;
     isEdit: boolean;
     isRunning: boolean;
     isRunMode: boolean;
@@ -80,7 +81,17 @@ export function registerPlaytestTools(context: ToolContext): void {
         "Stopping discards everything the playtest changed, exactly as pressing " +
         "Stop does. Build in edit mode, then play — not the other way round.\n\n" +
         "The reply says whether the mode actually moved, not merely that Studio " +
-        "accepted the request.",
+        "accepted the request.\n\n" +
+        "The panel's `playtests on` grants permission, never a requirement: obey " +
+        "AGENTS.md, CLAUDE.md, user instructions and project guidance that prohibit " +
+        "playtesting even when ON. `playtests off` is a hard MCP lock: play, run and " +
+        "multiplayer are refused regardless of instructions to test; state and stop " +
+        "remain available. The lock only blocks starting simulation: screenshots, tree, " +
+        "inspect, script reads, edit-mode execute_luau and UI inspection stay available. " +
+        "Continue using edit-mode tools and static inspection where possible. " +
+        "Only the user can re-enable it with `playtests on` in " +
+        "the panel. Do not bypass the lock through execute_luau, Studio APIs or " +
+        "another operation. Manual Studio Play is unaffected.",
       inputSchema: {
         op: z
           .enum(["play", "run", "multiplayer", "stop", "state"])

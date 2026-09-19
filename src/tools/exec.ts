@@ -82,14 +82,14 @@ export function registerExecTools(context: ToolContext): void {
         "Output printed while it runs is captured and returned, so `print` is a " +
         "reasonable way to get values out. `return` works too, including " +
         "returning a table — it comes back as a structure, not a summary. There " +
-        "is no timeout: an infinite loop will hang Studio until it is " +
+        "is no timeout for target=\"studio\": an infinite loop will hang Studio until it is " +
         "force-quit.\n\n" +
         "Against a running playtest server, Studio disables `loadstring`, so the " +
         "code is compiled through a ModuleScript instead and runs at script " +
         "identity — plugin-only APIs are unavailable there. When that happens it " +
         "is stated in the result rather than left to be inferred from a failure." +
         "\n\n" +
-        "Do not use `require` to read live state out of a running game. This runs " +
+        "With target=\"studio\", do not use `require` to read live state out of a running game. This runs " +
         "in the plugin's own Luau VM with its own module cache, so `require` here " +
         "returns a second, freshly-initialised copy of the ModuleScript — its " +
         "counters and caches read as empty while the real one is running fine, and " +
@@ -97,6 +97,10 @@ export function registerExecTools(context: ToolContext): void {
         "DataModel instead (instances, attributes, properties), or have the game " +
         "print it and read that with `console`. The result warns when a call could " +
         "have hit this.\n\n" +
+        "`target=\"client\"` runs in the selected player's actual playtest client VM, " +
+        "including its live require cache. Requires a running playtest server studioId. " +
+        "Output is capped at 200 lines, 10 returns, table depth 4 and 50 entries. " +
+        "The relay is removed on completion or timeout; non-yielding code can still stall the client.\n\n" +
         "`target=\"live\"` runs the script on Roblox's servers against the " +
         "PUBLISHED place instead, with no Studio involved. That is how you " +
         "read or repair production: a real player's data store entry, what " +
@@ -117,13 +121,14 @@ export function registerExecTools(context: ToolContext): void {
               "`game`, `workspace` and plugin-only APIs are all reachable.",
           ),
         target: z
-          .enum(["studio", "live"])
+          .enum(["studio", "live", "client"])
           .default("studio")
           .describe(
             "'studio' runs in the connected Studio, with plugin " +
               "permissions. 'live' runs on Roblox's servers against the " +
-              "published place — production, with no undo.",
+              "published place — production, with no undo. 'client' runs in a player's playtest client VM.",
           ),
+        player: z.string().optional().describe("client only: player name; required with multiple players."),
         universeId: z.string().optional().describe("live only: which game. Omit to use `cloud universe`."),
         placeId: z.string().optional().describe("live only: which place. Omit to use `cloud place`."),
         timeoutSeconds: z
@@ -132,7 +137,7 @@ export function registerExecTools(context: ToolContext): void {
           .min(1)
           .max(300)
           .optional()
-          .describe("live only: how long the script may run. Defaults to 30."),
+          .describe("live/client only: timeout in seconds. Defaults to 30."),
         confirm: z
           .boolean()
           .optional()
@@ -175,8 +180,8 @@ export function registerExecTools(context: ToolContext): void {
 
       const response = await bridge.call<ExecResponse>(
         "exec.run",
-        { source: args.source },
-        { studioId: args.studioId, timeoutMs: 60_000 },
+        { source: args.source, target: args.target, player: args.player, timeoutSeconds: args.timeoutSeconds },
+        { studioId: args.studioId, timeoutMs: args.target === "client" ? ((args.timeoutSeconds ?? 30) + 10) * 1000 : 60_000 },
       );
 
       const parts: string[] = [];

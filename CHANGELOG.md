@@ -2,6 +2,15 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.7.4 - Client Runtime Bridge
+
+- Extend `execute_luau` with `target="client"` and optional `player`, running in the actual playtest client VM with bounded structured returns and captured output.
+- Share temporary relay setup, player selection, acknowledgement deadlines and cleanup with `input`.
+- Support client GUI paths on click/text input steps; resolve current geometry and focus TextBoxes before typing.
+- Add passive `debug op="remotes"` captures for a selected playtest player: both RemoteEvent directions, counts/rates and bounded argument-shape samples. No RemoteFunction interception.
+- Add persistent panel `playtests [on|off]` controls: default ON grants permission without overriding project/user instructions; OFF stops detected tests and blocks MCP starts while preserving state/stop, edit-mode execution and inspection, and manual Studio Play.
+- Preserve existing Studio/live execution and coordinate input. No new top-level tools.
+
 ## 0.7.2
 
 ### Fixed

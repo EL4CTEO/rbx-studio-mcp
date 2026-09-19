@@ -28,6 +28,11 @@ if (luau === null) {
 
 /** Modules under test, paired with the test file that exercises each. */
 const suites = [
+  { module: "plugin/src/handlers/Playtest.luau", test: "tests/playtests.luau", prelude: "tests/playtests-stub.luau" },
+  { module: "plugin/src/Commands.luau", test: "tests/playtests-commands.luau", prelude: "tests/playtests-stub.luau", dependency: "plugin/src/handlers/Playtest.luau" },
+  { module: "plugin/src/RemoteTrace.luau", test: "tests/remote-trace.luau", prelude: "tests/remote-trace-stub.luau" },
+  { module: "plugin/src/ExecRuntime.luau", test: "tests/exec-runtime.luau", prelude: "tests/exec-runtime-stub.luau" },
+  { module: "plugin/src/ClientRelay.luau", test: "tests/client-relay.luau", prelude: "tests/client-relay-stub.luau" },
   { module: "plugin/src/TextEdit.luau", test: "tests/textedit.luau" },
   { module: "plugin/src/Format.luau", test: "tests/format.luau" },
 ];
@@ -55,9 +60,12 @@ for (const suite of suites) {
 
   const bundle = [
     DISPATCH_STUB,
-    "local Module = (function()",
+    suite.prelude ? readFileSync(join(root, suite.prelude), "utf8") : "",
+    suite.dependency ? `local Playtest = (function()\n${stripRequires(readFileSync(join(root, suite.dependency), "utf8"))}\nend)()` : "",
+    "local function loadModule()",
     moduleSource,
-    "end)()",
+    "end",
+    "local Module = loadModule()",
     "local run = function(...)",
     testSource,
     "end",
@@ -80,6 +88,16 @@ for (const suite of suites) {
     process.stderr.write(`FAIL ${suite.test}\n`);
     failures += 1;
   }
+}
+
+// Embedded LocalScript bodies must compile too; the module compiler sees strings.
+for (const name of ["Exec", "Input", "Debug"]) {
+  const source = readFileSync(join(root, `plugin/src/handlers/${name}.luau`), "utf8");
+  const relay = source.match(/\[==\[([\s\S]*?)\]==\]/)?.[1];
+  if (!relay) throw new Error(`Missing ${name} relay`);
+  const path = join(mkdtempSync(join(tmpdir(), "studio-mcp-relay-")), "compile.luau");
+  writeFileSync(path, `local chunk, err = loadstring(${JSON.stringify(relay)})\nassert(chunk, err)\n`);
+  if (spawnSync(luau, [path], {stdio:"inherit"}).status !== 0) failures += 1;
 }
 
 process.exit(failures === 0 ? 0 : 1);

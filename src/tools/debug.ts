@@ -180,14 +180,21 @@ export function registerDebugTools(context: ToolContext): void {
         "Nothing here leaves a thread stopped waiting for you. A capture " +
         "breakpoint stops for as long as it takes to read the frame and then " +
         "resumes itself, so a script with one mid-loop still runs to its last " +
-        "line, and the user is never left with a frozen Studio to rescue.",
+        "line, and the user is never left with a frozen Studio to rescue.\n\n" +
+        "`remotes` passively observes RemoteEvent traffic for one playtest player in both " +
+        "directions. Returns counts, calls/sec and two short argument-shape samples per " +
+        "remote; no raw payload dumps or RemoteFunction interception. Requires the playtest " +
+        "server studioId. Captures 5 seconds by default (max 15), at most 2000 events " +
+        "and 40 rows within 12 KB; reports truncation when a limit is reached.",
       inputSchema: {
         op: z
-          .enum(["set", "clear", "snapshots", "exceptions"])
+          .enum(["set", "clear", "snapshots", "exceptions", "remotes"])
           .describe(
             "'set' adds breakpoints, 'clear' removes one or all, 'snapshots' " +
-              "reads what has been captured, 'exceptions' controls breaking on errors.",
+              "reads what has been captured, 'exceptions' controls breaking on errors, 'remotes' traces RemoteEvents.",
           ),
+        seconds: z.number().min(1).max(15).optional().describe("remotes only: capture seconds, default 5."),
+        player: z.string().optional().describe("remotes only: player name; required with multiple players. Both directions are scoped to this player."),
         breakpoints: z
           .array(
             z.object({
@@ -212,7 +219,7 @@ export function registerDebugTools(context: ToolContext): void {
         path: z
           .string()
           .optional()
-          .describe("clear only: remove breakpoints from this script. Omit to clear everything."),
+          .describe("clear: script to clear. remotes: remote or subtree path, default game. Narrow this if discovery is truncated."),
         line: z.number().int().min(1).optional().describe("clear only: which line to remove."),
         mode: z
           .enum(["Never", "Always", "Unhandled"])
@@ -237,6 +244,14 @@ export function registerDebugTools(context: ToolContext): void {
       destructive: false,
     },
     async (args): Promise<ToolResult> => {
+      if (args.op === "remotes") {
+        const response = await bridge.call<Record<string, unknown>>(
+          "debug.remotes",
+          { path: args.path, player: args.player, seconds: args.seconds ?? 5 },
+          { studioId: args.studioId, timeoutMs: ((args.seconds ?? 5) + 15) * 1000 },
+        );
+        return text(JSON.stringify(response));
+      }
       if (args.op === "snapshots") {
         const response = await bridge.call<SnapshotResponse>(
           "debug.snapshots",

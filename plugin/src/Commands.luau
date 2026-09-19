@@ -22,9 +22,11 @@
 
 local ScriptEditorService = game:GetService("ScriptEditorService")
 local Selection = game:GetService("Selection")
+local RunService = game:GetService("RunService")
 local ServerStorage = game:GetService("ServerStorage")
 
 local Config = require(script.Parent.Config)
+local Playtest = require(script.Parent.handlers.Playtest)
 local Console = require(script.Parent.Console)
 local Net = require(script.Parent.Net)
 local Secret = require(script.Parent.Secret)
@@ -248,6 +250,30 @@ define({
 	run = function()
 		local shown = Console.toggleVisuals()
 		Console.log("dim", if shown then "visuals on" else "visuals off")
+	end,
+})
+
+define({
+	name = "playtests",
+	usage = "playtests [on|off]",
+	summary = "allow or block MCP playtests; ON permits, OFF enforces",
+	run = function(args)
+		local wanted = args[1]
+		if #args > 1 or (wanted ~= nil and wanted ~= "on" and wanted ~= "off") then
+			Console.log("error", "usage: playtests [on|off]")
+			return
+		end
+		if wanted ~= nil then Playtest.setAllowed(wanted == "on") end
+		Console.log("info", if Playtest.isAllowed() then "Playtests: ON" else "Playtests: OFF")
+		if wanted == "off" then
+			-- Persist the lock BEFORE stopping, because stopping can destroy this VM.
+			-- The bridge sees other connected test sessions; the client view cannot
+			-- make HTTP calls and stops its own session locally instead.
+			if not (RunService:IsClient() and not RunService:IsServer()) then
+				task.spawn(function() remote("playtests", { "off" }, "playtests off") end)
+			end
+			Playtest.stopLocal()
+		end
 	end,
 })
 

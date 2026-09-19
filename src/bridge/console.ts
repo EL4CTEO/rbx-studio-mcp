@@ -361,6 +361,35 @@ export async function handleConsole(
   const state = agentFor(request.studioId);
 
   switch (request.command) {
+    // The plugin has already persisted OFF. This internal panel request only
+    // stops detected sessions; it cannot enable the setting or launch anything.
+    case "playtests": {
+      if (request.args.length !== 1 || request.args[0] !== "off") {
+        return [{ level: "error", message: "Use playtests [on|off] in the Studio MCP panel." }];
+      }
+      const results = await Promise.all(bridge.list().map(async (session): Promise<ConsoleLine | null> => {
+        try {
+          const before = await bridge.call<{ state: {
+            isEdit: boolean; isRunning: boolean; isRunMode: boolean; testPending: boolean; editModeActive?: boolean;
+          } }>("playtest.control", { op: "state" }, {
+            clientId: "panel", studioId: session.studioId, timeoutMs: 3000,
+          });
+          if (before.state.isEdit && !before.state.isRunning && !before.state.testPending && before.state.editModeActive !== false) return null;
+          await bridge.call("playtest.control", {
+            op: !before.state.isEdit && !before.state.isRunMode ? "endTest" : "stop",
+          }, { clientId: "panel", studioId: session.studioId, timeoutMs: 5000 });
+          return null;
+        } catch {
+          // A stopped test may disconnect while replying. Only flag sessions
+          // that are still connected; never claim a failed stop re-enabled starts.
+          return bridge.list().some(live => live.studioId === session.studioId)
+            ? { level: "warn", message: `Playtests remain OFF; could not confirm stop in ${session.placeName}.` }
+            : null;
+        }
+      }));
+      return results.filter((row): row is ConsoleLine => row !== null);
+    }
+
     case "doctor":
       return renderChecks(await collectChecks(port));
 
