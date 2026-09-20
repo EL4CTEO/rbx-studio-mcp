@@ -1,3 +1,4 @@
+import { normalizeTimeoutMs } from "../lib/timeout.js";
 import { z } from "zod";
 import { json, type ToolResult } from "../lib/format.js";
 import { defineTool, type ToolContext } from "../lib/tool.js";
@@ -236,7 +237,7 @@ export function registerInputTools(context: ToolContext): void {
         {
           studioId: args.studioId,
           timeoutMs:
-            (35 + args.steps.reduce((sum, step) => sum + (step.hold ?? 0) + (step.after ?? 0) + 0.5, 0)) * 1000,
+            normalizeTimeoutMs((35 + args.steps.reduce((sum, step) => sum + (step.hold ?? 0) + (step.after ?? 0) + 0.5, 0)) * 1000),
         },
       );
 

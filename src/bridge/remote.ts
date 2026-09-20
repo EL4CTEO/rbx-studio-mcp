@@ -1,3 +1,4 @@
+import { normalizeTimeoutMs } from "../lib/timeout.js";
 import { randomUUID } from "node:crypto";
 import { CLIENT_HEADER, PROTOCOL_VERSION } from "../lib/protocol.js";
 import { ToolError } from "../lib/errors.js";
@@ -152,15 +153,19 @@ export class RemoteBridge implements StudioBridge {
     // Reported as an error appearing right below the takeover notice, which is
     // the one moment this is guaranteed to happen.
     //]]
+    // Local validation/serialization failures are not evidence that the owner died.
+    // Preserve the 10-second margin beyond the owner's command deadline.
+    const signal = AbortSignal.timeout(normalizeTimeoutMs(timeoutMs, 10_000));
+    const encoded = JSON.stringify(body);
     let payload: { ok: boolean; data?: T; error?: { code: string; message: string } };
     try {
       const response = await fetch(`${this.base}${path}`, {
         method: "POST",
         headers: this.headers,
-        body: JSON.stringify(body),
+        body: encoded,
         // Padded past the command's own deadline so the owner's timeout wins and
         // its diagnosis reaches the caller, rather than being cut off by ours.
-        signal: AbortSignal.timeout(timeoutMs + 10_000),
+        signal,
       });
       payload = (await response.json()) as typeof payload;
     } catch (cause) {
@@ -190,7 +195,8 @@ export class RemoteBridge implements StudioBridge {
     params: Record<string, unknown> = {},
     options: { studioId?: string; timeoutMs?: number } = {},
   ): Promise<T> {
-    return this.post<T>("/call", { op, params, ...options }, options.timeoutMs ?? 15_000);
+    const timeoutMs = normalizeTimeoutMs(options.timeoutMs === undefined ? 15_000 : options.timeoutMs);
+    return this.post<T>("/call", { op, params, ...options, timeoutMs }, timeoutMs);
   }
 
   async sessions(): Promise<SessionsView> {

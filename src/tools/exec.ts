@@ -100,7 +100,9 @@ export function registerExecTools(context: ToolContext): void {
         "`target=\"client\"` runs in the selected player's actual playtest client VM, " +
         "including its live require cache. Requires a running playtest server studioId. " +
         "Output is capped at 200 lines, 10 returns, table depth 4 and 50 entries. " +
-        "The relay is removed on completion or timeout; non-yielding code can still stall the client.\n\n" +
+        "The relay is removed on completion or timeout; non-yielding code can still stall the client. " +
+        "Connections/hooks created by the temporary relay (such as Connect or RenderStepped) " +
+        "do not persist after the call returns.\n\n" +
         "`target=\"live\"` runs the script on Roblox's servers against the " +
         "PUBLISHED place instead, with no Studio involved. That is how you " +
         "read or repair production: a real player's data store entry, what " +
