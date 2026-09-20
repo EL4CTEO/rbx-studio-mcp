@@ -365,4 +365,41 @@ function twoStudios() {
   await server.close();
 }
 
+// Normalize deadlines at the owner, even when the caller isn't input or a current peer.
+{
+ const { normalizeTimeoutMs } = await import("../dist/lib/timeout.js");
+ assert.equal(normalizeTimeoutMs(78394.99999999999), 78395);
+ assert.equal(normalizeTimeoutMs(91613.1, 10000), 101614);
+ assert.equal(normalizeTimeoutMs(0.05), 1);
+ assert.equal(normalizeTimeoutMs(2 ** 31 - 1), 2 ** 31 - 1);
+ assert.throws(() => normalizeTimeoutMs(2 ** 31 - 1, 10000), {code:"BAD_TIMEOUT"});
+ const bridge = new Bridge();
+ bridge.attach(identity("timeout-test", 1), null);
+ const originalTimer = globalThis.setTimeout;
+ const delays = [];
+ try {
+  globalThis.setTimeout = (callback, delay, ...args) => {
+   delays.push(delay);
+   return originalTimer(callback, delay, ...args);
+  };
+  for (const timeoutMs of [78394.99999999999, 91613.1, 95762.99999999994, 15000, undefined]) {
+   const result = bridge.call("studio.ping", {}, {clientId:"test",studioId:"timeout-test",timeoutMs});
+   assert.equal(delays.at(-1), Math.ceil(timeoutMs ?? 15000));
+   const command = await bridge.waitForCommand("timeout-test");
+   bridge.settle("timeout-test", {id:command.id,ok:true,data:"ok"});
+   assert.equal(await result, "ok");
+  }
+  const before = delays.length;
+  for (const timeoutMs of [NaN, Infinity, -Infinity, -1, 0, null, "1000", {}, 2 ** 31, Number.MAX_SAFE_INTEGER]) {
+   assert.throws(() => bridge.call("studio.ping", {}, {clientId:"test",timeoutMs}), {code:"BAD_TIMEOUT"});
+  }
+  assert.equal(delays.length, before, "invalid deadlines never create timers");
+  assert.equal(bridge.sessions.get("timeout-test").pending.size, 0);
+  assert.equal(bridge.sessions.get("timeout-test").queue.length, 0);
+ } finally {
+  globalThis.setTimeout = originalTimer;
+  bridge.detach("timeout-test");
+ }
+}
+
 process.stdout.write("bridge: ok\n");

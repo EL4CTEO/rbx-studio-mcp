@@ -2,6 +2,13 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.7.6
+
+### Fixed
+- Fix #4: decimal `input` hold/after values now produce integer millisecond deadlines, retaining the existing timeout padding. Bridge boundaries also normalize and validate deadlines for other tools.
+- Peer/proxy calls no longer report local timeout or AbortSignal setup errors as `OWNER_GONE`.
+- Clarify that client execution connections/hooks do not persist after the temporary relay call returns.
+
 ## 0.7.5
 
 ### Fixed

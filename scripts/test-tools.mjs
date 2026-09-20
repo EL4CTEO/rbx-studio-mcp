@@ -67,6 +67,17 @@ for (const step of [{kind:"click",target:"PlayerGui.HUD.BuyButton"},{kind:"text"
  await input.handler(z.object(input.spec.inputSchema).parse({steps:[step]}));
  assert.deepEqual(calls.at(-1).params.steps[0], step);
 }
+// Issue #4: ordinary decimal holds/waits retain padding and yield whole milliseconds.
+for (const steps of [
+ [{kind:"key",key:"E",hold:0.1,after:4.1}, ...Array.from({length:24}, () => ({kind:"key",key:"Left",hold:0.05,after:1.065}))],
+ [{kind:"key",key:"E",hold:0.05,after:1.0651}],
+]) {
+ await input.handler(z.object(input.spec.inputSchema).parse({steps}));
+ const raw = (35 + steps.reduce((sum, step) => sum + step.hold + step.after + 0.5, 0)) * 1000;
+ assert.equal(calls.at(-1).options.timeoutMs, Math.ceil(raw));
+ assert.ok(Number.isInteger(calls.at(-1).options.timeoutMs));
+ assert.deepEqual(calls.at(-1).params.steps, steps, "step timing itself is unchanged");
+}
 assert.deepEqual([...registered.keys()].sort(), ["execute_luau", "input", "viewport"]);
 process.stdout.write("client tool schemas: ok\n");
 

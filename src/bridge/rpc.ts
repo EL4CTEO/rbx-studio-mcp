@@ -1,3 +1,4 @@
+import { normalizeTimeoutMs } from "../lib/timeout.js";
 import { randomUUID } from "node:crypto";
 import type { ServerResponse } from "node:http";
 import {
@@ -407,8 +408,8 @@ export class Bridge {
     params: Record<string, unknown> = {},
     options: { clientId: string; studioId?: string; timeoutMs?: number },
   ): Promise<T> {
+    const timeoutMs = normalizeTimeoutMs(options.timeoutMs === undefined ? DEFAULT_TIMEOUT_MS : options.timeoutMs);
     const session = this.resolveSession(options.clientId, options.studioId);
-    const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const command: Command = { id: randomUUID(), op, params };
 
     return new Promise<T>((resolve, reject) => {

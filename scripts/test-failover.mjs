@@ -239,4 +239,73 @@ function handshake(port, studioId) {
   await new Promise((resolve) => halfDead.close(resolve));
 }
 
+// Issue #4: the real input tool crosses peer -> owner -> fake Studio over HTTP.
+{
+ const { z } = await import("zod");
+ const { registerInputTools } = await import("../dist/tools/input.js");
+ const owner = await startBridgeServer({port:PORT});
+ const peer = await startBridgeServer({port:PORT});
+ const headers = {[CLIENT_HEADER]:"test", "Content-Type":"application/json"};
+ const originalSignal = AbortSignal.timeout;
+ const signalDelays = [];
+ const base = `http://127.0.0.1:${PORT}`;
+ const reply = async () => {
+  const response = await fetch(`${base}/poll?studioId=decimal`, {headers,signal:originalSignal(5000)});
+  const {command} = await response.json();
+  assert.ok(command, "the command reaches Studio");
+  await fetch(`${base}/result?studioId=decimal`, {method:"POST",headers,
+   body:JSON.stringify({id:command.id,ok:true,data:{delivered:true,steps:command.params.steps?.length ?? 0,player:"Test"}})});
+  return command;
+ };
+ try {
+  await handshake(PORT,"decimal");
+  assert.equal(peer.owner,false);
+  AbortSignal.timeout = delay => { signalDelays.push(delay); return originalSignal(delay); };
+  let tool;
+  registerInputTools({bridge:peer.bridge,server:{registerTool(name,spec,handler) {tool={spec,handler};}}});
+  const steps = [{kind:"key",key:"E",hold:0.1,after:4.1}, ...Array.from({length:24}, () => ({kind:"key",key:"Left",hold:0.05,after:1.065}))];
+  const [result, command] = await Promise.all([
+   tool.handler(z.object(tool.spec.inputSchema).parse({steps,studioId:"decimal"})), reply(),
+  ]);
+  assert.ok(!result.isError, JSON.stringify(result));
+  assert.deepEqual(command.params.steps,steps);
+  assert.ok(signalDelays.includes(88460), "input budget plus existing 10s peer padding");
+
+  const [other] = await Promise.all([
+   peer.bridge.call("another.tool", {}, {studioId:"decimal",timeoutMs:91613.1}), reply(),
+  ]);
+  assert.ok(other.delivered);
+  assert.ok(signalDelays.includes(101614), "other tools are normalized at the peer boundary");
+
+  // Older/non-normalizing peers may send decimals directly to the owner.
+  const [raw] = await Promise.all([
+   fetch(`${base}/call`, {method:"POST",headers,body:JSON.stringify({op:"another.tool",studioId:"decimal",timeoutMs:95762.99999999994})}).then(res => res.json()), reply(),
+  ]);
+  assert.equal(raw.ok,true);
+  for (const timeoutMs of [null, "1000", 0, -1, 2 ** 31]) {
+   const response = await fetch(`${base}/call`, {method:"POST",headers,body:JSON.stringify({op:"studio.ping",studioId:"decimal",timeoutMs})});
+   const error = await response.json();
+   assert.equal(error.error.code,"BAD_TIMEOUT", "owner rejects invalid wire values without crashing");
+  }
+  for (const timeoutMs of [NaN, Infinity, -1, 0, 2 ** 31 - 1]) {
+   await assert.rejects(() => peer.bridge.call("studio.ping", {}, {studioId:"decimal",timeoutMs}), {code:"BAD_TIMEOUT"});
+  }
+  // A locally thrown AbortSignal error must not trigger failover or blame the owner.
+  const localError = new RangeError("local AbortSignal setup failure");
+  AbortSignal.timeout = delay => { if (delay === 10001) throw localError; return originalSignal(delay); };
+  await assert.rejects(() => peer.bridge.call("studio.ping", {}, {studioId:"decimal",timeoutMs:1}), cause => cause === localError);
+  AbortSignal.timeout = originalSignal;
+  const [healthy] = await Promise.all([
+   peer.bridge.call("studio.ping", {}, {studioId:"decimal",timeoutMs:1000}), reply(),
+  ]);
+  assert.ok(healthy.delivered, "owner still answers after every rejected call");
+  assert.equal(owner.owner,true);
+  assert.equal(peer.owner,false);
+ } finally {
+  AbortSignal.timeout = originalSignal;
+  await peer.close();
+  await owner.close();
+ }
+}
+
 process.stdout.write("failover: ok\n");
