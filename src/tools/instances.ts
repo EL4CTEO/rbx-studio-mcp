@@ -190,29 +190,27 @@ interface CreateSpec {
   children?: CreateSpec[];
 }
 
-const createSpec: z.ZodType<CreateSpec> = z.lazy(() =>
-  z.object({
-    parent: z
-      .string()
-      .optional()
-      .describe('Where to put it, e.g. "Workspace". Required at the top level only.'),
-    className: z
-      .string()
-      .describe('Concrete class to create, e.g. "Part", "Folder", "Model", "SpawnLocation".'),
-    name: z.string().optional().describe("Name for the new instance."),
-    properties: propertyBag,
-    attributes: attributeBag,
-    tags: tagSpec,
-    children: z
-      .array(createSpec)
-      .optional()
-      .describe(
-        "Instances to create inside this one. Build a whole model in one call " +
-          "rather than creating a parent and then addressing it by a path you " +
-          "have to guess.",
-      ),
-  }),
-);
+const createSpec: z.ZodType<CreateSpec> = z.object({
+  parent: z
+    .string()
+    .optional()
+    .describe('Where to put it, e.g. "Workspace". Required at the top level only.'),
+  className: z
+    .string()
+    .describe('Concrete class to create, e.g. "Part", "Folder", "Model", "SpawnLocation".'),
+  name: z.string().optional().describe("Name for the new instance."),
+  properties: propertyBag,
+  attributes: attributeBag,
+  tags: tagSpec,
+  children: z
+    .array(z.record(z.string(), z.any()))
+    .optional()
+    .describe(
+      "Instances to create inside this one. Build a whole model in one call " +
+        "rather than creating a parent and then addressing it by a path you " +
+        "have to guess.",
+    ),
+}) as unknown as z.ZodType<CreateSpec>;
 
 /** Walks the create tree, replacing each property bag with typed specs. */
 async function typeCreateSpec(spec: CreateSpec, where: string): Promise<unknown> {
