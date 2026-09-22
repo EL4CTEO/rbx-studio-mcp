@@ -67,13 +67,18 @@ local function editModeActive(): boolean?
 end
 
 local function state(): { [string]: any }
+	local players = {}
+	for _, player in game:GetService("Players"):GetPlayers() do
+		table.insert(players, { name = player.Name, userId = player.UserId })
+	end
 	return {
 		playtestsAllowed = Playtest.isAllowed(),
 		isEdit = RunService:IsEdit(),
 		isRunning = RunService:IsRunning(),
 		isRunMode = RunService:IsRunMode(),
 		editModeActive = editModeActive(),
-		playerCount = #game:GetService("Players"):GetPlayers(),
+		playerCount = #players,
+		players = if #players > 0 then players else nil,
 		testPending = pending,
 		-- Kept from the previous test rather than discarded, since whatever
 		-- EndTest returned is the only thing a test session can hand back.

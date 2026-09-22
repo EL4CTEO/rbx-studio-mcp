@@ -46,7 +46,7 @@ const registered = new Map();
 const calls = [];
 const context = {
   server: { registerTool(name, spec, handler) { registered.set(name, { spec, handler }); } },
-  bridge: { async call(op, params, options) {
+  bridge: { async sessions() { return {list:[]}; }, async call(op, params, options) {
     calls.push({op, params, options});
     return op === "exec.run" ? {ok:true,returned:["nil",{answer:42}],output:[],milliseconds:1} : {delivered:true,steps:1,player:"Alice"};
   } },
@@ -118,6 +118,36 @@ assert.ok(!stateResult.isError);
 context.bridge.call = normalCall;
 process.stdout.write("playtest lock errors and instruction precedence: ok\n");
 
+// A successful start includes the newly attached runtime session and player
+// names, using the same discovery path as stop. The editor ID is excluded.
+{
+ let started = false;
+ let operation = "play";
+ const originalSessions = context.bridge.sessions;
+ const originalCall = context.bridge.call;
+ context.bridge.sessions = async () => ({list: started
+   ? [{studioId:"editor",context:"edit"},{studioId:"runtime",context:"playtest server"}]
+   : [{studioId:"editor",context:"edit"}]});
+ context.bridge.call = async (op, params, options) => {
+  assert.equal(op, "playtest.control");
+  if (params.op === operation) {
+   started = true;
+   return {changed:true,state:{testPending:true,isRunning:false}};
+  }
+  assert.equal(options.studioId, "runtime");
+  return {changed:false,state:{players:operation === "multiplayer" ? [{name:"Alice",userId:123},{name:"Bob",userId:456}] : [{name:"Alice",userId:123}]}};
+ };
+ for (operation of ["play", "multiplayer"]) {
+  started = false;
+  const result = await playtest.handler(z.object(playtest.spec.inputSchema).parse({op:operation,studioId:"editor"}));
+  assert.match(result.content[0].text, /"studioId": "runtime"/);
+  assert.match(result.content[0].text, /"name": "Alice"/);
+ }
+ context.bridge.sessions = originalSessions;
+ context.bridge.call = originalCall;
+}
+process.stdout.write("playtest runtime identity: ok\n");
+
 // OFF affects simulation starts, not the ordinary edit-mode tool paths.
 const { registerDiscoverTools } = await import("../dist/tools/discover.js");
 const { registerScriptTools } = await import("../dist/tools/scripts.js");
@@ -160,3 +190,27 @@ for (const [name, args, expected] of [
 assert.ok(!editOps.includes("playtest.control"), "edit-mode tools never start or probe a simulation");
 context.bridge.call = normalCall;
 process.stdout.write("playtest lock leaves edit-mode tools available: ok\n");
+
+const { registerPerfTools } = await import("../dist/tools/perf.js");
+registerPerfTools(context);
+const consoleTool = registered.get("console");
+const consoleArgs = z.object(consoleTool.spec.inputSchema).parse({target:"client",player:"Alice",studioId:"runtime",since:"cursor-1",limit:10});
+context.bridge.call = async (op, params, options) => {
+ assert.equal(op, "perf.console");
+ assert.equal(params.target, "client");
+ assert.equal(params.player, "Alice");
+ assert.equal(params.since, "cursor-1");
+ assert.equal(options.studioId, "runtime");
+ return {items:[],total:0,dropped:0,evicted:2,nextCursor:"cursor-2",capturing:true};
+};
+const consoleResult = await consoleTool.handler(consoleArgs);
+assert.match(consoleResult.content[0].text, /2 older lines were evicted/);
+assert.match(consoleResult.content[0].text, /nextCursor: cursor-2/);
+context.bridge.call = async () => ({
+ items: Array.from({length:60}, (_, index) => ({level:"print",message:`${index} ${"x".repeat(1000)}`})),
+ total:60,dropped:0,nextCursor:"cursor-3",
+});
+const boundedConsole = await consoleTool.handler(z.object(consoleTool.spec.inputSchema).parse({}));
+assert.ok(boundedConsole.content[0].text.length < 25_000);
+assert.match(boundedConsole.content[0].text, /older matching lines omitted/);
+process.stdout.write("client console schema and cursor forwarding: ok\n");

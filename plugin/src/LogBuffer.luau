@@ -20,6 +20,7 @@
 
 local LogService = game:GetService("LogService")
 local ScriptContext = game:GetService("ScriptContext")
+local HttpService = game:GetService("HttpService")
 
 -- Roughly what the Output window keeps. Big enough that a playtest's worth of
 -- logging survives, small enough to stay cheap to hold and to scan.
@@ -35,6 +36,7 @@ local SLACK = 500
 local CORRELATION_WINDOW = 20
 
 export type Entry = {
+	sequence: number?,
 	level: string,
 	message: string,
 	timestamp: number,
@@ -56,6 +58,9 @@ local entries: { Entry } = {}
 local dropped = 0
 local started = false
 local startedAt = 0
+local studioToken = HttpService:GenerateGUID(false)
+local nextSequence = 0
+local clientBuffers: { [Player]: { token: string, entries: { Entry }, dropped: number, sequence: number, startedAt: number, ready: boolean, orphan: { [string]: { stack: string, source: string? } } } } = {}
 
 --[[
 	Stack traces that arrived before the error line they describe.
@@ -88,6 +93,8 @@ local MAX_STACK_LINES = 60
 local collecting: { string }? = nil
 
 local function pushEntry(entry: Entry)
+	nextSequence += 1
+	entry.sequence = nextSequence
 	table.insert(entries, entry)
 
 	if #entries > CAPACITY + SLACK then
@@ -95,6 +102,78 @@ local function pushEntry(entry: Entry)
 		entries = table.move(entries, excess + 1, #entries, 1, {})
 		dropped += excess
 	end
+end
+
+-- Each player gets a separate stream and token. Rejoining, reconnecting to a
+-- different server DataModel, or a plugin reload invalidates old cursors.
+function LogBuffer.startClient(player: Player)
+	clientBuffers[player] = { token = HttpService:GenerateGUID(false), entries = {}, dropped = 0, sequence = 0, startedAt = os.time(), ready = false, orphan = {} }
+end
+
+function LogBuffer.stopClient(player: Player)
+	clientBuffers[player] = nil
+end
+
+function LogBuffer.pushClient(player: Player, payload: any)
+	local buffer = clientBuffers[player]
+	if not buffer or typeof(payload) ~= "table" then return end
+	if payload.kind == "ready" then buffer.ready = true; return end
+	if payload.kind == "trace" then
+		if typeof(payload.message) ~= "string" or typeof(payload.stack) ~= "string" then return end
+		for index = #buffer.entries, math.max(1, #buffer.entries - CORRELATION_WINDOW + 1), -1 do
+			local item = buffer.entries[index]
+			if item.level == "error" and item.message == payload.message and item.stack == nil then
+				item.stack = string.sub(payload.stack, 1, 4000)
+				item.source = if typeof(payload.source) == "string" then string.sub(payload.source, 1, 500) else nil
+				return
+			end
+		end
+		local orphanCount = 0
+		for _ in buffer.orphan do orphanCount += 1 end
+		if orphanCount < 20 or buffer.orphan[payload.message] ~= nil then
+			buffer.orphan[payload.message] = { stack = string.sub(payload.stack, 1, 4000), source = if typeof(payload.source) == "string" then string.sub(payload.source, 1, 500) else nil }
+		end
+		return
+	end
+	local level = payload.level
+	if level ~= "print" and level ~= "info" and level ~= "warning" and level ~= "error" then return end
+	if typeof(payload.message) ~= "string" then return end
+	buffer.sequence += 1
+	local entry: Entry = {
+		sequence = buffer.sequence,
+		level = level,
+		message = string.sub(payload.message, 1, 2000),
+		timestamp = if typeof(payload.timestamp) == "number" and payload.timestamp >= 0 and payload.timestamp < 100000000000 then payload.timestamp else os.time(),
+		stack = if typeof(payload.stack) == "string" then string.sub(payload.stack, 1, 4000) else nil,
+		source = if typeof(payload.source) == "string" then string.sub(payload.source, 1, 500) else nil,
+	}
+	local waiting = buffer.orphan[entry.message]
+	if level == "error" and waiting then
+		entry.stack, entry.source = waiting.stack, waiting.source
+		buffer.orphan[entry.message] = nil
+	end
+	table.insert(buffer.entries, entry)
+	if #buffer.entries > CAPACITY + SLACK then
+		local excess = #buffer.entries - CAPACITY
+		buffer.entries = table.move(buffer.entries, excess + 1, #buffer.entries, 1, {})
+		buffer.dropped += excess
+	end
+end
+
+function LogBuffer.clientReady(player: Player): boolean
+	local buffer = clientBuffers[player]
+	return buffer ~= nil and buffer.ready == true
+end
+
+function LogBuffer.stream(player: Player?): ({ Entry }, number, string, number, number)
+	if player then
+		local buffer = clientBuffers[player]
+		if buffer then
+			return table.move(buffer.entries, 1, #buffer.entries, 1, {}), buffer.dropped, buffer.token, buffer.sequence, math.max(0, os.time() - buffer.startedAt)
+		end
+		return {}, 0, "", 0, 0
+	end
+	return table.move(entries, 1, #entries, 1, {}), dropped, studioToken, nextSequence, LogBuffer.recordingSeconds()
 end
 
 local function push(message: string, messageType: Enum.MessageType, timestamp: number?)

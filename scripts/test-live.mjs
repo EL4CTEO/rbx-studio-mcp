@@ -12,7 +12,7 @@
  * Everything it makes is named `__mcp_live_*` under ServerScriptService and is
  * deleted before it exits, pass or fail.
  *
- * Usage: node scripts/test-live.mjs [--port 44755] [--sizes 1000,16000,64000,256000] [--client] [--remotes] [--playtests-off] [--studio-id ID] [--player NAME]
+ * Usage: node scripts/test-live.mjs [--port 44755] [--sizes 1000,16000,64000,256000] [--client] [--remotes] [--playtest-start] [--playtest-op play|multiplayer] [--stale-cursor CURSOR] [--playtests-off] [--studio-id ID] [--player NAME]
  */
 import { expectedPluginBuildId } from "../dist/lib/pluginbuild.js";
 
@@ -36,6 +36,16 @@ async function call(op, params, timeoutMs = 20_000) {
     method: "POST",
     headers: HEADERS,
     body: JSON.stringify({ op, params, timeoutMs, studioId: flag("studio-id", undefined) }),
+  });
+  const body = await response.json();
+  if (!body.ok) throw new Error(`${op}: [${body.error?.code}] ${body.error?.message}`);
+  return body.data;
+}
+
+async function callTo(studioId, op, params, timeoutMs = 20_000) {
+  const response = await fetch(`${base}/call`, {
+    method: "POST", headers: HEADERS,
+    body: JSON.stringify({ op, params, timeoutMs, studioId }),
   });
   const body = await response.json();
   if (!body.ok) throw new Error(`${op}: [${body.error?.code}] ${body.error?.message}`);
@@ -125,6 +135,40 @@ if (args.includes("--client")) {
     try {
       const identity = await client('return game:GetService("RunService"):IsClient(), game:GetService("Players").LocalPlayer.Name');
       check(identity.ok && identity.returned[0] === true && typeof identity.returned[1] === "string", "exec runs in the actual client VM");
+      const playerName = identity.returned[1];
+      const baseline = await call("perf.console", {target:"client",player:playerName,limit:10});
+      check(baseline.capturing === true && typeof baseline.nextCursor === "string", "persistent client diagnostics relay is ready");
+      const diagnosticPath = `Players.${playerName}.PlayerGui.__mcp_live_diagnostics`;
+      try {
+        await call("script.create", {scripts:[{parent:`Players.${playerName}.PlayerGui`,name:"__mcp_live_diagnostics",className:"LocalScript",source:'print("mcp live client print"); warn("mcp live client warning"); error("mcp live client error")'}]});
+        let captured;
+        for (let attempt = 0; attempt < 20; attempt += 1) {
+          captured = await call("perf.console", {target:"client",player:playerName,since:baseline.nextCursor,limit:20});
+          if (captured.items.some(item => item.message.includes("mcp live client error"))) break;
+          await new Promise(resolve => setTimeout(resolve, 200));
+        }
+        check(captured.items.some(item => item.message.includes("mcp live client print") && item.level === "print") &&
+          captured.items.some(item => item.message.includes("mcp live client warning") && item.level === "warning") &&
+          captured.items.some(item => item.message.includes("mcp live client error") && item.level === "error"),
+          "console captures LocalScript output outside execute_luau");
+        check(captured.items.some(item => item.level === "error" && item.stack && item.source), "client errors include stack and source");
+        const incremental = await call("perf.console", {target:"client",player:playerName,since:captured.nextCursor,limit:20});
+        check(incremental.items.length === 0, "client console cursor does not repeat old output");
+        const runtimeState = await call("playtest.control", {op:"state"});
+        const other = runtimeState.state.players?.find(player => player.name !== playerName);
+        if (other) {
+          const second = await call("perf.console", {target:"client",player:other.name,limit:20});
+          check(!second.items.some(item => item.message.includes("mcp live client error")), "multiplayer client logs stay with their player");
+          try {
+            await call("perf.console", {target:"client",player:other.name,since:captured.nextCursor});
+            check(false, "a cursor from another player is rejected");
+          } catch (cause) {
+            check(cause.message.includes("BAD_CURSOR"), "a cursor from another player is rejected");
+          }
+        }
+      } finally {
+        await call("instances.delete", {paths:[diagnosticPath]}).catch(() => {});
+      }
       const values = await client('print("client print"); warn("client warning"); local t = {}; t.self = t; return 1, nil, t, Vector3.new(1,2,3)');
       check(values.ok && values.returned[1] === "nil" && values.returned[2].self === "<circular reference>", "client structured values preserve nil and cycles");
       check(values.output.some(v => v.message.includes("client print")) && values.output.some(v => v.level === "warning"), "client prints and warnings captured");
@@ -276,6 +320,67 @@ if (args.includes("--playtests-off")) {
     }
   } catch (cause) {
     check(false, `playtest lock: ${cause.message}`);
+  }
+}
+
+// Starts a real playtest through the public tool handler, proving its returned
+// ID is the attached server session. Run only from an edit session, opt in.
+if (args.includes("--playtest-start")) {
+  const { z } = await import("zod");
+  const { registerPlaytestTools } = await import("../dist/tools/playtest.js");
+  let handler, spec;
+  const bridge = {
+    sessions: async () => (await (await fetch(`${base}/sessions`, {headers:HEADERS})).json()),
+    call: (op, params, options = {}) => callTo(options.studioId ?? studio.studioId, op, params, options.timeoutMs),
+    notePlaceName: async () => {},
+  };
+  registerPlaytestTools({bridge,server:{registerTool(_name, definition, invoke) {spec = definition; handler = invoke;}}});
+  let startedId;
+  let started = false;
+  const startOp = flag("playtest-op", "play");
+  if (!["play", "multiplayer"].includes(startOp)) throw new Error("--playtest-op must be play or multiplayer");
+  try {
+    const before = await callTo(studio.studioId, "playtest.control", {op:"state"});
+    if (!before.state.isEdit || before.state.playtestsAllowed === false) {
+      check(false, "--playtest-start needs an edit session with playtests enabled");
+    } else {
+      started = true;
+      const result = await handler(z.object(spec.inputSchema).parse({op:startOp,players:2,studioId:studio.studioId}));
+      const id = /"studioId": "([^"]+)"/.exec(result.content[0].text)?.[1];
+      startedId = id;
+      const sessions = await bridge.sessions();
+      check(Boolean(id && id !== studio.studioId && sessions.list.some(s => s.studioId === id && s.context?.includes("playtest"))), "playtest returns its connected server studioId directly");
+      const state = id ? await callTo(id, "playtest.control", {op:"state"}) : null;
+      if (state?.state.players?.length && !result.content[0].text.includes("players are still joining"))
+        check(/"players": \[/.test(result.content[0].text), "playtest includes available player identities");
+      if (startOp === "multiplayer") {
+        const reply = result.content[0].text;
+        const named = state?.state.players?.length === 2 && state.state.players.every(player => reply.includes(`"name": "${player.name}"`));
+        check(named || reply.includes("players are still joining"), "multiplayer returns player names when connected, or identifies late joins");
+      }
+      const staleCursor = flag("stale-cursor", undefined);
+      if (id && staleCursor) {
+        let players = state?.state.players;
+        for (let attempt = 0; !players?.length && attempt < 20; attempt += 1) {
+          await new Promise(resolve => setTimeout(resolve, 250));
+          players = (await callTo(id, "playtest.control", {op:"state"})).state.players;
+        }
+        if (players?.length) {
+          try {
+            await callTo(id, "perf.console", {target:"client",player:players[0].name,since:staleCursor});
+            check(false, "a client cursor from the prior playtest is rejected");
+          } catch (cause) {
+            check(cause.message.includes("BAD_CURSOR"), "a client cursor from the prior playtest is rejected");
+          }
+        } else check(false, "a player must join to check the prior playtest cursor");
+      }
+    }
+  } catch (cause) {
+    check(false, `playtest returned ID: ${cause.message}`);
+  } finally {
+    const sessions = await bridge.sessions().catch(() => ({list:[]}));
+    const target = startedId ?? (started ? sessions.list.find(s => s.studioId !== studio.studioId && s.context?.includes("playtest"))?.studioId : undefined);
+    if (target) await callTo(target, "playtest.control", {op:"endTest",value:"live check complete"}).catch(() => {});
   }
 }
 

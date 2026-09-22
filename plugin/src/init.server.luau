@@ -17,6 +17,7 @@ local Console = require(script.Console)
 local Dispatch = require(script.Dispatch)
 local History = require(script.History)
 local LogBuffer = require(script.LogBuffer)
+local ClientRelay = require(script.ClientRelay)
 local Mirror = require(script.Mirror)
 local Phrase = require(script.Phrase)
 local ScriptEdit = require(script.ScriptEdit)
@@ -130,6 +131,7 @@ end
 -- is unrecoverable. This runs even in a client session that will never connect,
 -- since the console tool reads it and connectivity is a separate question.
 LogBuffer.start()
+ClientRelay.startDiagnostics()
 
 local storedPort = plugin:GetSetting(SETTING_PORT)
 if typeof(storedPort) == "number" then
@@ -887,6 +889,7 @@ button.Click:Connect(function()
 end)
 
 plugin.Unloading:Connect(function()
+	ClientRelay.stopDiagnostics()
 	Transport.stop()
 end)
 

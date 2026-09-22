@@ -1,0 +1,38 @@
+local perf = ...
+local function add(stream, level, message)
+	stream.sequence += 1
+	table.insert(stream.entries, { sequence = stream.sequence, level = level, message = message, timestamp = 1 })
+end
+local studio = streams.studio
+add(studio, "print", "one")
+add(studio, "error", "two")
+local first = perf.console({ limit = 1 })
+assert(#first.items == 1 and first.items[1].message == "two" and first.dropped == 1)
+assert(first.nextCursor == "studio-token:2")
+add(studio, "print", "three")
+local newer = perf.console({ since = first.nextCursor })
+assert(#newer.items == 1 and newer.items[1].message == "three")
+assert(newer.nextCursor == "studio-token:3")
+local filtered = perf.console({ since = first.nextCursor, level = "error" })
+assert(#filtered.items == 0 and filtered.nextCursor == "studio-token:3")
+add(studio, "error", "four")
+local afterFilter = perf.console({ since = filtered.nextCursor, level = "error" })
+assert(#afterFilter.items == 1 and afterFilter.items[1].message == "four")
+studio.entries = { studio.entries[4] }
+studio.dropped = 3
+local evicted = perf.console({ since = first.nextCursor })
+assert(evicted.evicted == 1 and evicted.items[1].message == "four")
+local ok, err = pcall(function() perf.console({ since = "other-session:3" }) end)
+assert(not ok and err.code == "BAD_CURSOR")
+add(streams.Alice, "warning", "alice only")
+add(streams.Bob, "error", "bob only")
+local alice = perf.console({ target = "client", player = "Alice" })
+assert(#alice.items == 1 and alice.items[1].message == "alice only")
+assert(alice.nextCursor == "alice-token:1" and alice.player == "Alice")
+local bob = perf.console({ target = "client", player = "Bob" })
+assert(#bob.items == 1 and bob.items[1].message == "bob only")
+ok, err = pcall(function() perf.console({ target = "client", player = "Bob", since = alice.nextCursor }) end)
+assert(not ok and err.code == "BAD_CURSOR")
+ok, err = pcall(function() perf.console({ target = "client" }) end)
+assert(not ok and err.code == "AMBIGUOUS_PLAYER")
+print("perf console: ok")

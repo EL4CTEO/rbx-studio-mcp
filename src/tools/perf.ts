@@ -18,6 +18,9 @@ interface ConsoleResponse {
   evicted?: number;
   /** How long this session has been recording. Disambiguates an empty log. */
   recordingSeconds?: number;
+  nextCursor: string;
+  player?: string;
+  capturing?: boolean;
 }
 
 interface SnapshotResponse {
@@ -141,11 +144,16 @@ export function registerPerfTools(context: ToolContext): void {
       name: "console",
       title: "Read Studio output",
       description:
-        "Reads the Studio Output window — prints, warnings and runtime errors, " +
+        "Reads Studio or playtest client output — prints, warnings and runtime errors, " +
         "newest last.\n\n" +
         "This is how to find out what actually happened after a playtest or an " +
         "`execute_luau` call. An error here usually names the script and line, " +
         "which `script_read` can then open directly.\n\n" +
+        "Use `target=\"client\"` with the playtest server studioId to read continuously " +
+        "captured client output. In multiplayer, select a player by name. " +
+        "Pass the returned `nextCursor` as `since` to read only newer lines; " +
+        "cursors belong to one session and player. Evicted or limit-skipped lines " +
+        "are reported.\n\n" +
         "Filter with `level` to see only errors, or `pattern` to follow one " +
         "subsystem's logging. Up to 2000 lines are held, so prefer a filter over " +
         "a large `limit`.\n\n" +
@@ -153,12 +161,9 @@ export function registerPerfTools(context: ToolContext): void {
         "plugin loaded — the editor session and a running playtest server do not " +
         "share one. To read what a playtest printed, target the playtest's " +
         "studioId (see `list_studios`); the editor's log will not have it. " +
-        "Nothing printed before the plugin loaded is recoverable, and output from " +
-        "the playtest *client* is not reachable at all, because Studio forbids " +
-        "client sessions from making HTTP requests." +
+        "Nothing printed before the plugin or client relay loaded is recoverable." +
         "\n\n" +
-        "A quiet log is not proof nothing was said. Anything the playtest CLIENT " +
-        "printed is never here. Messages Studio itself emits — the ones the " +
+        "A quiet log is not proof nothing was said. Messages Studio itself emits — the ones the " +
         "Output window attributes to \"Studio\" rather than to a script — are " +
         "inconsistent, and they arrive in the session that RAISED them, which is " +
         "not always the one you are looking at: the warning that a Script with a " +
@@ -169,6 +174,9 @@ export function registerPerfTools(context: ToolContext): void {
         "explains, check the Output window yourself, or ask the user what it " +
         "says.",
       inputSchema: {
+        target: z.enum(["studio", "client"]).default("studio").describe("Output source; client requires a running playtest server studioId."),
+        player: z.string().optional().describe("Client only: player name, required when multiple players are present."),
+        since: z.string().optional().describe("Opaque nextCursor from a previous console response; return only newer matching lines."),
         level: z
           .enum(["print", "info", "warning", "error"])
           .optional()
@@ -188,7 +196,7 @@ export function registerPerfTools(context: ToolContext): void {
     async (args): Promise<ToolResult> => {
       const response = await bridge.call<ConsoleResponse>(
         "perf.console",
-        { level: args.level, pattern: args.pattern, limit: args.limit },
+        { level: args.level, pattern: args.pattern, limit: args.limit, target: args.target, player: args.player, since: args.since },
         { studioId: args.studioId },
       );
 
@@ -199,23 +207,27 @@ export function registerPerfTools(context: ToolContext): void {
         // missed. Saying how long the window has been open lets the reader tell
         // "nothing was logged" from "recording started after the event".
         const window =
-          response.recordingSeconds !== undefined
+          !args.since && response.recordingSeconds !== undefined
             ? ` This session has been recording for ${response.recordingSeconds}s, ` +
               "since its plugin loaded; anything logged before that is not recoverable."
             : "";
         return text(
           (args.level || args.pattern
             ? "No output matched. Try dropping the filter, or run a playtest first."
-            : "Nothing has been logged in this session.") + window,
+            : args.since ? "No newer output matched." : "Nothing has been logged in this session.") + window +
+            (args.target === "client" && response.capturing === false ? " The client diagnostic relay is still connecting." : "") +
+            (response.evicted ? ` ${response.evicted} older lines were evicted.` : "") +
+            `\n[nextCursor: ${response.nextCursor}]`,
         );
       }
 
       // An error's stack trace is indented under it rather than given its own
       // line, so the association survives being skimmed and the trace does not
       // read as further unrelated output.
-      const lines = response.items.map((entry) => {
-        const head = `[${entry.level}] ${entry.message}`;
-        if (!entry.stack) return head;
+      let lines = response.items.map((entry) => {
+        const when = args.target === "client" && entry.timestamp ? ` ${new Date(entry.timestamp * 1000).toISOString()}` : "";
+        const head = `[${entry.level}${when}] ${entry.message}`;
+        if (!entry.stack) return head + (entry.source ? `\n    in ${entry.source}` : "");
         const trace = entry.stack
           .split("\n")
           .map((line) => line.trim())
@@ -226,6 +238,18 @@ export function registerPerfTools(context: ToolContext): void {
         return trace ? `${head}${origin}\n${trace}` : `${head}${origin}`;
       });
       const notes: string[] = [];
+      // Keep the newest complete entries under the tool's response budget.
+      // A noisy script must never turn one console read into a huge prompt.
+      let sizeOmitted = 0;
+      let size = lines.reduce((sum, line) => sum + line.length + 1, 0);
+      while (lines.length > 1 && size > 20_000) {
+        size -= lines.shift()!.length + 1;
+        sizeOmitted += 1;
+      }
+      if (lines.length === 1 && lines[0]!.length > 20_000) {
+        lines = [`${lines[0]!.slice(0, 19_900)}… [entry truncated]`];
+      }
+      if (sizeOmitted > 0) notes.push(`${sizeOmitted} older matching lines omitted to fit the response`);
       if (response.dropped > 0) {
         notes.push(
           `showing the newest ${response.items.length} of ${response.total} matching lines`,
@@ -238,7 +262,7 @@ export function registerPerfTools(context: ToolContext): void {
           `${response.evicted} older lines have fallen out of the buffer and cannot be recovered`,
         );
       }
-      const trailer = notes.length > 0 ? `\n\n[${notes.join("; ")}]` : "";
+      const trailer = `\n\n[${notes.length > 0 ? `${notes.join("; ")}; ` : ""}nextCursor: ${response.nextCursor}]`;
       return text(lines.join("\n") + trailer);
     },
   );
