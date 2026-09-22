@@ -37,6 +37,13 @@ const STALE_AFTER_MS = 90_000;
 const CLIENT_STALE_AFTER_MS = 90_000;
 
 /**
+ * How long a session outlives its closed stream, waiting for the plugin to
+ * redial. The plugin retries after one second, so ten covers a slow Studio
+ * without keeping a crashed one listed for long.
+ */
+const RECONNECT_GRACE_MS = 10_000;
+
+/**
  * One MCP client, as far as this bridge can tell.
  *
  * `connectedAt` is set once and never refreshed, unlike `lastSeenAt`: a
@@ -112,6 +119,10 @@ interface Session {
   /** A parked long-poll request, if one is currently waiting. */
   waiter: ((command: Command | null) => void) | null;
   pending: Map<string, Pending>;
+  /** The published name a status call resolved, kept across reconnects. */
+  notedName?: string;
+  /** Bumped on every (re)attach, so a pending grace can tell it was superseded. */
+  generation: number;
 }
 
 /**
@@ -169,6 +180,13 @@ export class Bridge {
    */
   private defaultStudio: string | null = null;
 
+  /** See RECONNECT_GRACE_MS. Overridable so tests need not wait it out. */
+  private readonly reconnectGraceMs: number;
+
+  constructor(options: { reconnectGraceMs?: number } = {}) {
+    this.reconnectGraceMs = options.reconnectGraceMs ?? RECONNECT_GRACE_MS;
+  }
+
   // --- session lifecycle -------------------------------------------------
 
   attach(identity: StudioIdentity, stream: ServerResponse | null): string {
@@ -177,8 +195,13 @@ export class Bridge {
       // Studio reconnected (SSE hit the 30-minute cap, or the plugin reloaded).
       // Keep pending calls alive across the gap so an in-flight tool survives.
       existing.stream?.end();
-      existing.identity = identity;
+      // The handshake only knows the data model's name ("Place3"). A published
+      // name a status call already resolved stays, or every reconnect -- one
+      // each thirty minutes -- reverted the listing to a name nobody recognises.
+      existing.identity =
+        existing.notedName !== undefined ? { ...identity, placeName: existing.notedName } : identity;
       existing.stream = stream;
+      existing.generation += 1;
       existing.lastSeenAt = Date.now();
       this.flush(existing);
       return identity.studioId;
@@ -192,6 +215,7 @@ export class Bridge {
       queue: [],
       waiter: null,
       pending: new Map(),
+      generation: 0,
     });
     return identity.studioId;
   }
@@ -203,7 +227,23 @@ export class Bridge {
   detachStream(studioId: string, stream: ServerResponse): void {
     const session = this.sessions.get(studioId);
     if (!session || session.stream !== stream) return;
-    this.detach(studioId);
+
+    //[[ Held open briefly, because a closed stream is usually a reconnect.
+    //
+    // Studio ends every stream at thirty minutes and the plugin redials within
+    // a second -- and dropping the session on the spot rejected every call in
+    // flight as DISCONNECTED and threw away each agent's set_active_studio
+    // choice, so the next un-addressed call went AMBIGUOUS_STUDIO. Commands
+    // issued in the gap queue and are flushed to the new stream. A Studio that
+    // really is gone (crashed, force-quit) is dropped once the grace runs out.
+    //]]
+    session.stream = null;
+    const generation = session.generation;
+    const grace = setTimeout(() => {
+      const current = this.sessions.get(studioId);
+      if (current === session && current.generation === generation) this.detach(studioId);
+    }, this.reconnectGraceMs);
+    grace.unref();
   }
 
   detach(studioId: string): void {
@@ -333,7 +373,10 @@ export class Bridge {
   notePlaceName(studioId: string, placeName: string, context?: string): void {
     const session = this.sessions.get(studioId);
     if (!session) return;
-    if (placeName) session.identity.placeName = placeName;
+    if (placeName) {
+      session.identity.placeName = placeName;
+      session.notedName = placeName;
+    }
     if (context) session.identity.context = context;
   }
 
@@ -470,26 +513,46 @@ export class Bridge {
    * Resolves null on expiry so the plugin can re-poll with a fresh request
    * rather than sitting on a connection Studio may time out underneath it.
    */
-  waitForCommand(studioId: string): Promise<Command | null> {
+  waitForCommand(studioId: string, released?: AbortSignal): Promise<Command | null> {
     const session = this.sessions.get(studioId);
     if (!session) return Promise.resolve(null);
     session.lastSeenAt = Date.now();
 
     const queued = session.queue.shift();
     if (queued) return Promise.resolve(queued);
+    if (released?.aborted) return Promise.resolve(null);
 
     return new Promise((resolve) => {
       const settle = (command: Command | null): void => {
         clearTimeout(timer);
-        session.waiter = null;
+        released?.removeEventListener("abort", abandon);
+        if (session.waiter === settle) session.waiter = null;
         resolve(command);
       };
-      const timer = setTimeout(() => {
-        if (session.waiter === settle) session.waiter = null;
-        resolve(null);
-      }, POLL_HOLD_MS);
+      // The poll request went away, so nothing may be handed to this waiter.
+      const abandon = (): void => settle(null);
+      const timer = setTimeout(abandon, POLL_HOLD_MS);
+      released?.addEventListener("abort", abandon, { once: true });
       session.waiter = settle;
     });
+  }
+
+  /**
+   * Puts a command back at the front of the queue, for one handed to a poll
+   * whose socket had already closed. Ignored when the call behind it is gone.
+   */
+  requeue(studioId: string, command: Command): void {
+    const session = this.sessions.get(studioId);
+    if (!session || !session.pending.has(command.id)) return;
+    if (session.stream && !session.stream.writableEnded) {
+      session.stream.write(sseFrame(command));
+      return;
+    }
+    if (session.waiter) {
+      session.waiter(command);
+      return;
+    }
+    session.queue.unshift(command);
   }
 
   // --- internals ---------------------------------------------------------

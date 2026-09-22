@@ -98,7 +98,7 @@ function Net.explain(message: string): string
 	then
 		return string.format(
 			"Nothing is listening on port %d. Start the server with "
-				.. "`npx -y roblox-studio-mcp` (or check --port if you changed it).",
+				.. "`npx -y @el4cteo/rbx-studio-mcp` (or check --port if you changed it).",
 			Config.getPort()
 		)
 	end

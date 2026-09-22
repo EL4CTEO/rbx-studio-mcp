@@ -726,7 +726,9 @@ function whereIs(bin: string): string | null {
   const paths = (process.env["PATH"] ?? "").split(delimiter).filter((entry) => entry !== "");
   const extensions =
     process.platform === "win32"
-      ? (process.env["PATHEXT"] ?? ".EXE;.CMD;.BAT").split(";")
+      ? // Empty entries dropped: a trailing ";" would otherwise match npm's
+        // extensionless sh shim, which Windows cannot run.
+        (process.env["PATHEXT"] || ".EXE;.CMD;.BAT").split(";").filter((entry) => entry !== "")
       : [""];
   for (const dir of paths) {
     for (const extension of extensions) {
@@ -838,7 +840,12 @@ function kill(child: ChildProcess): void {
 
   if (process.platform === "win32") {
     try {
-      spawn("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore" });
+      // A spawn failure (taskkill missing, say) arrives as an `error` event, not
+      // a throw -- and an unhandled one would take this whole server down.
+      spawn("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore" }).on(
+        "error",
+        () => child.kill(),
+      );
       return;
     } catch {
       /* falls through to the plain kill */

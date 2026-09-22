@@ -1,4 +1,4 @@
-import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -80,11 +80,15 @@ async function writeStored(next: Stored): Promise<void> {
    * Worth doing anyway: this server runs on macOS and Linux too, where a
    * world-readable key in a home directory is a real exposure.
    */
-  await writeFile(FILE, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
-  await chmod(FILE, 0o600).catch(() => {
+  // Written beside the real file and renamed over it, so a crash mid-write
+  // cannot leave a truncated file that reads back as "nothing stored".
+  const staging = `${FILE}.${process.pid}.tmp`;
+  await writeFile(staging, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
+  await chmod(staging, 0o600).catch(() => {
     // Best effort: a filesystem that does not do permissions is not a reason to
     // refuse to save.
   });
+  await rename(staging, FILE);
 }
 
 /**
@@ -205,6 +209,7 @@ export async function testCredentials(apiKey: string): Promise<{ ok: boolean; de
   try {
     response = await fetch("https://apis.roblox.com/assets/v1/operations/0", {
       headers: { "x-api-key": apiKey },
+      signal: AbortSignal.timeout(15_000),
     });
   } catch (cause) {
     return { ok: false, detail: `could not reach Roblox: ${(cause as Error).message}` };

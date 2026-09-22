@@ -297,7 +297,7 @@ function twoStudios() {
       probe.close(() => resolve(free));
     });
   });
-  const server = await startBridgeServer({ port });
+  const server = await startBridgeServer({ port, bridge: new Bridge({ reconnectGraceMs: 100 }) });
   const open = () =>
     new Promise((resolve) => {
       const req = request(
@@ -312,7 +312,7 @@ function twoStudios() {
   const count = async () =>
     (await (await fetch(`http://127.0.0.1:${port}/sessions`, { headers: { "x-roblox-studio-mcp": "test" } })).json())
       .list.length;
-  const settle = () => new Promise((resolve) => setTimeout(resolve, 150));
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 250));
 
   const first = await open();
   const second = await open();
@@ -321,7 +321,48 @@ function twoStudios() {
   assert.equal(await count(), 1, "the old stream closing leaves the new session alone");
   second.destroy();
   await settle();
-  assert.equal(await count(), 0, "a stream that dies without a goodbye is dropped");
+  assert.equal(await count(), 0, "a stream that dies without a goodbye is dropped after the grace");
+
+  // A stream that closes and redials inside the grace keeps its session, its
+  // agent's chosen target, and a call issued during the gap.
+  {
+    const before = await open();
+    await server.bridge.setActive("crashy");
+    before.destroy();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const during = server.bridge.call("studio.ping", {}, { timeoutMs: 2_000 });
+    const events = [];
+    const after = await new Promise((resolve) => {
+      const req = request(
+        { host: "127.0.0.1", port, path: "/events", method: "POST", headers: { "x-roblox-studio-mcp": "test" } },
+        (res) => {
+          res.setEncoding("utf8");
+          res.on("data", (chunk) => {
+            for (const block of chunk.split("\n\n")) {
+              if (!block.startsWith("data: ")) continue;
+              const frame = JSON.parse(block.slice(6));
+              if (typeof frame.id !== "string") continue;
+              events.push(frame);
+              void fetch(`http://127.0.0.1:${port}/result?studioId=crashy`, {
+                method: "POST",
+                headers: { "x-roblox-studio-mcp": "test" },
+                body: JSON.stringify({ id: frame.id, ok: true, data: "pong" }),
+              });
+            }
+          });
+          resolve(req);
+        },
+      );
+      req.end(JSON.stringify({ studioId: "crashy", placeName: "p", placeId: 1 }));
+    });
+    assert.equal(await during, "pong", "a call made while redialling is delivered on the new stream");
+    assert.equal(events.length, 1);
+    await settle();
+    const view = await server.bridge.sessions();
+    assert.equal(view.list.length, 1, "the redialled session is still listed after the grace");
+    assert.equal(view.activeIsChosen, true, "and the agent's chosen target survived");
+    after.destroy();
+  }
 
   // A command far bigger than one socket read goes down the stream as ONE
   // event, and its answer comes back. The plugin half of this -- joining the
@@ -400,6 +441,43 @@ function twoStudios() {
   globalThis.setTimeout = originalTimer;
   bridge.detach("timeout-test");
  }
+}
+
+// A poll whose socket closed while parked must not swallow the next command.
+{
+  const bridge = new Bridge();
+  bridge.attach(identity("poll-drop", 1), null);
+  const released = new AbortController();
+  const parked = bridge.waitForCommand("poll-drop", released.signal);
+  released.abort();
+  assert.equal(await parked, null, "an abandoned poll resolves empty");
+  assert.equal(bridge.sessions.get("poll-drop").waiter, null, "and leaves no waiter behind");
+
+  const result = bridge.call("studio.ping", {}, { clientId: "test", studioId: "poll-drop" });
+  assert.equal(bridge.sessions.get("poll-drop").queue.length, 1, "the command waits in the queue");
+
+  // One handed to a poll that died anyway goes back to the front.
+  const command = await bridge.waitForCommand("poll-drop");
+  bridge.requeue("poll-drop", command);
+  const again = await bridge.waitForCommand("poll-drop");
+  assert.equal(again.id, command.id, "the requeued command is picked up next");
+  bridge.settle("poll-drop", { id: again.id, ok: true, data: "pong" });
+  assert.equal(await result, "pong");
+
+  // Nothing is requeued for a call that already settled.
+  bridge.requeue("poll-drop", command);
+  assert.equal(bridge.sessions.get("poll-drop").queue.length, 0, "settled calls are not resent");
+  bridge.detach("poll-drop");
+}
+
+// A resolved published name survives the plugin reconnecting.
+{
+  const bridge = new Bridge();
+  bridge.attach(identity("named", 1), null);
+  bridge.notePlaceName("named", "My Game");
+  bridge.attach({ ...identity("named", 1), placeName: "Place3" }, null);
+  assert.equal(bridge.list()[0].placeName, "My Game", "reconnect keeps the published name");
+  bridge.detach("named");
 }
 
 process.stdout.write("bridge: ok\n");

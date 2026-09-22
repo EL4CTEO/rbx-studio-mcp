@@ -173,33 +173,67 @@ local MAX_PENDING = 48 * 1024 * 1024
 	trailing blank line.
 ]]
 local function frameReader(): (chunk: string) -> { { [string]: any } }
-	local pending = ""
+	--[[
+		Held as a list of reads rather than one growing string, and only the new
+		read is searched for a break. Re-joining and re-scanning everything held
+		on every read made a big frame cost quadratic time in how many pieces it
+		arrived in.
+	]]
+	local held: { string } = {}
+	local heldBytes = 0
+	local lastChar = ""
+
+	local function reset()
+		table.clear(held)
+		heldBytes = 0
+		lastChar = ""
+	end
+
+	local function hold(piece: string)
+		if piece == "" then
+			return
+		end
+		table.insert(held, piece)
+		heldBytes += #piece
+		lastChar = string.sub(piece, -1)
+	end
 
 	return function(chunk: string): { { [string]: any } }
-		-- Normalised after joining, so a CRLF split across two reads still folds.
-		pending = (string.gsub(pending .. chunk, "\r\n", "\n"))
+		-- A CR ending the previous read pairs with an LF starting this one; the
+		-- stray CR is harmless, because parseFrames normalises again.
+		chunk = (string.gsub(chunk, "\r\n", "\n"))
 
 		local frames: { { [string]: any } } = {}
-		local lastBreak = string.match(pending, "^.*()\n\n")
+		local lastBreak = string.match(chunk, "^.*()\n\n")
+		if lastBreak == nil and lastChar == "\n" and string.sub(chunk, 1, 1) == "\n" then
+			-- The terminator's two newlines landed either side of the read.
+			lastBreak = 0
+		end
+
 		if lastBreak ~= nil then
-			frames = parseFrames(string.sub(pending, 1, lastBreak - 1))
-			pending = string.sub(pending, lastBreak + 2)
+			local before = if lastBreak > 0 then string.sub(chunk, 1, lastBreak - 1) else ""
+			frames = parseFrames(table.concat(held) .. before)
+			reset()
+			hold(string.sub(chunk, lastBreak + 2))
+		else
+			hold(chunk)
 		end
 
 		-- A partial JSON document never ends in "}", so the decode is only
 		-- attempted when it could succeed rather than on every read of a big one.
-		if pending ~= "" and string.match(pending, "}%s*$") then
-			local tail = parseFrames(pending)
+		local last = held[#held]
+		if last ~= nil and string.match(last, "}%s*$", math.max(1, #last - 64)) then
+			local tail = parseFrames(table.concat(held))
 			if #tail > 0 then
 				for _, frame in tail do
 					table.insert(frames, frame)
 				end
-				pending = ""
+				reset()
 			end
 		end
 
-		if #pending > MAX_PENDING then
-			pending = ""
+		if heldBytes > MAX_PENDING then
+			reset()
 		end
 		return frames
 	end
@@ -366,7 +400,26 @@ end
 ]]
 function Transport.sendResult(result: { [string]: any })
 	task.spawn(function()
-		Net.postJson("/result?studioId=" .. studioId, result)
+		--[[
+			Encoded under pcall. A handler that returns something JSON cannot hold
+			-- an Instance, a function, a mixed table -- made JSONEncode throw inside
+			this task, so no answer was ever posted and the agent waited out the
+			whole deadline for a TIMEOUT that named the wrong cause.
+		]]
+		local ok, body = pcall(HttpService.JSONEncode, HttpService, result)
+		if not ok then
+			body = HttpService:JSONEncode({
+				id = result.id,
+				ok = false,
+				error = {
+					code = "ENCODE_ERROR",
+					message = "The result could not be sent back as JSON: " .. tostring(body),
+					hint = "The command ran, but returned a value JSON cannot represent "
+						.. "(an Instance, a function, or a mixed table). Return plain data instead.",
+				},
+			})
+		end
+		Net.request("POST", "/result?studioId=" .. studioId, body)
 	end)
 end
 

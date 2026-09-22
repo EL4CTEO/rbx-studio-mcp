@@ -88,6 +88,8 @@ export async function universeForPlace(placeId: string): Promise<string | null> 
   try {
     const response = await fetch(
       `${BASE}/universes/v1/places/${encodeURIComponent(placeId)}/universe`,
+      // Best effort, so it must not be able to hang the call that asked.
+      { signal: AbortSignal.timeout(10_000) },
     );
     if (!response.ok) return null;
     const body = (await response.json()) as { universeId?: number | string };

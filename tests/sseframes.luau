@@ -76,4 +76,21 @@ assert(count(r5('data: {"id":"p",')) == 0, "partial held")
 assert(count(r6(': ping\n\n')) == 0, "other reader unaffected")
 assert(count(r5('"op":"q","params":{}}\n\n')) == 1, "first reader completes")
 
+-- A multi-megabyte frame in many small reads stays linear: this re-scanned the
+-- whole held buffer on every read and took seconds.
+local huge = 'data: {"id":"h","op":"script.create","params":{"source":"' .. string.rep("y", 4 * 1024 * 1024) .. '"}}\n\n'
+local r8 = frameReader()
+local hugeGot = 0
+local startedAt = os.clock()
+for at = 1, #huge, 4096 do
+	hugeGot += count(r8(string.sub(huge, at, at + 4095)))
+end
+assert(hugeGot == 1, "huge frame reassembled once, got " .. hugeGot)
+assert(os.clock() - startedAt < 2, "huge frame took " .. (os.clock() - startedAt) .. "s")
+
+-- A keepalive whose terminator straddles two reads, then a command.
+local r9 = frameReader()
+local n9 = count(r9(": ping\n")) + count(r9('\ndata: {"id":"k","op":"x","params":{}}\n\n'))
+assert(n9 == 1, "straddled keepalive then command, got " .. n9)
+
 print("all reader cases pass")

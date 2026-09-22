@@ -303,7 +303,9 @@ async function handleLatency(
   url: URL,
   res: ServerResponse,
 ): Promise<void> {
-  const count = Math.min(Math.max(Number(url.searchParams.get("count") ?? 50), 1), 500);
+  // A non-numeric count fell through as NaN, ran zero samples and reported nulls.
+  const asked = Math.trunc(Number(url.searchParams.get("count") ?? 50));
+  const count = Number.isFinite(asked) ? Math.min(Math.max(asked, 1), 500) : 50;
   const requested = url.searchParams.get("studioId") ?? undefined;
   const studios = bridge.list();
   const target = requested
@@ -451,7 +453,21 @@ async function handlePoll(
     // must hand us its identity again before we can route commands to it.
     return send(res, 409, { error: "unknown studioId", reconnect: true });
   }
-  const command = await bridge.waitForCommand(studioId);
+  //[[ A poll whose socket died while parked must not swallow a command.
+  //
+  // Studio drops the request when the plugin reloads or its HTTP call times
+  // out, and the parked waiter stayed installed -- so the next command was
+  // written into a closed socket and the tool call sat there until its
+  // deadline. The waiter is released on close, and a command that still
+  // lands on a dead response goes back to the front of the queue.
+  //]]
+  const released = new AbortController();
+  res.once("close", () => released.abort());
+  const command = await bridge.waitForCommand(studioId, released.signal);
+  if (released.signal.aborted || res.writableEnded) {
+    if (command) bridge.requeue(studioId, command);
+    return;
+  }
   // Poll sessions cannot be pushed to, so the count rides on the answer they
   // were already waiting for. Sent every time rather than on change: the plugin
   // ignores repeats, and a session parked through a change would otherwise
@@ -487,20 +503,24 @@ function parseIdentity(
   if (typeof raw.studioId !== "string" || raw.studioId.length === 0) {
     throw new Error("handshake is missing studioId");
   }
+  // Typed as well as defaulted: this is untrusted input, and a wrong-typed
+  // field would otherwise travel into every listing and comparison unchecked.
+  const str = (value: unknown, fallback: string): string =>
+    typeof value === "string" && value.length > 0 ? value : fallback;
   return {
     studioId: raw.studioId,
-    placeName: raw.placeName ?? "Unnamed place",
-    placeId: raw.placeId ?? 0,
-    pluginVersion: raw.pluginVersion ?? "unknown",
-    buildId: raw.buildId ?? "unknown",
+    placeName: str(raw.placeName, "Unnamed place"),
+    placeId: typeof raw.placeId === "number" && Number.isFinite(raw.placeId) ? raw.placeId : 0,
+    pluginVersion: str(raw.pluginVersion, "unknown"),
+    buildId: str(raw.buildId, "unknown"),
     // Absent on a plugin built before this field existed. 1 is both the
     // sentinel and the version that plugin actually speaks, so it reads as a
     // match rather than a false warning.
     protocolVersion: typeof raw.protocolVersion === "number" ? raw.protocolVersion : 1,
-    transport: raw.transport ?? transport,
+    transport: raw.transport === "sse" || raw.transport === "poll" ? raw.transport : transport,
     // Optional, because a plugin older than this field still connects fine —
     // it simply lists without a context, as every session did before.
-    context: raw.context,
+    context: typeof raw.context === "string" ? raw.context : undefined,
   };
 }
 

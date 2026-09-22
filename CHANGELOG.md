@@ -2,6 +2,17 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.7.7
+
+### Fixed
+- Studio's 30-minute reconnect no longer drops calls in flight or the chosen Studio.
+- Place name stays correct after a reconnect.
+- Calls no longer hang when a result can't be sent as JSON.
+- Long-poll no longer loses commands.
+- Big scripts reach Studio much faster.
+- Stopping an agent from the panel can't crash the server.
+- Small fixes: network timeouts, safer credentials save, clearer errors.
+
 ## 0.7.6
 
 ### Fixed
