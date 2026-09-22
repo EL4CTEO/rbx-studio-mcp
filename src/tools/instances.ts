@@ -190,7 +190,8 @@ interface CreateSpec {
   children?: CreateSpec[];
 }
 
-const createSpec: z.ZodType<CreateSpec> = z.object({
+/** One entry's own fields, without the nesting. */
+const createNode = z.object({
   parent: z
     .string()
     .optional()
@@ -202,15 +203,47 @@ const createSpec: z.ZodType<CreateSpec> = z.object({
   properties: propertyBag,
   attributes: attributeBag,
   tags: tagSpec,
+});
+
+/** The whole tree, checked at every depth. Validation only -- never advertised. */
+const createTree: z.ZodType<CreateSpec> = z.lazy(() =>
+  createNode.extend({ children: z.array(createTree).optional() }),
+);
+
+/**
+ * What the tool advertises: `children` as plain objects, not a recursive schema.
+ *
+ * A recursive schema comes out as a `$ref` into `definitions`, and Gemini /
+ * Vertex AI reject the whole tool list over it (HTTP 400). The shape is stated
+ * in words instead, and `createTree` checks every level before anything runs.
+ */
+const createSpec = createNode.extend({
   children: z
-    .array(z.record(z.string(), z.any()))
+    .array(z.record(z.string(), z.unknown()))
     .optional()
     .describe(
-      "Instances to create inside this one. Build a whole model in one call " +
-        "rather than creating a parent and then addressing it by a path you " +
-        "have to guess.",
+      "Instances to create inside this one. Each takes the same fields as this " +
+        "entry (className, name, properties, attributes, tags, children), nested " +
+        "as deep as needed. Build a whole model in one call rather than creating " +
+        "a parent and then addressing it by a path you have to guess.",
     ),
-}) as unknown as z.ZodType<CreateSpec>;
+});
+
+/** Checks the whole tree, naming the exact field that is wrong. */
+function parseCreateTree(instances: unknown): CreateSpec[] {
+  const checked = z.array(createTree).safeParse(instances);
+  if (checked.success) return checked.data;
+  const issue = checked.error.issues[0];
+  const where = (issue?.path ?? [])
+    .map((key) => (typeof key === "number" ? `[${key}]` : `.${String(key)}`))
+    .join("");
+  throw new ToolError(
+    "BAD_PARAMS",
+    `instances${where}: ${issue?.message ?? "invalid"}.`,
+    "Every entry in `children` takes the same fields as a top-level entry, and " +
+      "needs its own `className`.",
+  );
+}
 
 /** Walks the create tree, replacing each property bag with typed specs. */
 async function typeCreateSpec(spec: CreateSpec, where: string): Promise<unknown> {
@@ -269,7 +302,7 @@ export function registerInstanceTools(context: ToolContext): void {
     },
     async (args): Promise<ToolResult> => {
       const specs = await Promise.all(
-        (args.instances as CreateSpec[]).map((spec, index) =>
+        parseCreateTree(args.instances).map((spec, index) =>
           typeCreateSpec(spec, `instances[${index}]`),
         ),
       );

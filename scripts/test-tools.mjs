@@ -214,3 +214,18 @@ const boundedConsole = await consoleTool.handler(z.object(consoleTool.spec.input
 assert.ok(boundedConsole.content[0].text.length < 25_000);
 assert.match(boundedConsole.content[0].text, /older matching lines omitted/);
 process.stdout.write("client console schema and cursor forwarding: ok\n");
+
+// `create` must not advertise a recursive schema -- Gemini / Vertex AI reject a
+// `$ref` with HTTP 400 -- yet a bad nested child is still refused by name.
+{
+ const { registerInstanceTools } = await import("../dist/tools/instances.js");
+ const tools = new Map();
+ registerInstanceTools({ server: { registerTool(name, spec, handler) { tools.set(name, { spec, handler }); } }, bridge: { async call() { throw new Error("must not reach Studio"); } } });
+ const create = tools.get("create");
+ const schema = JSON.stringify(z.toJSONSchema(z.object(create.spec.inputSchema)));
+ assert.ok(!schema.includes("$ref") && !schema.includes("$defs") && !schema.includes("definitions"), "create schema is not recursive");
+ const bad = await create.handler(z.object(create.spec.inputSchema).parse({ instances: [{ parent: "Workspace", className: "Model", children: [{ className: "Part", children: [{ name: "NoClass" }] }] }] }));
+ assert.equal(bad.isError, true);
+ assert.match(bad.content[0].text, /BAD_PARAMS\] instances\[0\]\.children\[0\]\.children\[0\]\.className/);
+ process.stdout.write("create schema without recursion, nested validation: ok\n");
+}
