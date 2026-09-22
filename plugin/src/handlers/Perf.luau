@@ -19,6 +19,7 @@ local ScriptProfilerService = game:GetService("ScriptProfilerService")
 local Stats = game:GetService("Stats")
 
 local Dispatch = require(script.Parent.Parent.Dispatch)
+local ClientRelay = require(script.Parent.Parent.ClientRelay)
 local LogBuffer = require(script.Parent.Parent.LogBuffer)
 local Paths = require(script.Parent.Parent.Paths)
 local Scope = require(script.Parent.Parent.Scope)
@@ -90,16 +91,36 @@ function Perf.console(params: { [string]: any }): { [string]: any }
 	local limit = math.clamp(tonumber(params.limit) or DEFAULT_LOG_ENTRIES, 1, MAX_LOG_ENTRIES)
 	local level = params.level
 	local pattern = params.pattern
+	local target = params.target or "studio"
+	if target ~= "studio" and target ~= "client" then Dispatch.fail("BAD_PARAMS", "target must be studio or client") end
+	local player = if target == "client" then ClientRelay.playerFor(params.player) else nil
 
 	-- Read from our own buffer, not LogService:GetLogHistory(). See LogBuffer for
 	-- why: the engine's history stops growing after startup in an editor session
 	-- and is empty outright in a playtest, without reporting either as a failure.
-	local history, evicted = LogBuffer.all()
+	local history, evicted, token, latest, recordingSeconds = LogBuffer.stream(player)
+	local since: number? = nil
+	if params.since ~= nil then
+		local supplied = params.since
+		local cursorToken: string? = nil
+		local cursorSequence: string? = nil
+		if typeof(supplied) == "string" then
+			cursorToken, cursorSequence = string.match(supplied, "^([^:]+):(%d+)$")
+		end
+		local parsed = tonumber(cursorSequence)
+		if cursorToken ~= token or parsed == nil or parsed > latest then
+			Dispatch.fail("BAD_CURSOR", "This console cursor belongs to another session or is invalid.", "Start a fresh read without `since`.")
+		end
+		since = parsed
+	end
+	local oldest = if #history > 0 then history[1].sequence or 1 else latest + 1
+	local missed = if since ~= nil then math.max(0, oldest - since - 1) else 0
 
 	local entries: { { [string]: any } } = {}
 	local matched = 0
 
 	for _, item in history do
+		if since ~= nil and (item.sequence or 0) <= since then continue end
 		local kind = item.level
 		if level and kind ~= level then
 			continue
@@ -145,8 +166,11 @@ function Perf.console(params: { [string]: any }): { [string]: any }
 		dropped = dropped,
 		-- Lines lost to the buffer's own capacity, as opposed to ones trimmed to
 		-- satisfy this call's limit. Only the first is a reason to worry.
-		evicted = if evicted > 0 then evicted else nil,
-		recordingSeconds = LogBuffer.recordingSeconds(),
+		evicted = if since ~= nil then (if missed > 0 then missed else nil) else (if evicted > 0 then evicted else nil),
+		recordingSeconds = recordingSeconds,
+		nextCursor = token .. ":" .. tostring(latest),
+		player = if player then player.Name else nil,
+		capturing = if player then LogBuffer.clientReady(player) else true,
 	}
 end
 

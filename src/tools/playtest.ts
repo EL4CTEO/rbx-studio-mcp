@@ -12,6 +12,7 @@ interface PlaytestResponse {
     isRunMode: boolean;
     editModeActive?: boolean;
     playerCount: number;
+    players?: Array<{ name: string; userId: number }>;
     testPending: boolean;
     lastResult?: unknown;
     lastError?: string;
@@ -27,12 +28,12 @@ interface PlaytestResponse {
  * after this tool started a test, since the new session has never been queried
  * and its context is exactly what the caller needs.
  */
-async function findPlaytestSession(bridge: ToolContext["bridge"]): Promise<string | null> {
+async function findPlaytestSession(bridge: ToolContext["bridge"], exclude: ReadonlySet<string> = new Set()): Promise<string | null> {
   const sessions = (await bridge.sessions()).list;
-  const cached = sessions.find((session) => session.context?.includes("playtest"));
+  const cached = sessions.find((session) => !exclude.has(session.studioId) && session.context?.includes("playtest") && !session.context?.includes("client"));
   if (cached) return cached.studioId;
 
-  const unknown = sessions.filter((session) => session.context === undefined);
+  const unknown = sessions.filter((session) => !exclude.has(session.studioId) && session.context === undefined);
   const probed = await Promise.all(
     unknown.map(async (session) => {
       try {
@@ -42,7 +43,7 @@ async function findPlaytestSession(bridge: ToolContext["bridge"]): Promise<strin
           { studioId: session.studioId, timeoutMs: 3_000 },
         );
         await bridge.notePlaceName(session.studioId, status.placeName, status.context);
-        return status.context?.includes("playtest") ? session.studioId : null;
+        return status.context?.includes("playtest") && !status.context?.includes("client") ? session.studioId : null;
       } catch {
         return null;
       }
@@ -66,11 +67,10 @@ export function registerPlaytestTools(context: ToolContext): void {
         "fires. `run` is Run mode, which executes scripts with no player at all. " +
         "`multiplayer` starts a test with several players for testing " +
         "replication. `state` reports without changing anything.\n\n" +
-        "Pressing play adds a SECOND connected session for the playtest's server, " +
-        "and that is where the running game lives — `console`, `performance` and " +
-        "`execute_luau` must target its studioId, not the editor's. Call " +
-        "`list_studios` after starting and look for the entry whose context is a " +
-        "playtest.\n\n" +
+        "Play and multiplayer return the playtest server's studioId once it connects. " +
+        "Use that ID directly for `console`, `performance` and `execute_luau`; " +
+        "the editor session has a separate log. If connection takes too long, " +
+        "the reply says so and `list_studios` can find it later.\n\n" +
         "A test does not block this call: it starts and the reply reports the " +
         "state reached. Studio only ends it when something inside calls " +
         "`StudioTestService:EndTest(value)` or when `stop` is used here; whatever " +
@@ -191,6 +191,8 @@ export function registerPlaytestTools(context: ToolContext): void {
         }
       }
 
+      const starting = args.op === "play" || args.op === "multiplayer";
+      const before = starting ? new Set((await bridge.sessions()).list.map((session) => session.studioId)) : new Set<string>();
       const response = await bridge.call<PlaytestResponse>(
         "playtest.control",
         { op: args.op, players: args.players, args: args.args },
@@ -208,14 +210,27 @@ export function registerPlaytestTools(context: ToolContext): void {
       // it, and every subsequent read has to go to that one instead. Said here
       // because the alternative is an agent reading the editor's empty log and
       // concluding the playtest did nothing.
-      if ((args.op === "play" || args.op === "multiplayer") && response.state.testPending) {
-        notes.push(
-          "The playtest runs in its own session. Call list_studios and target the " +
-            "entry whose context is a playtest for console, performance and execute_luau.",
-        );
+      let runtime: { studioId: string; players?: Array<{ name: string; userId: number }> } | undefined;
+      if (starting && response.changed && response.state.testPending) {
+        const deadline = Date.now() + 6_000;
+        do {
+          const id = runtime?.studioId ?? await findPlaytestSession(bridge, before);
+          if (id) {
+            runtime ??= { studioId: id };
+            try {
+              const state = await bridge.call<PlaytestResponse>("playtest.control", { op: "state" }, { studioId: id, timeoutMs: 2_000 });
+              runtime.players = state.state.players;
+            } catch { /* A connecting session can already be listed before it answers. */ }
+            if ((runtime.players?.length ?? 0) >= (args.op === "multiplayer" ? args.players : 1)) break;
+          }
+          if (Date.now() >= deadline) break;
+          await new Promise((resolve) => setTimeout(resolve, 300));
+        } while (true);
+        if (!runtime) notes.push("The playtest server has not connected yet. Use list_studios later to find its studioId.");
+        else if (!runtime.players?.length) notes.push("The playtest server connected, but players are still joining. Query playtest state later for names.");
       }
 
-      return json(response.state, notes.length > 0 ? notes.join("\n") : undefined);
+      return json(runtime ? { ...response.state, ...runtime } : response.state, notes.length > 0 ? notes.join("\n") : undefined);
     },
   );
 }

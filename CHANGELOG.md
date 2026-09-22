@@ -2,6 +2,13 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.7.8
+
+### Added
+- `console target="client"` reads continuously captured playtest client prints, warnings and errors, with player selection in multiplayer and stack/source details when available.
+- `console` returns `nextCursor`; passing it as `since` reads only newer matching output and reports any lines lost to buffer eviction or the response limit. Cursors are tied to one session and player.
+- `playtest op="play"` and `op="multiplayer"` return the connected playtest server `studioId` and available player names directly. If the server has not connected within the wait, the start still succeeds and explains how to find it later.
+
 ## 0.7.7
 
 ### Fixed

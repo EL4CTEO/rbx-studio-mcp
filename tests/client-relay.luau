@@ -32,3 +32,21 @@ local capture = relay.run(player, "Capture", "", {}, 1, nil, function() readyCal
 assert(capture.ok and readyCalls == 1 and startSignals == 1)
 local failed = relay.run(player, "Capture", "", {}, 1, nil, function() error("ready failed") end)
 assert(not failed.ok and string.find(failed.reason, "ready failed") and startSignals == 1)
+
+-- Continuous relay is installed once per player and accepts only that client.
+players = {player}
+relay.startDiagnostics()
+assert(diagnosticStarted == 1 and added and removing)
+assert(made[#made - 1].Name == "MCPDiagnosticsRelay")
+local count = #diagnosticPayloads
+callback({Name = "Impostor"}, {level = "error", message = "wrong"})
+assert(#diagnosticPayloads == count)
+callback(player, {level = "warning", message = "outside execute_luau"})
+assert(#diagnosticPayloads == count + 1)
+removing(player)
+assert(diagnosticStopped == 1)
+added(player)
+assert(diagnosticStarted == 2)
+local persistent = made[#made - 1]
+relay.stopDiagnostics()
+assert(diagnosticStopped == 2 and persistent.destroyed)
