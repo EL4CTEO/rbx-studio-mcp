@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { json, table, text, type ToolResult } from "../lib/format.js";
+import { errorText, json, table, text, type ToolResult } from "../lib/format.js";
 import { defineTool, type ToolContext } from "../lib/tool.js";
 
 interface DeviceEntry {
@@ -165,7 +165,7 @@ export function registerDeviceTools(context: ToolContext): void {
       }
 
       if (args.op === "set" && (args.device === undefined || args.device === "")) {
-        return text('set needs a `device` id. Call `device op="list"` to see them.');
+        return errorText('set needs a `device` id. Call `device op="list"` to see them.');
       }
 
       if (args.op === "network") {

@@ -2,6 +2,30 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.8.0
+
+### Added
+- `screenshot` can zoom: `path` (a GUI, part or model) or `rect`, at full resolution.
+- Colors can be written as hex, e.g. `"#FF8800"`.
+
+### Changed
+- `script_edit` and `script_create` are up to 50x faster.
+- Sharper screenshots (better downscaling).
+- Smaller tool replies (compact JSON), so agents use fewer tokens.
+- Faster first `create` / `modify` / `inspect`.
+- Removed the `animation` tool.
+- Dependencies updated.
+
+### Fixed
+- `create` works with Gemini / Vertex AI, and nested children are validated again.
+- `script_edit` no longer removes the script's final newline.
+- Instances named like `x[1]` can be found by path.
+- A 12-number `CFrame` gets the right rotation.
+- Client logs survive a player respawn.
+- Property checking recovers after a network error.
+- Missing arguments are reported as errors.
+- `api` and `inspect` no longer list deprecated or unusable members.
+- The server can no longer crash on odd output from a panel agent.
 ## 0.7.8
 
 ### Added

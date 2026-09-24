@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { body, CHARACTER_LIMIT, cursorSchema, decodeCursor, encodeCursor, json, limitSchema, table, text, type ToolResult } from "../lib/format.js";
+import { errorText, body, CHARACTER_LIMIT, cursorSchema, decodeCursor, encodeCursor, json, limitSchema, table, text, type ToolResult } from "../lib/format.js";
 import { ToolError } from "../lib/errors.js";
 import { liveChildren, liveInstance, liveScriptWrite, resolveLivePath } from "../lib/liveops.js";
 import {
@@ -187,7 +187,7 @@ export function registerScriptTools(context: ToolContext): void {
           .optional()
           .describe(
             "live only: list what is under the first path instead of reading " +
-              "it. Pass an empty path list to see the top level.",
+              "it. Pass `paths: [\"\"]` to see the top level.",
           ),
         universeId: z.string().optional().describe("live only: omit to use `cloud universe`."),
         placeId: z.string().optional().describe("live only: omit to use `cloud place`."),
@@ -280,7 +280,7 @@ export function registerScriptTools(context: ToolContext): void {
           return table(["name", "className", "hasChildren"], items);
         }
 
-        if (wanted === undefined) return text('live read needs a path in `paths`.');
+        if (wanted === undefined) return errorText('live read needs a path in `paths`.');
         const at = await resolveLivePath(credentials, { universeId, placeId, path: wanted });
         const read = await liveInstance(credentials, {
           universeId,
@@ -304,7 +304,7 @@ export function registerScriptTools(context: ToolContext): void {
          * happened to take twenty paths would be hostile.
          */
         const first = args.paths[0];
-        if (first === undefined) return text("open needs a path.");
+        if (first === undefined) return errorText("open needs a path.");
         const path = typeof first === "string" ? first : first.path;
         const opened = await bridge.call<{ path: string; className: string; line?: number }>(
           "script.open",

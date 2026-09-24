@@ -122,6 +122,14 @@ local function collect(entries: { any }, className: string, wantInherited: boole
 			deprecated += 1
 			continue
 		end
+		-- No permits at all means no script can touch it: Part's old `shap` and
+		-- `shape` aliases, or engine-only calls like GetPhysicsCost. The engine
+		-- does not flag those as deprecated, so they are held back here too.
+		local permits = if typeof(entry) == "table" then (entry :: any).Permits else nil
+		if typeof(permits) == "table" and next(permits) == nil then
+			deprecated += 1
+			continue
+		end
 		local own = typeof(entry) ~= "table" or tostring((entry :: any).Owner) == className
 		if not own then
 			inherited += 1

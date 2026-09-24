@@ -28,6 +28,14 @@ import { fileURLToPath } from "node:url";
  */
 let cached: { key: string; id: string } | null = null;
 
+/**
+ * When the sources were last stat'd. One `list_studios` asks several times, and
+ * each ask stats every plugin file -- 3ms on a synced folder like OneDrive.
+ * Two seconds still notices a rebuild before anyone could act on it.
+ */
+let checkedAt = 0;
+const RECHECK_MS = 2_000;
+
 function pluginSourceDir(): string {
   // dist/lib/pluginbuild.js -> package root -> plugin/src
   return resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "plugin", "src");
@@ -50,6 +58,8 @@ function collect(dir: string, root: string, into: Array<[string, string]>): void
  * would otherwise look stale on Windows.
  */
 export function expectedPluginBuildId(): string {
+  if (cached !== null && Date.now() - checkedAt < RECHECK_MS) return cached.id;
+  checkedAt = Date.now();
   try {
     const root = pluginSourceDir();
     const files: Array<[string, string]> = [];

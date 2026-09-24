@@ -1,6 +1,6 @@
 # Roblox Studio MCP
 
-Let an AI agent drive Roblox Studio: read your place, edit scripts, build geometry, run playtests, take screenshots. 35 tools. MIT.
+Let an AI agent drive Roblox Studio: read your place, edit scripts, build geometry, run playtests, take screenshots. 34 tools. MIT.
 
 ![The Studio MCP panel](docs/rbx-studio.png)
 
@@ -73,7 +73,7 @@ Port is **44755**, loopback only. Change it with `--port` and match it in the pl
 | **Discover** | `tree` `inspect` `find` `api` |
 | **Scripts** | `script_read` `script_edit` `script_grep` `script_create` |
 | **Instances** | `create` `modify` `delete` `move` |
-| **World** | `geometry` `terrain` `generate` `assets` `collision` `audio` `animation` `undo` |
+| **World** | `geometry` `terrain` `generate` `assets` `collision` `audio` `undo` |
 | **Data & live game** | `datastore` `universe` |
 | **Run & debug** | `playtest` `execute_luau` `character` `input` `console` `debug` `performance` |
 | **Look** | `screenshot` `viewport` `device` |

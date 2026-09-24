@@ -21,6 +21,7 @@ local RunService = game:GetService("RunService")
 
 local Dispatch = require(script.Parent.Parent.Dispatch)
 local Emulation = require(script.Parent.Parent.Emulation)
+local Paths = require(script.Parent.Parent.Paths)
 local Png = require(script.Parent.Parent.Png)
 
 -- Wide enough to read a GUI label, small enough that the encode stays quick and
@@ -445,7 +446,98 @@ end
 	and read in another: the id is all that travels, and this is the reading
 	half, which needs plugin identity and therefore an editor session.
 ]]
-local function encode(contentId: string, width: number, context: string): { [string]: any }
+-- In capture pixels, or in viewport pixels when `viewportWidth` says so.
+export type Region = { x: number, y: number, width: number, height: number, viewportWidth: number? }
+
+--[[
+	The full-resolution path: the captured pixels themselves, cropped to `region`
+	when one is given, compressed for the wire and scaled down in Node.
+
+	The engine resample below is bilinear, which only averages the pixels it
+	merges at exactly 2x -- beyond that it skips source pixels, and a 1661-wide
+	viewport scaled to 800 lost thin edges and broke small GUI text apart. Node
+	scales with a box filter instead, where every source pixel counts. Measured
+	cost of sending the full frame: ~60ms of a ~550ms call, most of which is the
+	engine's own capture.
+
+	Returns nil when this Studio cannot do it (no EncodingService), so the caller
+	falls back to the engine resample.
+]]
+local function encodeFull(
+	image: any,
+	sourceWidth: number,
+	sourceHeight: number,
+	width: number,
+	context: string,
+	region: Region?
+): { [string]: any }?
+	local x, y, w, h = 0, 0, sourceWidth, sourceHeight
+	if region then
+		-- Viewport and capture pixels differ under display scaling.
+		local ratio = if region.viewportWidth then sourceWidth / region.viewportWidth else 1
+		region = {
+			x = region.x * ratio,
+			y = region.y * ratio,
+			width = region.width * ratio,
+			height = region.height * ratio,
+		}
+		x = math.clamp(math.floor(region.x), 0, sourceWidth)
+		y = math.clamp(math.floor(region.y), 0, sourceHeight)
+		w = math.min(math.ceil(region.width), sourceWidth - x)
+		h = math.min(math.ceil(region.height), sourceHeight - y)
+		if w < 1 or h < 1 then
+			Dispatch.fail(
+				"REGION_OFFSCREEN",
+				string.format(
+					"The region (%d, %d, %d x %d) is outside the %d x %d viewport.",
+					region.x,
+					region.y,
+					region.width,
+					region.height,
+					sourceWidth,
+					sourceHeight
+				),
+				"Aim the camera at it first with `viewport op=\"focus\"`, then take the screenshot."
+			)
+		end
+	end
+
+	local ok, result = pcall(function()
+		local rgba = image:ReadPixelsBuffer(Vector2.new(x, y), Vector2.new(w, h))
+		local rgb = stripAlpha(rgba, w, h)
+		local compressed = (EncodingService :: any):CompressBuffer(
+			rgb,
+			(Enum :: any).CompressionAlgorithm.Zstd,
+			COMPRESSION_LEVEL
+		)
+		return {
+			rgb = rgb,
+			packed = buffer.tostring((EncodingService :: any):Base64Encode(compressed)),
+		}
+	end)
+	if not ok then
+		return nil
+	end
+
+	return {
+		encoding = "zstd-rgb",
+		data = result.packed,
+		width = w,
+		height = h,
+		-- Node scales to this with a box filter; see above.
+		scaleTo = width,
+		sourceWidth = sourceWidth,
+		sourceHeight = sourceHeight,
+		region = if region then { x = x, y = y, width = w, height = h } else nil,
+		rawBytes = buffer.len(result.rgb),
+		bytes = #result.packed,
+		context = context,
+		black = isFlat(result.rgb),
+		device = Emulation.deviceId(),
+	}
+end
+
+local function encode(contentId: string, width: number, context: string, region: Region?): { [string]: any }
 	local okImage, image = pcall(function()
 		return AssetService:CreateEditableImageAsync(Content.fromUri(contentId))
 	end)
@@ -459,6 +551,21 @@ local function encode(contentId: string, width: number, context: string): { [str
 	local size = (image :: any).Size
 	local sourceWidth = math.floor(size.X)
 	local sourceHeight = math.floor(size.Y)
+
+	local full = encodeFull(image, sourceWidth, sourceHeight, width, context, region)
+	if full then
+		pcall(function()
+			(image :: any):Destroy()
+		end)
+		return full
+	end
+	if region then
+		Dispatch.fail(
+			"REGION_UNSUPPORTED",
+			"This Studio build cannot crop a screenshot (EncodingService is missing).",
+			"Take the full screenshot instead, or update Studio."
+		)
+	end
 
 	local rgb, outWidth, outHeight = resample(image, sourceWidth, sourceHeight, width)
 
@@ -544,6 +651,111 @@ local function encode(contentId: string, width: number, context: string): { [str
 	}
 end
 
+-- Room left around a zoomed subject, as a share of its size, so its edges are
+-- visible rather than cut exactly at the frame.
+local REGION_PADDING = 0.08
+
+--[[
+	Where on screen a GUI element or a piece of the world is, in viewport pixels.
+
+	GUI positions leave out the top inset, so it is added back; a 3D subject is
+	the screen box around its bounding box's eight corners. A subject partly
+	behind the camera has no honest box, so that is refused with the fix.
+]]
+local function boundsOf(target: Instance): (Vector2, Vector2)
+	if target:IsA("GuiObject") then
+		local inset = game:GetService("GuiService"):GetGuiInset()
+		return target.AbsolutePosition + inset, target.AbsolutePosition + target.AbsoluteSize + inset
+	end
+
+	local cframe: CFrame, size: Vector3
+	if target:IsA("BasePart") then
+		cframe, size = target.CFrame, target.Size
+	elseif target:IsA("Model") then
+		cframe, size = target:GetBoundingBox()
+	else
+		local low, high = Vector3.one * math.huge, -Vector3.one * math.huge
+		local counted = 0
+		for _, descendant in target:GetDescendants() do
+			if descendant:IsA("BasePart") then
+				local half = descendant.Size / 2
+				for _, corner in { Vector3.new(-1, -1, -1), Vector3.new(1, 1, 1), Vector3.new(-1, 1, -1), Vector3.new(1, -1, 1) } do
+					local point = descendant.CFrame:PointToWorldSpace(half * corner)
+					low, high = low:Min(point), high:Max(point)
+				end
+				counted += 1
+				if counted >= 2000 then
+					break
+				end
+			end
+		end
+		if counted == 0 then
+			Dispatch.fail(
+				"NOT_VISUAL",
+				string.format("%s has no GUI or parts to zoom to.", target:GetFullName()),
+				"Zoom to a GuiObject, a BasePart, a Model, or a folder containing parts."
+			)
+		end
+		cframe, size = CFrame.new((low + high) / 2), high - low
+	end
+
+	local camera = workspace.CurrentCamera
+	local low, high = Vector2.one * math.huge, -Vector2.one * math.huge
+	for _, sx in { -1, 1 } do
+		for _, sy in { -1, 1 } do
+			for _, sz in { -1, 1 } do
+				local point, _ = camera:WorldToViewportPoint(cframe:PointToWorldSpace(size / 2 * Vector3.new(sx, sy, sz)))
+				if point.Z <= 0 then
+					Dispatch.fail(
+						"REGION_OFFSCREEN",
+						string.format("%s is partly behind the camera.", target:GetFullName()),
+						"Aim the camera at it first with `viewport op=\"focus\"`, then take the screenshot."
+					)
+				end
+				local flat = Vector2.new(point.X, point.Y)
+				low, high = low:Min(flat), high:Max(flat)
+			end
+		end
+	end
+	return low, high
+end
+
+--[[
+	The part of the capture to keep, in capture pixels.
+
+	`path` zooms to an instance; `rect` is "x, y, width, height" in the pixels of
+	the full-resolution capture, which every screenshot caption states. A path
+	is resolved before the capture, so a bad one fails without taking it.
+]]
+local function regionFor(params: { [string]: any }): Region?
+	if typeof(params.rect) == "string" and params.rect ~= "" then
+		local numbers = {}
+		for token in string.gmatch(params.rect, "-?[%d%.]+") do
+			table.insert(numbers, tonumber(token))
+		end
+		if #numbers ~= 4 or numbers[3] <= 0 or numbers[4] <= 0 then
+			Dispatch.fail("BAD_PARAMS", 'rect must be "x, y, width, height", e.g. "400, 200, 320, 180".')
+		end
+		return { x = numbers[1], y = numbers[2], width = numbers[3], height = numbers[4] }
+	end
+
+	if typeof(params.path) ~= "string" or params.path == "" then
+		return nil
+	end
+	local target = Paths.resolve(params.path)
+	local low, high = boundsOf(target)
+	local extent = high - low
+	local pad = Vector2.new(math.max(8, extent.X * REGION_PADDING), math.max(8, extent.Y * REGION_PADDING))
+	low, high = low - pad, high + pad
+	return {
+		x = low.X,
+		y = low.Y,
+		width = high.X - low.X,
+		height = high.Y - low.Y,
+		viewportWidth = workspace.CurrentCamera.ViewportSize.X,
+	}
+end
+
 function Capture.screenshot(params: { [string]: any }): { [string]: any }
 	--[[
 		Refused rather than half-done. A playtest screenshot needs two sessions
@@ -562,7 +774,9 @@ function Capture.screenshot(params: { [string]: any }): { [string]: any }
 	end
 
 	local width = math.clamp(tonumber(params.width) or DEFAULT_WIDTH, MIN_WIDTH, MAX_WIDTH)
-	return encode(takeScreenshot(), width, if RunService:IsEdit() then "edit" else "playtest")
+	-- Before the capture, so a path that does not resolve costs no screenshot.
+	local region = regionFor(params)
+	return encode(takeScreenshot(), width, if RunService:IsEdit() then "edit" else "playtest", region)
 end
 
 --[[
@@ -579,7 +793,9 @@ function Capture.decode(params: { [string]: any }): { [string]: any }
 
 	local width = math.clamp(tonumber(params.width) or DEFAULT_WIDTH, MIN_WIDTH, MAX_WIDTH)
 	local context = if typeof(params.context) == "string" then params.context else "playtest client"
-	return encode(contentId :: string, width, context)
+	-- Only `rect` here: a path would have to be resolved in the client's view.
+	local region = if typeof(params.rect) == "string" then regionFor({ rect = params.rect }) else nil
+	return encode(contentId :: string, width, context, region)
 end
 
 function Capture.register()

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { errorText, json, table, text, type ToolResult } from "../lib/format.js";
+import { errorText, json, stringify, table, text, type ToolResult } from "../lib/format.js";
 import { ToolError } from "../lib/errors.js";
 import { runLiveLuau } from "../lib/liveluau.js";
 import {
@@ -199,7 +199,7 @@ export function registerExecTools(context: ToolContext): void {
           // than one-line summaries and a single-line dump of a nested table is
           // no more readable than the "<table with 5 entries>" it replaced.
           const single = response.returned.length === 1 ? response.returned[0] : response.returned;
-          parts.push(`Returned:\n${JSON.stringify(single, null, 2)}`);
+          parts.push(`Returned:\n${stringify(single)}`);
         }
         if (parts.length === 0) {
           parts.push("Ran successfully. Nothing was printed or returned.");
@@ -353,7 +353,7 @@ export function registerExecTools(context: ToolContext): void {
     async (args): Promise<ToolResult> => {
       if (args.op === "focus") {
         if (!args.path && !args.at) {
-          return text("focus needs a `path` to look at, or an `at` position.");
+          return errorText("focus needs a `path` to look at, or an `at` position.");
         }
         const response = await bridge.call<Record<string, unknown>>(
           "viewport.focus",
@@ -454,7 +454,7 @@ export function registerExecTools(context: ToolContext): void {
 
       if (args.op === "raycast") {
         if (!args.origin || !args.direction) {
-          return text(
+          return errorText(
             "raycast needs `origin` and `direction`.\n" +
               'For example origin "0, 100, 0" and direction "0, -1, 0" to find the ' +
               "ground below a point.",

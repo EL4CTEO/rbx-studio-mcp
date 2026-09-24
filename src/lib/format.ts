@@ -73,6 +73,50 @@ export function decodeCursor(cursor: string | undefined): number {
   return parsed;
 }
 
+/** Line width `stringify` keeps a short object or array within before wrapping it. */
+const COMPACT_WIDTH = 100;
+
+/**
+ * JSON for an agent to read: valid, and parsed back identical to
+ * `JSON.stringify`, but a short object or array stays on one line.
+ *
+ * Fully indented JSON spends a line -- and its indentation -- on every value,
+ * so a list of `{ path, className }` rows cost three to five lines each. Those
+ * bytes count against CHARACTER_LIMIT and are billed as tokens on every call,
+ * while telling the reader nothing. Only structures too wide for one line are
+ * broken up, which keeps nesting as readable as before.
+ */
+export function stringify(value: unknown): string {
+  const render = (node: unknown, indent: string, prefix: number): string => {
+    const flat = JSON.stringify(node) ?? "null";
+    if (
+      node === null ||
+      typeof node !== "object" ||
+      typeof (node as { toJSON?: unknown }).toJSON === "function" ||
+      indent.length + prefix + flat.length <= COMPACT_WIDTH
+    ) {
+      return flat;
+    }
+    const inner = `${indent}  `;
+    if (Array.isArray(node)) {
+      if (node.length === 0) return "[]";
+      return `[\n${node.map((item) => inner + render(item, inner, 0)).join(",\n")}\n${indent}]`;
+    }
+    // The same entries JSON.stringify keeps: undefined, functions and symbols go.
+    const entries = Object.entries(node as Record<string, unknown>).filter(
+      ([, entry]) =>
+        entry !== undefined && typeof entry !== "function" && typeof entry !== "symbol",
+    );
+    if (entries.length === 0) return "{}";
+    const lines = entries.map(([key, entry]) => {
+      const name = `${JSON.stringify(key)}: `;
+      return inner + name + render(entry, inner, name.length);
+    });
+    return `{\n${lines.join(",\n")}\n${indent}}`;
+  };
+  return render(value, "", 0);
+}
+
 /** Minimal MCP content result. Kept local so tools never import SDK types. */
 export interface ToolResult {
   content: Array<
@@ -136,11 +180,11 @@ export interface PageMeta {
  */
 export function page(items: unknown[], meta: PageMeta = {}): ToolResult {
   const parts: string[] = [];
-  let body = JSON.stringify(items, null, 2);
+  let body = stringify(items);
 
   if (body.length > CHARACTER_LIMIT) {
     const kept = fitToLimit(items, CHARACTER_LIMIT - 500);
-    body = JSON.stringify(kept, null, 2);
+    body = stringify(kept);
     parts.push(body);
     parts.push(
       `\n[${items.length - kept.length} of ${items.length} items dropped: the page ` +
@@ -228,7 +272,7 @@ function fitToLimit(items: unknown[], budget: number): unknown[] {
   const kept: unknown[] = [];
   let used = 2; // the enclosing brackets
   for (const item of items) {
-    const cost = JSON.stringify(item, null, 2).length + 2;
+    const cost = stringify(item).length + 2;
     if (used + cost > budget) break;
     used += cost;
     kept.push(item);
@@ -253,7 +297,7 @@ export function body(content: string, advice: string): ToolResult {
  * explicit marker so the agent never mistakes a clipped blob for the whole one.
  */
 export function json(value: unknown, note?: string): ToolResult {
-  let body = JSON.stringify(value, null, 2);
+  let body = stringify(value);
   if (body.length > CHARACTER_LIMIT) {
     body =
       body.slice(0, CHARACTER_LIMIT) +

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { json, text, type ToolResult } from "../lib/format.js";
+import { errorText, json, text, type ToolResult } from "../lib/format.js";
 import { defineTool, type ToolContext } from "../lib/tool.js";
 
 interface FilledShape {
@@ -139,7 +139,7 @@ export function registerTerrainTools(context: ToolContext): void {
 
       if (args.op === "fill") {
         if (args.shapes === undefined || args.shapes.length === 0) {
-          return text('fill needs `shapes`, e.g. [{ shape: "ball", position: "0, 10, 0", radius: 24, material: "Grass" }].');
+          return errorText('fill needs `shapes`, e.g. [{ shape: "ball", position: "0, 10, 0", radius: 24, material: "Grass" }].');
         }
         const response = await bridge.call<FillResponse>(
           "terrain.fill",
@@ -155,7 +155,7 @@ export function registerTerrainTools(context: ToolContext): void {
 
       if (args.op === "replace") {
         if (args.from === undefined || args.to === undefined) {
-          return text('replace needs `from` and `to`, e.g. from="Grass" to="Snow".');
+          return errorText('replace needs `from` and `to`, e.g. from="Grass" to="Snow".');
         }
         const response = await bridge.call<Record<string, unknown>>(
           "terrain.replace",

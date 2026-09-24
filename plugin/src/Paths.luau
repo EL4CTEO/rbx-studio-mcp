@@ -147,12 +147,18 @@ local function childBySegment(
 
 	if ordinal then
 		local list = childrenByName(parent, nil)[name]
-		if list == nil then
-			return nil, nil
-		end
-		local child = list[ordinal]
+		local child = if list then list[ordinal] else nil
 		if child then
 			return child, nil
+		end
+		-- Not an index after all: a child literally named "x[1]". Typed by hand,
+		-- or from a path emitted before `Paths.of` began marking such names.
+		local literal = parent:FindFirstChild(segment)
+		if literal then
+			return literal, nil
+		end
+		if list == nil then
+			return nil, nil
 		end
 		return nil,
 			string.format(
@@ -343,6 +349,11 @@ function Paths.of(instance: Instance, memo: NameIndex?): string
 	while current ~= nil and current ~= game do
 		local node = current :: Instance
 		local ordinal = siblingIndex(node, memo)
+		-- A name that itself ends in "[n]" would read back as an index into a
+		-- shorter name. An explicit index keeps it literal: "x[1][1]".
+		if ordinal == nil and string.match(node.Name, "%[%d+%]$") then
+			ordinal = 1
+		end
 		table.insert(
 			segments,
 			1,

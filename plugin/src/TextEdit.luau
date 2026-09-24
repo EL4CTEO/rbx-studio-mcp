@@ -263,6 +263,12 @@ function TextEdit.apply(path: string, source: string, edits: { Edit }): string
 	end
 
 	local text = table.concat(lines, "\n")
+	-- `toLines` drops the final newline, so it is put back here. Without this
+	-- every edit -- even a find/replace in the middle -- stripped it silently,
+	-- and a `find` that included it could never match.
+	if string.sub(source, -1) == "\n" and #lines > 0 then
+		text ..= "\n"
+	end
 
 	for _, edit in findEdits do
 		local needle = edit.find :: string

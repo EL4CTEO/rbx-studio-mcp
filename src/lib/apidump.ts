@@ -67,16 +67,32 @@ function cachePath(): string {
   return join(tmpdir(), "roblox-studio-mcp", "api-dump.json");
 }
 
-async function readCache(): Promise<ApiDump | null> {
+async function readCache(): Promise<{ dump: ApiDump; fresh: boolean } | null> {
   try {
     const raw = await readFile(cachePath(), "utf8");
     const cached = JSON.parse(raw) as CacheFile;
-    if (Date.now() - cached.fetchedAt > CACHE_TTL_MS) return null;
-    return cached.dump;
+    if (!Array.isArray(cached?.dump?.Classes)) return null;
+    return { dump: cached.dump, fresh: Date.now() - cached.fetchedAt <= CACHE_TTL_MS };
   } catch {
     return null;
   }
 }
+
+async function download(): Promise<ApiDump | null> {
+  try {
+    const response = await fetch(DUMP_URL, { signal: AbortSignal.timeout(15_000) });
+    if (!response.ok) return null;
+    const dump = (await response.json()) as ApiDump;
+    if (!Array.isArray(dump?.Classes)) return null;
+    await writeCache(dump);
+    return dump;
+  } catch {
+    return null;
+  }
+}
+
+/** How long after a failed download before the next call may try again. */
+const RETRY_AFTER_MS = 60_000;
 
 async function writeCache(dump: ApiDump): Promise<void> {
   try {
@@ -97,27 +113,28 @@ async function writeCache(dump: ApiDump): Promise<void> {
  */
 export function loadApiDump(): Promise<ApiDump | null> {
   loaded ??= (async () => {
+    //[[ A stale cache is served at once and refreshed behind the call.
+    //
+    // Engine APIs change slowly, and the refresh used to sit in the path of
+    // whichever tool call first needed the dump after the daily expiry: a
+    // 2.4MB download, up to 15s on a slow network, billed to one `create`.
+    // The fresh copy lands on disk for the next process.
+    //]]
     const cached = await readCache();
-    if (cached) return cached;
-
-    try {
-      const response = await fetch(DUMP_URL, {
-        signal: AbortSignal.timeout(15_000),
-      });
-      if (!response.ok) return null;
-      const dump = (await response.json()) as ApiDump;
-      await writeCache(dump);
-      return dump;
-    } catch {
-      // Stale beats absent: fall back to an expired cache when the network is
-      // unavailable, since engine APIs change slowly.
-      try {
-        const raw = await readFile(cachePath(), "utf8");
-        return (JSON.parse(raw) as CacheFile).dump;
-      } catch {
-        return null;
-      }
+    if (cached) {
+      if (!cached.fresh) void download();
+      return cached.dump;
     }
+
+    const dump = await download();
+    if (dump === null) {
+      // Offline is not forever. Without this, one failed download turned
+      // property checking off until the server was restarted.
+      setTimeout(() => {
+        loaded = null;
+      }, RETRY_AFTER_MS).unref();
+    }
+    return dump;
   })();
   return loaded;
 }

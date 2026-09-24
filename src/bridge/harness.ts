@@ -979,9 +979,16 @@ export function run(
     while (cut !== -1) {
       const line = pending.slice(0, cut);
       pending = pending.slice(cut + 1);
-      const reading = harness.read(line);
-      if (reading.session !== undefined && reading.session !== "") session = reading.session;
-      for (const row of reading.lines) options.emit(row);
+      // A line an adapter did not expect must cost that line, not the process:
+      // this runs inside a stream handler, where a throw is uncaught and would
+      // take the bridge -- and every agent using it -- down with it.
+      try {
+        const reading = harness.read(line);
+        if (reading.session !== undefined && reading.session !== "") session = reading.session;
+        for (const row of reading.lines) options.emit(row);
+      } catch {
+        if (line.trim() !== "") options.emit({ level: "dim", message: line.slice(0, 400) });
+      }
       cut = pending.indexOf("\n");
     }
   };

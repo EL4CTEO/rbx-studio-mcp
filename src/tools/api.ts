@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { suggestClass } from "../lib/apidump.js";
 import { ToolError } from "../lib/errors.js";
-import { json, text, type ToolResult } from "../lib/format.js";
+import { errorText, json, text, type ToolResult } from "../lib/format.js";
 import { defineTool, type ToolContext } from "../lib/tool.js";
 
 interface DescribeResponse {
@@ -51,7 +51,8 @@ export function registerApiTools(context: ToolContext): void {
         "Deprecated members are never listed, only counted — `Instance` has " +
         "eight, including `clone`, `remove` and `getChildren`. They still run, " +
         "so picking one from a list gives you working code and a deprecation " +
-        "warning in the user's output.\n\n" +
+        "warning in the user's output. Members no script may use at all are " +
+        "counted with them.\n\n" +
         "This is not the same as `inspect`. `inspect` reads the values on an " +
         "instance that exists; this reads the shape of a class whether or not " +
         "anything in the place is one — which is what you need when deciding " +
@@ -115,7 +116,7 @@ export function registerApiTools(context: ToolContext): void {
       }
 
       if (args.className === undefined || args.className === "") {
-        return text('describe needs a `className`. Use `op: "classes"` to search for one.');
+        return errorText('describe needs a `className`. Use `op: "classes"` to search for one.');
       }
 
       // `create` answers a mistyped class with the closest real names; this

@@ -67,6 +67,20 @@ local function confirm(target: LuaSourceContainer, produced: string?)
 		return
 	end
 
+	--[[
+		No document, no race. The overwrite comes from an editor tab that was
+		loading while we wrote; a tab opened afterwards loads the new source. So
+		a script nobody has open is confirmed by one read, instead of paying the
+		settle -- which cost every written script 200ms, one after another, on
+		every script_edit and script_create.
+	]]
+	local found, document = pcall(function()
+		return ScriptEditorService:FindScriptDocument(target)
+	end)
+	if found and document == nil and ScriptEdit.read(target) == produced then
+		return
+	end
+
 	-- Three rounds: the race is with one load, so a single rewrite settles it,
 	-- and a script that discards three identical writes is failing for a reason
 	-- repeating will not fix.

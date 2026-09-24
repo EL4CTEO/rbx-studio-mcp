@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { grantAssets, publishPlace, uploadAsset } from "../lib/cloudassets.js";
 import { ToolError } from "../lib/errors.js";
-import { json, table, text, textOf, type ToolResult } from "../lib/format.js";
+import { errorText, json, table, text, textOf, type ToolResult } from "../lib/format.js";
 import { assetQuotas, restartServers } from "../lib/liveops.js";
 import { requireCredentials, requirePlace, requireUniverse } from "../lib/opencloud.js";
 import { defineTool, type ToolContext } from "../lib/tool.js";
@@ -470,7 +470,7 @@ export function registerWorldTools(context: ToolContext): void {
       if (args.op === "mirror") {
         const paths = args.paths ?? (args.path !== undefined ? [args.path] : []);
         if (paths.length === 0) {
-          return text("mirror needs `paths` — the instances to flip.");
+          return errorText("mirror needs `paths` — the instances to flip.");
         }
         return json(
           await bridge.call<Record<string, unknown>>(
@@ -484,7 +484,7 @@ export function registerWorldTools(context: ToolContext): void {
       if (args.op === "mesh") {
         const paths = args.paths ?? (args.path !== undefined ? [args.path] : []);
         if (paths.length === 0) {
-          return text('mesh needs `paths` — the MeshParts to read, e.g. ["Workspace.Tree"].');
+          return errorText('mesh needs `paths` — the MeshParts to read, e.g. ["Workspace.Tree"].');
         }
         const read = await bridge.call<MeshResponse>(
           "geometry.mesh",
@@ -862,7 +862,7 @@ export function registerWorldTools(context: ToolContext): void {
     },
     async (args): Promise<ToolResult> => {
       if (args.op === "peek") {
-        if (!args.assetId) return text("peek needs an `assetId`.");
+        if (!args.assetId) return errorText("peek needs an `assetId`.");
         const inside = await bridge.call<PeekResponse>(
           "assets.peek",
           { assetId: args.assetId },
@@ -886,7 +886,7 @@ export function registerWorldTools(context: ToolContext): void {
       }
 
       if (args.op === "search" && args.category === "audio") {
-        if (!args.keyword) return text("search needs a `keyword`.");
+        if (!args.keyword) return errorText("search needs a `keyword`.");
         const found = await bridge.call<AudioResponse>(
           "assets.audio",
           {
@@ -925,7 +925,7 @@ export function registerWorldTools(context: ToolContext): void {
       }
 
       if (args.op === "search") {
-        if (!args.keyword) return text("search needs a `keyword`.");
+        if (!args.keyword) return errorText("search needs a `keyword`.");
         const found = await searchCreatorStore(args.keyword, args.category, args.limit, {
           excludeScripts: args.excludeScripts,
           maxTriangles: args.maxTriangles,
@@ -1147,7 +1147,7 @@ export function registerWorldTools(context: ToolContext): void {
 
       if (args.op === "bake") {
         if (!args.paths || args.paths.length === 0) {
-          return text("bake needs `paths` — the MeshParts or models to convert.");
+          return errorText("bake needs `paths` — the MeshParts or models to convert.");
         }
         const baked = await bridge.call<BakeResponse>(
           "assets.bake",
@@ -1178,7 +1178,7 @@ export function registerWorldTools(context: ToolContext): void {
         return text(lines.join("\n"));
       }
 
-      if (!args.assetId) return text("insert needs an `assetId`. Use `op: \"search\"` to find one.");
+      if (!args.assetId) return errorText("insert needs an `assetId`. Use `op: \"search\"` to find one.");
       const response = await bridge.call<InsertResponse>(
         "assets.insert",
         {

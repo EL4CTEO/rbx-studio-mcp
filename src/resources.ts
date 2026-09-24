@@ -1,4 +1,5 @@
 import type { ToolContext } from "./lib/tool.js";
+import { stringify } from "./lib/format.js";
 
 /**
  * MCP resources: place state an agent can read without spending a tool call.
@@ -22,10 +23,10 @@ export function registerResources(context: ToolContext): void {
     // should see why it is empty, not a blank block.
     try {
       const result = await bridge.call<unknown>(op, params, {});
-      return JSON.stringify(result, null, 2);
+      return stringify(result);
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
-      return JSON.stringify({ unavailable: message }, null, 2);
+      return stringify({ unavailable: message });
     }
   };
 

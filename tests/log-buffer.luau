@@ -23,6 +23,12 @@ assert(#(select(1, buffer.stream(alice))) == 1)
 for index = 1, 2600 do buffer.pushClient(alice, { level = "print", message = tostring(index) }) end
 local bounded, lost, _, latest = buffer.stream(alice)
 assert(#bounded <= 2500 and lost > 0 and bounded[1].sequence > 1 and latest == 2601)
+-- A respawn reinstalls the relay: same log, same cursor, waiting for ready again.
+buffer.pushClient(alice, { kind = "ready" })
+buffer.startClient(alice)
+local kept, _, keptToken, keptSequence = buffer.stream(alice)
+assert(#kept == #bounded and keptToken == aToken and keptSequence == 2601, "respawn keeps the log")
+assert(not buffer.clientReady(alice), "and waits for the new relay")
 buffer.stopClient(alice)
 buffer.startClient(alice)
 local _, _, freshToken, freshSequence = buffer.stream(alice)

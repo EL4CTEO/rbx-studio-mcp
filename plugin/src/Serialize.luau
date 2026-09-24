@@ -403,6 +403,11 @@ function Serialize.parse(text: any, valueType: string): (boolean, any, string?)
 		return true, Vector2.new(numbers[1], numbers[2]), nil
 	end
 	if valueType == "Color3" then
+		-- "#FF8800", the way colours are usually written everywhere else.
+		local hex = if kind == "string" then string.match(text, "^%s*#(%x%x%x%x%x%x)%s*$") else nil
+		if hex then
+			return true, Color3.fromHex(hex), nil
+		end
 		if #numbers < 3 then
 			return false, nil, 'expected three 0-1 components, e.g. "1, 0.5, 0"'
 		end
@@ -435,6 +440,18 @@ function Serialize.parse(text: any, valueType: string): (boolean, any, string?)
 		return true, UDim.new(numbers[1], numbers[2]), nil
 	end
 	if valueType == "CFrame" then
+		-- Twelve numbers are a full matrix -- what `tostring(cframe)` prints. Read
+		-- as "position | rotation" they gave a silently wrong orientation.
+		if #numbers == 12 then
+			return true,
+				CFrame.new(
+					numbers[1], numbers[2], numbers[3],
+					numbers[4], numbers[5], numbers[6],
+					numbers[7], numbers[8], numbers[9],
+					numbers[10], numbers[11], numbers[12]
+				),
+				nil
+		end
 		if #numbers >= 6 then
 			return true,
 				CFrame.new(numbers[1], numbers[2], numbers[3])

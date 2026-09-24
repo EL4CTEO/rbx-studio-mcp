@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { json, text, type ToolResult } from "../lib/format.js";
+import { errorText, json, text, type ToolResult } from "../lib/format.js";
 import { defineTool, type ToolContext } from "../lib/tool.js";
 
 interface SetResponse {
@@ -278,7 +278,7 @@ export function registerDebugTools(context: ToolContext): void {
 
       if (args.op === "set") {
         if (!args.breakpoints || args.breakpoints.length === 0) {
-          return text("set needs a `breakpoints` array.");
+          return errorText("set needs a `breakpoints` array.");
         }
         const response = await bridge.call<SetResponse>(
           "debug.set",

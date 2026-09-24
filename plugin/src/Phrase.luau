@@ -566,29 +566,11 @@ local DESCRIBERS: { [string]: Describer } = {
 
 	--[[
 		Everything below was added after the first pass over this table, and each
-		one spent time showing as the fallback -- "Anim preview", "Data set",
+		one spent time showing as the fallback -- "Data set",
 		"Terrain fill". That form is honest but says nothing about the subject,
 		which is the whole point of this module: the panel is watched to see WHAT
 		an agent is touching, and 26 of 72 operations were declining to say.
 	]]
-	["anim.read"] = function(params)
-		local name = leaf(params.assetId)
-		return if name ~= nil then "Read the animation " .. name else "Read an animation"
-	end,
-	["anim.build"] = function(params)
-		local frames = count(params.keyframes)
-		return string.format("Build an animation from %s", plural(frames, "keyframe"))
-	end,
-	["anim.preview"] = function(params)
-		local rig = leaf(params.rig) or "a rig"
-		if params.op == "stop" then
-			return "Clear the pose on " .. rig
-		end
-		local at = tonumber(params.at)
-		return if at ~= nil
-			then string.format("Pose %s at %.2fs", rig, at)
-			else "Pose " .. rig
-	end,
 
 	["data.list"] = function(params)
 		local store = params.store
@@ -771,7 +753,6 @@ local KINDS: { [string]: string } = {
 	]]
 	terrain = "write",
 	generate = "write",
-	anim = "write",
 	data = "write",
 }
 

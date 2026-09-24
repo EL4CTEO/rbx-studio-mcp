@@ -140,8 +140,8 @@ process.stdout.write("playtest lock errors and instruction precedence: ok\n");
  for (operation of ["play", "multiplayer"]) {
   started = false;
   const result = await playtest.handler(z.object(playtest.spec.inputSchema).parse({op:operation,studioId:"editor"}));
-  assert.match(result.content[0].text, /"studioId": "runtime"/);
-  assert.match(result.content[0].text, /"name": "Alice"/);
+  assert.match(result.content[0].text, /"studioId": ?"runtime"/);
+  assert.match(result.content[0].text, /"name": ?"Alice"/);
  }
  context.bridge.sessions = originalSessions;
  context.bridge.call = originalCall;
@@ -228,4 +228,32 @@ process.stdout.write("client console schema and cursor forwarding: ok\n");
  assert.equal(bad.isError, true);
  assert.match(bad.content[0].text, /BAD_PARAMS\] instances\[0\]\.children\[0\]\.children\[0\]\.className/);
  process.stdout.write("create schema without recursion, nested validation: ok\n");
+}
+
+// Compact JSON: short structures on one line, and always parsed back identical.
+{
+ const { stringify } = await import("../dist/lib/format.js");
+ const value = { rows: [{ path: "Workspace.A", className: "Part" }], nested: { list: [1, "two", null, undefined], skip: undefined, when: new Date(0) }, long: "x".repeat(150) };
+ assert.deepEqual(JSON.parse(stringify(value)), JSON.parse(JSON.stringify(value)));
+ assert.match(stringify(value), /\n  "rows": \[\{"path":"Workspace.A","className":"Part"\}\],\n/, "a short row stays on one line");
+ assert.equal(stringify([]), "[]");
+ assert.equal(stringify(undefined), "null");
+ process.stdout.write("compact json: ok\n");
+}
+
+// Screenshot scaling: box filter averages everything under a pixel; enlarging copies blocks.
+{
+ const { boxResample, upscaleNearest } = await import("../dist/lib/png.js");
+ const stripes = Buffer.from([0,0,0, 200,200,200, 0,0,0, 200,200,200, 0,0,0, 200,200,200, 0,0,0, 200,200,200]);
+ assert.deepEqual([...boxResample(stripes, 4, 2, 2).rgb], [100,100,100, 100,100,100], "averages, never samples");
+ const W = 1661, H = 719, line = Buffer.alloc(W * H * 3);
+ for (let y = 0; y < H; y += 1) line[(y * W + 831) * 3] = 255;
+ const scaled = boxResample(line, W, H, 800);
+ assert.equal(scaled.width, 800);
+ assert.equal(scaled.height, 346);
+ let red = 0; for (let i = 0; i < scaled.rgb.length; i += 3) red = Math.max(red, scaled.rgb[i]);
+ assert.ok(red > 100, "a one-pixel line survives a 2x reduction");
+ assert.equal(boxResample(stripes, 4, 2, 8).width, 4, "never scales up");
+ assert.deepEqual([...upscaleNearest(Buffer.from([1,2,3,4,5,6]), 2, 1, 2).rgb], [1,2,3,1,2,3,4,5,6,4,5,6,1,2,3,1,2,3,4,5,6,4,5,6]);
+ process.stdout.write("screenshot scaling: ok\n");
 }

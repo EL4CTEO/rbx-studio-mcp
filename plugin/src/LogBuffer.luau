@@ -107,6 +107,13 @@ end
 -- Each player gets a separate stream and token. Rejoining, reconnecting to a
 -- different server DataModel, or a plugin reload invalidates old cursors.
 function LogBuffer.startClient(player: Player)
+	-- A relay reinstalled after a respawn is the same player in the same session:
+	-- keep its log and cursor. Only a player that left (stopClient) starts fresh.
+	local existing = clientBuffers[player]
+	if existing then
+		existing.ready = false
+		return
+	end
 	clientBuffers[player] = { token = HttpService:GenerateGUID(false), entries = {}, dropped = 0, sequence = 0, startedAt = os.time(), ready = false, orphan = {} }
 end
 

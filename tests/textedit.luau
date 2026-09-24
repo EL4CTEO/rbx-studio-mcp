@@ -182,3 +182,15 @@ end)
 TextEdit.validate({ path = "x", find = "a", replace = "" }, 1)
 TextEdit.validate({ path = "x", startLine = 1, replacement = "" }, 1)
 TextEdit.validate({ path = "x", source = "" }, 1)
+
+-- The final newline survives every kind of edit, and can be matched.
+do
+	local withNewline = "local a = 1\nlocal b = 2\n"
+	assert(TextEdit.apply("x", withNewline, { { path = "x", find = "a = 1", replace = "a = 3" } }) == "local a = 3\nlocal b = 2\n", "find keeps the final newline")
+	assert(TextEdit.apply("x", withNewline, { { path = "x", startLine = 1, endLine = 1, replacement = "-- one" } }) == "-- one\nlocal b = 2\n", "line edit keeps it")
+	assert(TextEdit.apply("x", withNewline, { { path = "x", startLine = 3, endLine = 2, replacement = "return b" } }) == "local a = 1\nlocal b = 2\nreturn b\n", "append keeps it")
+	assert(TextEdit.apply("x", withNewline, { { path = "x", find = "2\n", replace = "2\nreturn b\n" } }) == "local a = 1\nlocal b = 2\nreturn b\n", "a find may include it")
+	assert(TextEdit.apply("x", "a\nb", { { path = "x", find = "b", replace = "c" } }) == "a\nc", "no newline is not invented")
+	assert(TextEdit.apply("x", "a\n", { { path = "x", startLine = 1, endLine = 1, replacement = "" } }) == "", "deleting everything leaves nothing")
+end
+print("final newline: ok")

@@ -3,7 +3,10 @@ import { z } from "zod";
 import type { StudioBridge } from "../bridge/api.js";
 import { ToolError } from "../lib/errors.js";
 import { image, type ToolResult } from "../lib/format.js";
-import { encodePng } from "../lib/png.js";
+import { boxResample, encodePng, upscaleNearest } from "../lib/png.js";
+
+/** Long side a small zoomed crop is enlarged toward. */
+const MIN_ZOOM_SIDE = 480;
 import type { StudioSession } from "../lib/protocol.js";
 import { defineTool, type ToolContext } from "../lib/tool.js";
 
@@ -22,6 +25,12 @@ interface ScreenshotResponse {
   black?: boolean;
   /** Set when Studio is emulating a device, which is why the shape is unusual. */
   device?: string;
+  /** Width to box-filter down to here; set when the plugin sent full-resolution pixels. */
+  scaleTo?: number;
+  /** The crop that was kept, in full-resolution capture pixels. */
+  region?: { x: number; y: number; width: number; height: number };
+  /** Set here, not by the plugin: how many times a small crop was enlarged. */
+  enlarged?: number;
 }
 
 /**
@@ -37,7 +46,31 @@ function toPngBase64(response: ScreenshotResponse): string {
   if (response.encoding !== "zstd-rgb") {
     return response.data;
   }
-  const rgb = zstdDecompressSync(Buffer.from(response.data, "base64"));
+  let rgb: Buffer = zstdDecompressSync(Buffer.from(response.data, "base64"));
+  // A plugin that sent full resolution leaves the scaling to this side, which
+  // averages every pixel instead of sampling a few. See boxResample.
+  if (response.scaleTo !== undefined && response.width > response.scaleTo) {
+    const scaled = boxResample(rgb, response.width, response.height, response.scaleTo);
+    rgb = scaled.rgb;
+    response.width = scaled.width;
+    response.height = scaled.height;
+  }
+  // A small zoomed crop is enlarged so a vision model sees more than a few
+  // patches of it. Whole factors only, and never past the requested width.
+  if (response.region !== undefined && response.scaleTo !== undefined) {
+    const factor = Math.min(
+      4,
+      Math.floor(response.scaleTo / response.width),
+      Math.floor(MIN_ZOOM_SIDE / Math.max(response.width, response.height)),
+    );
+    if (factor > 1) {
+      const bigger = upscaleNearest(rgb, response.width, response.height, factor);
+      rgb = bigger.rgb;
+      response.width = bigger.width;
+      response.height = bigger.height;
+      response.enlarged = factor;
+    }
+  }
   return encodePng(rgb, response.width, response.height).toString("base64");
 }
 
@@ -66,6 +99,7 @@ async function playtestShot(
   playtest: StudioSession,
   sessions: StudioSession[],
   width: number,
+  rect?: string,
 ): Promise<ScreenshotResponse> {
   const editor = sessions.find(
     (session) => session.placeId === playtest.placeId && !isPlaytest(session),
@@ -90,7 +124,7 @@ async function playtestShot(
   // is no promise about how long Studio keeps one nobody has opened yet.
   return bridge.call<ScreenshotResponse>(
     "capture.decode",
-    { contentId, width, context: "playtest client" },
+    { contentId, width, rect, context: "playtest client" },
     { studioId: editor.studioId, timeoutMs: 60_000 },
   );
 }
@@ -130,9 +164,23 @@ export function registerScreenshotTools(context: ToolContext): void {
           .max(1600)
           .default(800)
           .describe(
-            "Width to scale the image down to, in pixels; height follows the " +
-              "viewport's aspect ratio. Larger is sharper and costs more — raise " +
-              "it only when you need to read small text.",
+            "Largest width of the image, in pixels; height follows the aspect " +
+              "ratio. Never scales up. To read small text, zoom with `path` or " +
+              "`rect` rather than raising this.",
+          ),
+        path: z
+          .string()
+          .optional()
+          .describe(
+            "Zoom to this instance at full resolution: a GUI element, a part, a " +
+              "model, or a folder of parts. Edit session only; it must be on screen.",
+          ),
+        rect: z
+          .string()
+          .optional()
+          .describe(
+            'Zoom to "x, y, width, height" in viewport pixels. Read them off an ' +
+              "earlier screenshot using the scale its caption states.",
           ),
         studioId: z.string().optional().describe("Target Studio; omit for the active one."),
       },
@@ -144,10 +192,10 @@ export function registerScreenshotTools(context: ToolContext): void {
 
       const response =
         target !== undefined && isPlaytest(target)
-          ? await playtestShot(bridge, target, list, args.width)
+          ? await playtestShot(bridge, target, list, args.width, args.rect)
           : await bridge.call<ScreenshotResponse>(
               "capture.screenshot",
-              { width: args.width },
+              { width: args.width, path: args.path, rect: args.rect },
               // Capturing, reading the pixels back and compressing them all happen
               // before the reply, and none is instant on a big viewport.
               { studioId: args.studioId, timeoutMs: 60_000 },
@@ -182,10 +230,23 @@ export function registerScreenshotTools(context: ToolContext): void {
           " and take it again before drawing any conclusion from what is in this image."
         : "";
 
+      const shown = response.region
+        ? ` zoomed to ${args.path ?? "the rect"}: rect "${response.region.x}, ${response.region.y}, ${response.region.width}, ${response.region.height}"` +
+          ` of the ${response.sourceWidth}x${response.sourceHeight} viewport`
+        : ` of the ${response.sourceWidth}x${response.sourceHeight} viewport`;
+      // Stated so a follow-up `rect` can be read off this image: its pixels
+      // times this factor are viewport pixels.
+      const factor = (response.region?.width ?? response.sourceWidth) / response.width;
+      const scale =
+        response.enlarged !== undefined
+          ? ` (enlarged ${response.enlarged}x for viewing: each ${response.enlarged}x${response.enlarged} block is one viewport px. ` +
+            'For real detail, move the camera closer with `viewport op="focus"` first)'
+          : factor > 1.001
+            ? ` (1 image px = ${factor.toFixed(2)} viewport px)`
+            : " (full resolution)";
       return image(
         png,
-        `Studio viewport (${response.context}), ${response.width}x${response.height}` +
-          ` scaled from ${response.sourceWidth}x${response.sourceHeight}.${emulating}${blank}`,
+        `Studio viewport (${response.context}), ${response.width}x${response.height}${shown}${scale}.${emulating}${blank}`,
       );
     },
   );

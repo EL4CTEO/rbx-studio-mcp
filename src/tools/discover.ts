@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { propertiesOf, restrictionsOf, standardProperties } from "../lib/apidump.js";
-import { cursorSchema, decodeCursor, detailSchema, encodeCursor, json, limitSchema, table, text, textOf, type Detail, type ToolResult } from "../lib/format.js";
+import { errorText, cursorSchema, decodeCursor, detailSchema, encodeCursor, json, limitSchema, table, text, textOf, type Detail, type ToolResult } from "../lib/format.js";
 import { defineTool, type ToolContext } from "../lib/tool.js";
 
 /** Shape the plugin returns for tree/find. */
@@ -267,7 +267,11 @@ export function registerDiscoverTools(context: ToolContext): void {
           if (args.detail === "full") probedClasses.add(item.className);
           const list =
             args.detail === "full"
-              ? (await propertiesOf(item.className)).map((property) => property.name)
+              ? // Deprecated aliases ("archivable" beside "Archivable") only repeat
+                // a property under an old name and cost tokens.
+                (await propertiesOf(item.className))
+                  .filter((property) => !property.deprecated)
+                  .map((property) => property.name)
               : await standardProperties(item.className);
           for (const name of list) names.add(name);
         }
@@ -432,7 +436,7 @@ export function registerDiscoverTools(context: ToolContext): void {
       }
 
       if (!args.nameContains && !args.className && !args.tag && !args.propertyName && !args.selector) {
-        return text(
+        return errorText(
           "find needs at least one filter (nameContains, className, tag, propertyName or selector).\n" +
             "To list everything under a path, use `tree` instead.",
         );
