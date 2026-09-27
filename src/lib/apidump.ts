@@ -328,7 +328,6 @@ const PRIORITY_PROPERTIES = [
   "Position",
   "CFrame",
   "Orientation",
-  "Rotation",
   "Anchored",
   "CanCollide",
   "Transparency",
@@ -351,6 +350,27 @@ const PRIORITY_PROPERTIES = [
   "PrimaryPart",
   "RunContext",
 ];
+
+/**
+ * Left out of `standard` although the dump offers them, because they were
+ * filling slots on every part while answering nothing: `Rotation` restates
+ * `Orientation` in the older axis order, the six surface types are legacy
+ * studs-and-inlets data, and assembly velocities read 0 on anything anchored
+ * (`inspect physics=true` is where motion belongs). `full` still has them all.
+ */
+const STANDARD_NOISE = new Set([
+  "Rotation",
+  "AssemblyLinearVelocity",
+  "AssemblyAngularVelocity",
+  "AudioCanCollide",
+  "LocalTransparencyModifier",
+  "BackSurface",
+  "BottomSurface",
+  "FrontSurface",
+  "LeftSurface",
+  "RightSurface",
+  "TopSurface",
+]);
 
 /** Sorts priority names first (in listed order), leaving the rest untouched. */
 function rankProperties(names: string[]): string[] {
@@ -381,7 +401,10 @@ export async function standardProperties(className: string): Promise<string[]> {
 
   const useful = all.filter(
     (property) =>
-      !GENERIC_BASES.has(property.declaredBy) && !property.deprecated && !property.readOnly,
+      !GENERIC_BASES.has(property.declaredBy) &&
+      !property.deprecated &&
+      !property.readOnly &&
+      !STANDARD_NOISE.has(property.name),
   );
 
   // Classes that add nothing of their own (Folder, Model) fall back to the full

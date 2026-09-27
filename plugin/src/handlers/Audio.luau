@@ -56,6 +56,11 @@ local function pinsOf(instance: Instance): ({ string }, { string })
 end
 
 local function isAudio(instance: Instance): boolean
+	-- Every pin-bearing audio class is named Audio*. Checked first so a walk of
+	-- the whole place does not throw and catch twice for every part in it.
+	if string.sub(instance.ClassName, 1, 5) ~= "Audio" then
+		return false
+	end
 	local inputs, outputs = pinsOf(instance)
 	return #inputs > 0 or #outputs > 0
 end
@@ -176,11 +181,11 @@ end
 	Builds a whole working chain in one step.
 
 	`world` is a sound at a place: AudioPlayer -> [effects] -> AudioEmitter,
-	parented to a part, heard from wherever it is. This is the common case and
-	the one people get wrong, because it also needs an `AudioListener` somewhere
-	-- without one on the camera or the character, a correctly wired emitter is
-	still silent. Reported rather than created: where the listener belongs is a
-	game design decision, not a default.
+	parented to a part, heard from wherever it is. It also needs something to
+	hear it: an `AudioListener`, which the engine adds on its own unless
+	`SoundService.DefaultListenerLocation` is None. In that case a missing
+	listener is reported rather than created: where it belongs is a game design
+	decision, not a default.
 
 	`ui` is a sound with no position: AudioPlayer -> [effects] ->
 	AudioDeviceOutput. Menu clicks, music.
@@ -258,9 +263,15 @@ function Audio.graph(params: { [string]: any }): { [string]: any }
 				player.AudioContent = Content.fromUri(asset :: string)
 			end)
 			if not okContent then
-				pcall(function()
+				local okAsset = pcall(function()
 					(player :: any).Asset = asset
 				end)
+				if not okAsset then
+					table.insert(
+						warnings,
+						string.format("The AudioPlayer took neither AudioContent nor Asset for %q; it has no sound yet.", asset :: string)
+					)
+				end
 			end
 		end
 		player.Parent = parent
@@ -296,16 +307,26 @@ function Audio.graph(params: { [string]: any }): { [string]: any }
 				way a correct graph stays silent, and it is invisible from the
 				emitter's own properties. Checked and said plainly.
 			]]
-			local listeners = 0
-			for _, descendant in game:GetDescendants() do
-				if descendant:IsA("AudioListener") then
-					listeners += 1
+			--[[
+				Only when the engine will not supply one. SoundService's
+				DefaultListenerLocation (Camera in a new place) makes Roblox add a
+				listener itself at runtime, and warning then was a false alarm.
+			]]
+			local okLocation, location = pcall(function()
+				return (game:GetService("SoundService") :: any).DefaultListenerLocation
+			end)
+			if okLocation and location == Enum.ListenerLocation.None then
+				local listeners = 0
+				for _, descendant in game:GetDescendants() do
+					if descendant:IsA("AudioListener") then
+						listeners += 1
+					end
 				end
-			end
-			if listeners == 0 then
-				note = "Nothing in this place has an AudioListener, so no emitter can "
-					.. "be heard. Put one on the camera or the character -- where it "
-					.. "goes decides what the player hears, so it is not created here."
+				if listeners == 0 then
+					note = "SoundService.DefaultListenerLocation is None and nothing in this "
+						.. "place has an AudioListener, so no emitter can be heard. Put one on "
+						.. "the camera or the character, or set DefaultListenerLocation."
+				end
 			end
 		end
 

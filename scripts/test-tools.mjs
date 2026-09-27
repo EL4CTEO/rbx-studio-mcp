@@ -148,6 +148,31 @@ process.stdout.write("playtest lock errors and instruction precedence: ok\n");
 }
 process.stdout.write("playtest runtime identity: ok\n");
 
+// addPlayers goes to the running test's server and waits for the new players.
+{
+ const originalSessions = context.bridge.sessions;
+ const originalCall = context.bridge.call;
+ let joined = 1;
+ const sent = [];
+ context.bridge.sessions = async () => ({list:[{studioId:"editor",context:"edit"},{studioId:"runtime",context:"playtest server"}]});
+ context.bridge.call = async (op, params, options) => {
+  sent.push({op: params.op, studioId: options.studioId, players: params.players});
+  if (params.op === "addPlayers") return {changed:true,state:{playerCount:joined}};
+  joined = 3;
+  return {changed:false,state:{playerCount:joined}};
+ };
+ const result = await playtest.handler(z.object(playtest.spec.inputSchema).parse({op:"addPlayers",players:2}));
+ assert.ok(!result.isError);
+ assert.deepEqual(sent[0], {op:"addPlayers",studioId:"runtime",players:2});
+ assert.match(result.content[0].text, /"playerCount": ?3/);
+ context.bridge.sessions = async () => ({list:[{studioId:"editor",context:"edit"}]});
+ const none = await playtest.handler(z.object(playtest.spec.inputSchema).parse({op:"addPlayers"}));
+ assert.equal(none.isError, true);
+ context.bridge.sessions = originalSessions;
+ context.bridge.call = originalCall;
+}
+process.stdout.write("playtest addPlayers routing: ok\n");
+
 // OFF affects simulation starts, not the ordinary edit-mode tool paths.
 const { registerDiscoverTools } = await import("../dist/tools/discover.js");
 const { registerScriptTools } = await import("../dist/tools/scripts.js");
@@ -256,4 +281,157 @@ process.stdout.write("client console schema and cursor forwarding: ok\n");
  assert.equal(boxResample(stripes, 4, 2, 8).width, 4, "never scales up");
  assert.deepEqual([...upscaleNearest(Buffer.from([1,2,3,4,5,6]), 2, 1, 2).rgb], [1,2,3,1,2,3,4,5,6,4,5,6,1,2,3,1,2,3,4,5,6,4,5,6]);
  process.stdout.write("screenshot scaling: ok\n");
+}
+
+// scene: a category of bare counts renders on one line; owned entries keep theirs.
+{
+ const perf = registered.get("performance");
+ context.bridge.call = async () => ({
+  composition: {total: 12, unit: "instances", entries: [
+   {name: "Physics", depth: 1, size: 10},
+   {name: "Motor6D", depth: 2, size: 6},
+   {name: "Attachment", depth: 2, size: 4},
+   {name: "Misc", depth: 1, size: 2},
+  ]},
+  animationMemory: {total: 100, unit: "bytes", entries: [
+   {name: "Walk", depth: 1, size: 100, owners: ["Workspace.Npc.Animator"]},
+  ]},
+ });
+ const result = await perf.handler(z.object(perf.spec.inputSchema).parse({op: "scene"}));
+ const out = result.content[0].text;
+ assert.match(out, /  Physics — 10 instances: Motor6D 6, Attachment 4\n/);
+ assert.match(out, /  Misc — 2 instances/);
+ assert.match(out, /  Walk — 100 bytes\n      used by Workspace\.Npc\.Animator/);
+ process.stdout.write("scene compact rows: ok\n");
+}
+
+// inspect: children come back as compact "Name (Class)" strings.
+{
+ const inspect = registered.get("inspect");
+ context.bridge.call = async () => ({
+  items: [{path: "Workspace.Npc", className: "Model", childCount: 2, properties: {Name: "Npc"},
+   children: [{name: "Head", className: "Part"}, {name: "Humanoid", className: "Humanoid"}]}],
+  failures: [],
+ });
+ const result = await inspect.handler(z.object(inspect.spec.inputSchema).parse({paths: ["Workspace.Npc"], properties: ["Name"]}));
+ assert.match(result.content[0].text, /"children": ?\["Head \(Part\)", ?"Humanoid"\]/);
+ process.stdout.write("inspect compact children: ok\n");
+}
+
+// universe servers/logs: routed to Server Management with the wildcard version,
+// rendered as a table and as log blocks. Fetch is stubbed; nothing leaves.
+{
+ const { registerUniverseTools } = await import("../dist/tools/universe.js");
+ registerUniverseTools(context);
+ const universe = registered.get("universe");
+ const saved = { fetch: globalThis.fetch, env: { ...process.env } };
+ Object.assign(process.env, { ROBLOX_API_KEY: "test-key", ROBLOX_USER_ID: "1", ROBLOX_UNIVERSE_ID: "10", ROBLOX_PLACE_ID: "20" });
+ context.bridge.call = async () => ({ placeId: 20 });
+ const urls = [];
+ globalThis.fetch = async (url) => {
+  urls.push(String(url));
+  if (String(url).includes("/universes/v1/places/")) return new Response(JSON.stringify({ universeId: 10 }), { status: 200 });
+  const body = String(url).includes("/logs")
+   ? { gameServerLogs: [{ messageTimestampMs: "0", severity: 3, message: "boom", stackTrace: "Script 'X', Line 4", context: "{\"id\":1}", skippedCount: 2 }], nextPageToken: null }
+   : { gameServers: [{ jobId: "job-1", status: "active", occupancy: 3, maxOccupancy: 10, uptime: "120s", frameRate: 59.7, memoryUsageBytes: 104857600, placeVersion: "12" }], nextPageToken: null };
+  return new Response(JSON.stringify(body), { status: 200 });
+ };
+ try {
+  const servers = await universe.handler(z.object(universe.spec.inputSchema).parse({ op: "servers" }));
+  assert.match(servers.content[0].text, /job-1 \| active \| 3\/10 \| 120s \| 60 \| 100 \| 12/);
+  assert.match(urls.find((u) => u.includes("game-servers")), /\/server-management\/v1\/universes\/10\/places\/20\/versions\/-\/game-servers\?/);
+  const logs = await universe.handler(z.object(universe.spec.inputSchema).parse({ op: "logs", jobId: "job-1", severity: "error", search: "boom" }));
+  const out = logs.content[0].text;
+  assert.match(out, /\[error\] boom  \(\+2 similar\)\n  Script 'X', Line 4\n  context: \{"id":1\}/);
+  assert.equal(new URL(urls.find((u) => u.includes("/logs"))).searchParams.get("Filter"), 'severity == 3 && search == "boom"');
+  const missing = await universe.handler(z.object(universe.spec.inputSchema).parse({ op: "logs" }));
+  assert.equal(missing.isError, true);
+ } finally {
+  globalThis.fetch = saved.fetch;
+  for (const key of ["ROBLOX_API_KEY", "ROBLOX_USER_ID", "ROBLOX_UNIVERSE_ID", "ROBLOX_PLACE_ID"]) {
+   if (saved.env[key] === undefined) delete process.env[key]; else process.env[key] = saved.env[key];
+  }
+ }
+ process.stdout.write("universe servers and logs: ok\n");
+}
+
+// console: a structured log's context is shown under its line.
+{
+ const consoleTool = registered.get("console");
+ context.bridge.call = async () => ({ items: [{ level: "info", message: "Bob leveled up", context: "{\"player\":\"Bob\"}" }], total: 1, dropped: 0, nextCursor: "c" });
+ const result = await consoleTool.handler(z.object(consoleTool.spec.inputSchema).parse({}));
+ assert.match(result.content[0].text, /\[info\] Bob leveled up\n    context: \{"player":"Bob"\}/);
+ process.stdout.write("console structured context: ok\n");
+}
+
+// universe products/sell: lists both kinds, refuses a duplicate name, needs confirm.
+{
+ const universe = registered.get("universe");
+ const saved = { fetch: globalThis.fetch, env: { ...process.env } };
+ Object.assign(process.env, { ROBLOX_API_KEY: "test-key", ROBLOX_USER_ID: "1", ROBLOX_UNIVERSE_ID: "10", ROBLOX_PLACE_ID: "20" });
+ context.bridge.call = async () => ({ placeId: 20 });
+ const sent = [];
+ globalThis.fetch = async (url, init) => {
+  const href = String(url);
+  sent.push({ href, method: init?.method ?? "GET", body: init?.body });
+  if (href.includes("/universes/v1/places/")) return new Response(JSON.stringify({ universeId: 10 }), { status: 200 });
+  if (href.includes("developer-products/creator")) return new Response(JSON.stringify({ developerProducts: [{ productId: 5, name: "100 Coins", isForSale: true, priceInformation: { defaultPriceInRobux: 25 } }] }), { status: 200 });
+  if (href.includes("game-passes/creator")) return new Response(JSON.stringify({ gamePasses: [{ gamePassId: 7, name: "VIP", isForSale: false }] }), { status: 200 });
+  if (init?.method === "POST") return new Response(JSON.stringify({ productId: 6, name: "500 Coins", isForSale: true, priceInformation: { defaultPriceInRobux: 99 } }), { status: 200 });
+  return new Response("", { status: 200 });
+ };
+ const parse = (args) => z.object(universe.spec.inputSchema).parse(args);
+ try {
+  const list = (await universe.handler(parse({ op: "products" }))).content[0].text;
+  assert.match(list, /product \| 5 \| 100 Coins \| 25 \| true/);
+  assert.match(list, /pass \| 7 \| VIP \|  \| false/);
+  const unconfirmed = await universe.handler(parse({ op: "sell", kind: "product", name: "500 Coins", price: 99 }));
+  assert.match(unconfirmed.content[0].text, /NEEDS_CONFIRM/);
+  const duplicate = await universe.handler(parse({ op: "sell", kind: "product", name: "100 coins", price: 25, confirm: true }));
+  assert.match(duplicate.content[0].text, /ALREADY_EXISTS\].*id 5/);
+  const created = await universe.handler(parse({ op: "sell", kind: "product", name: "500 Coins", price: 99, forSale: true, confirm: true }));
+  assert.match(created.content[0].text, /"id": ?6/);
+  const post = sent.find((entry) => entry.method === "POST");
+  assert.ok(post.href.endsWith("/developer-products/v2/universes/10/developer-products"));
+  assert.equal(post.body.get("price"), "99");
+  assert.equal(post.body.get("isForSale"), "true");
+  const updated = await universe.handler(parse({ op: "sell", kind: "pass", itemId: "7", price: 150, confirm: true }));
+  assert.match(updated.content[0].text, /"action": ?"updated"/);
+  assert.ok(sent.some((entry) => entry.method === "PATCH" && entry.href.endsWith("/game-passes/v1/universes/10/game-passes/7")));
+ } finally {
+  globalThis.fetch = saved.fetch;
+  for (const key of ["ROBLOX_API_KEY", "ROBLOX_USER_ID", "ROBLOX_UNIVERSE_ID", "ROBLOX_PLACE_ID"]) {
+   if (saved.env[key] === undefined) delete process.env[key]; else process.env[key] = saved.env[key];
+  }
+ }
+ process.stdout.write("universe products and sell: ok\n");
+}
+
+// datastore live set: keeps the entry's users and attributes, and sends its etag.
+{
+ const { registerDataTools } = await import("../dist/tools/data.js");
+ registerDataTools(context);
+ const datastore = registered.get("datastore");
+ const saved = { fetch: globalThis.fetch, env: { ...process.env } };
+ Object.assign(process.env, { ROBLOX_API_KEY: "test-key", ROBLOX_USER_ID: "1", ROBLOX_UNIVERSE_ID: "10", ROBLOX_PLACE_ID: "20" });
+ context.bridge.call = async () => ({ placeId: 20 });
+ let patched;
+ globalThis.fetch = async (url, init) => {
+  const href = String(url);
+  if (href.includes("/universes/v1/places/")) return new Response(JSON.stringify({ universeId: 10 }), { status: 200 });
+  if ((init?.method ?? "GET") === "GET") return new Response(JSON.stringify({ value: { coins: 1 }, users: ["users/42"], attributes: { lock: "s1" }, etag: "e1" }), { status: 200 });
+  patched = JSON.parse(init.body);
+  return new Response(JSON.stringify({ revisionId: "r2" }), { status: 200 });
+ };
+ try {
+  const result = await datastore.handler(z.object(datastore.spec.inputSchema).parse({ target: "live", op: "set", store: "Players", key: "42", value: "{\"coins\":5}", confirm: true }));
+  assert.ok(!result.isError, result.content[0].text);
+  assert.deepEqual(patched, { value: { coins: 5 }, users: ["users/42"], attributes: { lock: "s1" }, etag: "e1" });
+ } finally {
+  globalThis.fetch = saved.fetch;
+  for (const key of ["ROBLOX_API_KEY", "ROBLOX_USER_ID", "ROBLOX_UNIVERSE_ID", "ROBLOX_PLACE_ID"]) {
+   if (saved.env[key] === undefined) delete process.env[key]; else process.env[key] = saved.env[key];
+  }
+ }
+ process.stdout.write("datastore live set keeps users and attributes: ok\n");
 }

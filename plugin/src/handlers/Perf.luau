@@ -150,6 +150,7 @@ function Perf.console(params: { [string]: any }): { [string]: any }
 			timestamp = item.timestamp,
 			stack = item.stack,
 			source = item.source,
+			context = item.context,
 		})
 	end
 

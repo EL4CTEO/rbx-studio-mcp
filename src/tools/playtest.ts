@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { json, type ToolResult } from "../lib/format.js";
+import { errorText, json, type ToolResult } from "../lib/format.js";
 import { defineTool, type ToolContext } from "../lib/tool.js";
 
 interface PlaytestResponse {
@@ -66,7 +66,9 @@ export function registerPlaytestTools(context: ToolContext): void {
         "`play` is the Play button: a character spawns and `Players.PlayerAdded` " +
         "fires. `run` is Run mode, which executes scripts with no player at all. " +
         "`multiplayer` starts a test with several players for testing " +
-        "replication. `state` reports without changing anything.\n\n" +
+        "replication. `addPlayers` joins more players to a running multiplayer " +
+        "test, for late joins and lobby fill-up. `state` reports without " +
+        "changing anything.\n\n" +
         "Play and multiplayer return the playtest server's studioId once it connects. " +
         "Use that ID directly for `console`, `performance` and `execute_luau`; " +
         "the editor session has a separate log. If connection takes too long, " +
@@ -84,8 +86,8 @@ export function registerPlaytestTools(context: ToolContext): void {
         "accepted the request.\n\n" +
         "The panel's `playtests on` grants permission, never a requirement: obey " +
         "AGENTS.md, CLAUDE.md, user instructions and project guidance that prohibit " +
-        "playtesting even when ON. `playtests off` is a hard MCP lock: play, run and " +
-        "multiplayer are refused regardless of instructions to test; state and stop " +
+        "playtesting even when ON. `playtests off` is a hard MCP lock: play, run, " +
+        "multiplayer and addPlayers are refused regardless of instructions to test; state and stop " +
         "remain available. The lock only blocks starting simulation: screenshots, tree, " +
         "inspect, script reads, edit-mode execute_luau and UI inspection stay available. " +
         "Continue using edit-mode tools and static inspection where possible. " +
@@ -94,19 +96,23 @@ export function registerPlaytestTools(context: ToolContext): void {
         "another operation. Manual Studio Play is unaffected.",
       inputSchema: {
         op: z
-          .enum(["play", "run", "multiplayer", "stop", "state"])
+          .enum(["play", "run", "multiplayer", "addPlayers", "stop", "state"])
           .describe(
             "'play' starts a playtest with a character, 'run' runs scripts with " +
-              "no player, 'multiplayer' starts a several-player test, 'stop' ends " +
-              "it and discards its changes, 'state' only reports.",
+              "no player, 'multiplayer' starts a several-player test, 'addPlayers' " +
+              "joins more to a running multiplayer test, 'stop' ends it and " +
+              "discards its changes, 'state' only reports.",
           ),
         players: z
           .number()
           .int()
           .min(1)
           .max(8)
-          .default(2)
-          .describe("multiplayer only: how many players to start."),
+          .optional()
+          .describe(
+            "multiplayer: how many players to start (default 2). addPlayers: how " +
+              "many to add (default 1).",
+          ),
         args: z
           .string()
           .optional()
@@ -191,6 +197,39 @@ export function registerPlaytestTools(context: ToolContext): void {
         }
       }
 
+      // Routed like `stop`: AddPlayers is only callable from the running test's
+      // server, and the new clients take seconds to load, so the reply waits
+      // until they are in rather than reporting the count from before.
+      if (args.op === "addPlayers") {
+        const playtest = await findPlaytestSession(bridge);
+        if (!playtest) {
+          return errorText('No playtest is running. Start one with `playtest op="multiplayer"` first.');
+        }
+        const adding = args.players ?? 1;
+        const started = await bridge.call<PlaytestResponse>(
+          "playtest.control",
+          { op: "addPlayers", players: adding },
+          { studioId: playtest, timeoutMs: 10_000 },
+        );
+        const target = started.state.playerCount + adding;
+        const deadline = Date.now() + 20_000;
+        let after = started;
+        while (after.state.playerCount < target && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          after = await bridge.call<PlaytestResponse>(
+            "playtest.control",
+            { op: "state" },
+            { studioId: playtest, timeoutMs: 5_000 },
+          );
+        }
+        return json(
+          { ...after.state, studioId: playtest },
+          after.state.playerCount < target
+            ? `${target - after.state.playerCount} of ${adding} new players had not joined after 20s. Check \`state\` again shortly.`
+            : undefined,
+        );
+      }
+
       const starting = args.op === "play" || args.op === "multiplayer";
       const before = starting ? new Set((await bridge.sessions()).list.map((session) => session.studioId)) : new Set<string>();
       const response = await bridge.call<PlaytestResponse>(
@@ -221,7 +260,7 @@ export function registerPlaytestTools(context: ToolContext): void {
               const state = await bridge.call<PlaytestResponse>("playtest.control", { op: "state" }, { studioId: id, timeoutMs: 2_000 });
               runtime.players = state.state.players;
             } catch { /* A connecting session can already be listed before it answers. */ }
-            if ((runtime.players?.length ?? 0) >= (args.op === "multiplayer" ? args.players : 1)) break;
+            if ((runtime.players?.length ?? 0) >= (args.op === "multiplayer" ? (args.players ?? 2) : 1)) break;
           }
           if (Date.now() >= deadline) break;
           await new Promise((resolve) => setTimeout(resolve, 300));

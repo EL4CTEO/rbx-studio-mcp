@@ -341,6 +341,8 @@ local DESCRIBERS: { [string]: Describer } = {
 			return "Run the place"
 		elseif op == "multiplayer" then
 			return string.format("Start a %s test", plural(tonumber(params.players) or 2, "player"))
+		elseif op == "addPlayers" then
+			return string.format("Add %s to the test", plural(tonumber(params.players) or 1, "player"))
 		elseif op == "stop" then
 			return "Stop the playtest"
 		elseif op == "endTest" then

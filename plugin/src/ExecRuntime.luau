@@ -1,6 +1,7 @@
 --!strict
 -- Shared bounded execution results in the VM that calls run.
 local LogService = game:GetService("LogService")
+local LogBuffer = require(script.Parent.LogBuffer)
 local Serialize = require(script.Parent.Serialize)
 -- A chunk that prints in a loop would otherwise return a response no context
 -- window can hold.
@@ -82,13 +83,19 @@ function Runtime.run(chunk: () -> ...any, timeout: number?): { [string]: any }
 	-- reading them back from the log afterwards would also pick up whatever else
 	-- the place logged in the meantime.
 	local output: { { [string]: any } } = {}
-	local connection = LogService.MessageOut:Connect(function(message, messageType)
+	local connection = LogService.MessageOut:Connect(function(message, messageType, context)
 		if #output < MAX_OUTPUT_LINES then
+			-- A structured log's context rides on the line, as it does in `console`.
+			local encoded = LogBuffer.encodeContext(context)
+			if encoded then
+				message ..= "  " .. encoded
+			end
 			table.insert(output, {
 				message = message,
 				level = if messageType == Enum.MessageType.MessageError
 					then "error"
 					elseif messageType == Enum.MessageType.MessageWarning then "warning"
+					elseif messageType == Enum.MessageType.MessageInfo then "info"
 					else "print",
 			})
 		end

@@ -56,15 +56,17 @@ local function carryAppearance(source: BasePart, target: BasePart)
 	end
 end
 
+-- Absent is nil; present but malformed fails, rather than being taken as absent
+-- and quietly replaced by a default the caller never asked for.
 local function parseVector(text: any): Vector3?
-	if typeof(text) ~= "string" or text == "" then
+	if text == nil or text == "" then
 		return nil
 	end
-	local x, y, z = string.match(text, "^%s*(-?[%d%.]+)%s*,%s*(-?[%d%.]+)%s*,%s*(-?[%d%.]+)%s*$")
-	if x == nil then
-		return nil
+	local ok, value = Serialize.parse(text, "Vector3")
+	if not ok then
+		Dispatch.fail("BAD_PARAMS", string.format("%q is not an \"x, y, z\" vector.", tostring(text)))
 	end
-	return Vector3.new(tonumber(x) :: number, tonumber(y) :: number, tonumber(z) :: number)
+	return value :: Vector3
 end
 
 local function resolveParts(paths: any, what: string): { BasePart }

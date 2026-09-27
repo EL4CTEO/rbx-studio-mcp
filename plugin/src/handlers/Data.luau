@@ -457,8 +457,19 @@ function Data.set(params: { [string]: any }): { [string]: any }
 	end
 
 	local store = storeOf(params)
+	--[[
+		UpdateAsync, not SetAsync. SetAsync replaces the key's UserIds and
+		metadata along with its value, so a plain write stripped the GDPR user
+		tags and whatever metadata the game keeps there (session locks
+		included). Handing the old ones back keeps everything but the value.
+	]]
 	local ok, err = pcall(function()
-		store:SetAsync(key, value)
+		store:UpdateAsync(key, function(_, keyInfo: any)
+			if keyInfo == nil then
+				return value
+			end
+			return value, keyInfo:GetUserIds(), keyInfo:GetMetadata()
+		end)
 	end)
 	if not ok then
 		gate(err, "writing the key")

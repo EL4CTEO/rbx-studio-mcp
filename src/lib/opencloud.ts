@@ -31,6 +31,11 @@ export type Scope =
   | "universe.place.luau-execution-session:write"
   | "universe.place.instance:read"
   | "universe.place.instance:write"
+  | "developer-product:read"
+  | "developer-product:write"
+  | "game-pass:read"
+  | "game-pass:write"
+  | "universe:read"
   | "universe:write"
   | "universe-messaging-service:publish"
   | "universe-datastores.control:snapshot"
@@ -152,7 +157,9 @@ async function universeOf(placeId: string): Promise<string | null> {
   const known = universeCache.get(placeId);
   if (known !== undefined) return known;
   const found = await universeForPlace(placeId);
-  universeCache.set(placeId, found);
+  // Only answers are kept. A null is usually a network blip, and caching it
+  // would switch the wrong-game guard off for the rest of the session.
+  if (found !== null) universeCache.set(placeId, found);
   return found;
 }
 
@@ -255,7 +262,7 @@ function detailOf(body: string): string {
  * status and a body that distinguishes none of them. Naming the scope the call
  * needed turns "Forbidden" into a checklist.
  */
-function failure(status: number, body: string, scope: Scope): ToolError {
+function failure(status: number, body: string, scope: Scope, retryAfter?: string | null): ToolError {
   const detail = detailOf(body);
 
   if (status === 401) {
@@ -286,7 +293,14 @@ function failure(status: number, body: string, scope: Scope): ToolError {
     );
   }
   if (status === 429) {
-    return new ToolError("RATE_LIMITED", `Rate limited by Roblox: ${detail}`, "Wait and retry.");
+    const seconds = Number(retryAfter);
+    return new ToolError(
+      "RATE_LIMITED",
+      `Rate limited by Roblox: ${detail}`,
+      Number.isFinite(seconds) && seconds > 0
+        ? `Roblox asks to wait ${Math.ceil(seconds)}s before retrying.`
+        : "Wait and retry.",
+    );
   }
   if (status === 400) {
     return new ToolError("BAD_REQUEST", `Roblox refused the request (400): ${detail}`);
@@ -328,6 +342,7 @@ export async function call<T>(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 60_000);
   let response: Response;
+  let text: string;
   try {
     response = await fetch(url, {
       method: options.method ?? "GET",
@@ -335,6 +350,9 @@ export async function call<T>(
       body: body as RequestInit["body"],
       signal: controller.signal,
     });
+    // Inside the deadline too: fetch resolves on the headers, and a body that
+    // stalls after them would otherwise hang the call with no timeout at all.
+    text = await response.text();
   } catch (cause) {
     const error = cause as Error;
     throw new ToolError(
@@ -347,8 +365,9 @@ export async function call<T>(
     clearTimeout(timer);
   }
 
-  const text = await response.text();
-  if (!response.ok) throw failure(response.status, text, options.scope);
+  if (!response.ok) {
+    throw failure(response.status, text, options.scope, response.headers.get("retry-after"));
+  }
   if (text.trim() === "") return {} as T;
   try {
     return JSON.parse(text) as T;

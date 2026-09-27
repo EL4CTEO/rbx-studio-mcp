@@ -19,7 +19,6 @@ interface StatsResponse {
   cells: number;
   waterColor: string;
   waterWaveSize: number;
-  limitStuds: number;
 }
 
 export function registerTerrainTools(context: ToolContext): void {
@@ -48,8 +47,8 @@ export function registerTerrainTools(context: ToolContext): void {
         "rebuilding it. `clear` empties a region, or everything with " +
         "confirm=true. `stats` says whether the place uses terrain at all " +
         "-- call it first in an unfamiliar place. It cannot say WHERE the " +
-        "terrain is: Roblox exposes no bounding box for it, only the fixed " +
-        "limit. Take a `screenshot` to see the shape.\n\n" +
+        "terrain is: Roblox exposes no bounding box for it. Take a " +
+        "`screenshot` to see the shape.\n\n" +
         "Positions are the centre of the solid, in studs, as \"x, y, z\". " +
         "Terrain snaps to a 4-stud voxel grid, so small features come out " +
         "blockier than the numbers suggest; nothing thinner than about 4 studs " +

@@ -4,14 +4,18 @@ import { json, table, text, textOf, type ToolResult } from "../lib/format.js";
 import {
   getInventory,
   getUser,
+  listGameServers,
   listRestrictions,
+  listServerLogs,
   publishMessage,
   restartServers,
   setRestriction,
 } from "../lib/liveops.js";
+import { listItems, saveItem } from "../lib/monetization.js";
 import {
   assertTargetsOpenPlace,
   requireCredentials,
+  requirePlace,
   requireUniverse,
 } from "../lib/opencloud.js";
 import { defineTool, type ToolContext } from "../lib/tool.js";
@@ -62,15 +66,26 @@ export function registerUniverseTools(context: ToolContext): void {
         "`bans` lists who is currently restricted.\n\n" +
         "`user` looks up a user id — the name-to-id step most other calls need. " +
         "`inventory` reports what someone owns: passes, badges, assets.\n\n" +
+        "`servers` lists the place's live servers — players, uptime, frame " +
+        "rate, memory, version — and `logs` reads one server's errors and " +
+        "warnings by its `jobId`, with stack traces and structured-log context. " +
+        "That is where a player's bug report actually happened; Studio only " +
+        "shows your own test. Roblox keeps warnings and errors only, and they " +
+        "arrive about three minutes after they are written.\n\n" +
+        "`products` lists the game's developer products and game passes with " +
+        "their ids and prices — the ids a purchase script needs. `sell` " +
+        "creates one, or changes one given `itemId`. Creating checks the name " +
+        "first, so a retried create cannot leave two \"100 Coins\" products.\n\n" +
         "Everything here needs an Open Cloud key and a universe id. The user " +
         "sets both once with `cloud` in the Studio panel.",
       inputSchema: {
         op: z
-          .enum(["restart", "message", "ban", "unban", "bans", "user", "inventory"])
+          .enum(["restart", "message", "ban", "unban", "bans", "user", "inventory", "servers", "logs", "products", "sell"])
           .describe(
             "'restart' rolls servers onto the new version, 'message' publishes " +
               "to MessagingService, 'ban'/'unban'/'bans' manage player access, " +
-              "'user' and 'inventory' look someone up.",
+              "'user' and 'inventory' look someone up, 'servers' and 'logs' read " +
+              "live servers, 'products' and 'sell' manage products and passes.",
           ),
         universeId: z
           .string()
@@ -81,7 +96,23 @@ export function registerUniverseTools(context: ToolContext): void {
           .optional()
           .describe(
             "ban/unban: restrict to this place only, instead of the whole " +
-              "experience. restart: only restart this place's servers.",
+              "experience. restart: only restart this place's servers. " +
+              "servers/logs: which place, defaulting to `cloud place`.",
+          ),
+        jobId: z
+          .string()
+          .optional()
+          .describe("logs only: the server, as listed by `servers`."),
+        severity: z
+          .enum(["error", "warning"])
+          .optional()
+          .describe("logs only: just this level. Omit for both."),
+        search: z
+          .string()
+          .optional()
+          .describe(
+            "logs only: case-insensitive text to find in the message, stack " +
+              "trace or context.",
           ),
         topic: z.string().optional().describe("message only: the MessagingService topic."),
         message: z.string().optional().describe("message only: the payload, as a string."),
@@ -126,9 +157,10 @@ export function registerUniverseTools(context: ToolContext): void {
           .string()
           .optional()
           .describe(
-            'inventory only: an Open Cloud filter, e.g. `gamePassIds=123` or ' +
+            'inventory: an Open Cloud filter, e.g. `gamePassIds=123` or ' +
               "`assetIds=456`, to ask about specific items rather than listing " +
-              "everything.",
+              "everything. servers: a CEL filter over the server fields, e.g. " +
+              "`occupancy > 0`.",
           ),
         limit: z
           .number()
@@ -136,15 +168,38 @@ export function registerUniverseTools(context: ToolContext): void {
           .min(1)
           .max(200)
           .default(50)
-          .describe("bans/inventory: how many rows to return."),
+          .describe("bans/inventory/servers/logs: how many rows to return."),
         confirm: z
           .boolean()
           .optional()
           .describe(
-            "Required for restart, message, ban and unban. Each of these is " +
-              "visible to players the moment it runs and none can be undone " +
+            "Required for restart, message, ban, unban and sell. Each of these " +
+              "is visible to players the moment it runs and none can be undone " +
               "from here.",
           ),
+        kind: z
+          .enum(["product", "pass"])
+          .optional()
+          .describe(
+            "products/sell: 'product' is a developer product (bought again and " +
+              "again: currency, boosts), 'pass' a game pass (bought once: VIP, " +
+              "perks). products lists both when omitted; sell needs it.",
+          ),
+        itemId: z
+          .string()
+          .optional()
+          .describe("sell only: the product or pass to change. Omit to create a new one."),
+        name: z.string().optional().describe("sell only: the item's name. Required to create."),
+        description: z.string().optional().describe("sell only: the item's description."),
+        price: z.number().int().min(1).optional().describe("sell only: price in Robux."),
+        forSale: z
+          .boolean()
+          .optional()
+          .describe("sell only: whether players can buy it. Say it explicitly when creating."),
+        image: z
+          .string()
+          .optional()
+          .describe("sell only: path to a local .png/.jpg/.bmp/.tga icon."),
       },
       destructive: true,
     },
@@ -156,7 +211,7 @@ export function registerUniverseTools(context: ToolContext): void {
         explicit: args.universeId !== undefined,
       });
 
-      const needsConfirm = ["restart", "message", "ban", "unban"].includes(args.op);
+      const needsConfirm = ["restart", "message", "ban", "unban", "sell"].includes(args.op);
       if (needsConfirm && args.confirm !== true) {
         throw new ToolError(
           "NEEDS_CONFIRM",
@@ -197,6 +252,97 @@ export function registerUniverseTools(context: ToolContext): void {
         if (items.length === 0) return text("Nobody is restricted in this experience.");
         return text(
           textOf(table(["user", "active", "duration", "reason", "updated"], items)),
+        );
+      }
+
+      if (args.op === "products") {
+        const items = await listItems(credentials, { universeId, kind: args.kind });
+        if (items.length === 0) return text("This game has no developer products or game passes yet.");
+        return table(["kind", "id", "name", "price", "forSale", "created"], items, {
+          more:
+            `${items.length} item(s). A script sells a product with ` +
+            "MarketplaceService:PromptProductPurchase and a pass with PromptGamePassPurchase.",
+        });
+      }
+
+      if (args.op === "sell") {
+        if (!args.kind) {
+          throw new ToolError("BAD_PARAMS", 'sell needs a `kind`: "product" or "pass".');
+        }
+        return json(
+          await saveItem(credentials, {
+            universeId,
+            kind: args.kind,
+            id: args.itemId,
+            name: args.name,
+            description: args.description,
+            price: args.price,
+            forSale: args.forSale,
+            image: args.image,
+          }),
+          args.kind === "product"
+            ? "A developer product needs a ProcessReceipt callback on the server to grant what was bought, or purchases are charged and then refunded."
+            : "Check ownership with MarketplaceService:UserOwnsGamePassAsync.",
+        );
+      }
+
+      if (args.op === "servers") {
+        const placeId = await requirePlace(args.placeId);
+        const found = await listGameServers(credentials, {
+          universeId,
+          placeId,
+          limit: args.limit,
+          filter: args.filter,
+        });
+        const items = found["items"] as Array<Record<string, unknown>>;
+        const partial = found["partial"] === true ? " Roblox returned a partial list; try again shortly." : "";
+        if (items.length === 0) {
+          return text(`No servers are running for place ${placeId}.${partial}`);
+        }
+        return table(["jobId", "status", "players", "uptime", "fps", "memoryMb", "version"], items, {
+          more:
+            `${items.length} server(s)${found["more"] === true ? ", more available — raise `limit`" : ""}. ` +
+            `Read one with \`op="logs" jobId=...\`.${partial}`,
+        });
+      }
+
+      if (args.op === "logs") {
+        if (!args.jobId) {
+          throw new ToolError("BAD_PARAMS", 'logs needs a `jobId`. List them with `op="servers"`.');
+        }
+        const placeId = await requirePlace(args.placeId);
+        const found = await listServerLogs(credentials, {
+          universeId,
+          placeId,
+          jobId: args.jobId,
+          limit: args.limit,
+          severity: args.severity,
+          search: args.search,
+        });
+        const items = found["items"] as Array<Record<string, unknown>>;
+        if (items.length === 0) {
+          return text(
+            `No ${args.severity ?? "error or warning"} logs for ${args.jobId}` +
+              (args.search ? ` matching "${args.search}"` : "") +
+              ". Logs arrive about three minutes after they are written, and a wrong " +
+              "`placeId` also reads as empty.",
+          );
+        }
+        // Newest first, one entry per block: the stack and context belong
+        // to the line above them, which a table would split apart.
+        const lines = items.map((entry) =>
+          [
+            `${String(entry["time"])} [${String(entry["level"])}] ${String(entry["message"])}` +
+              (entry["repeats"] ? `  (+${String(entry["repeats"])} similar)` : ""),
+            entry["stack"] ? `  ${String(entry["stack"]).trim().replace(/\n/g, "\n  ")}` : undefined,
+            entry["context"] ? `  context: ${String(entry["context"])}` : undefined,
+          ]
+            .filter((line): line is string => line !== undefined)
+            .join("\n"),
+        );
+        return text(
+          lines.join("\n") +
+            (found["more"] === true ? "\n\n[more available — raise `limit` or narrow with `search`]" : ""),
         );
       }
 

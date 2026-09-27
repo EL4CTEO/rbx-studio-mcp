@@ -62,7 +62,7 @@ export function registerAudioTools(context: ToolContext): void {
           .optional()
           .describe(
             'graph only: the audio id, e.g. "rbxassetid://1234". Find one with ' +
-              '`assets op="search" kind="audio"`. Leave it out to build the ' +
+              '`assets op="search" category="audio"`. Leave it out to build the ' +
               "chain now and set the asset later.",
           ),
         name: z.string().optional().describe("graph only: name for the AudioPlayer."),

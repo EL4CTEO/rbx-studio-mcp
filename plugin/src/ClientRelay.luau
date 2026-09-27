@@ -25,8 +25,26 @@ local levels = {
 local function send(payload)
 	if open and report.Parent then report:FireServer(payload) end
 end
-table.insert(connections, LogService.MessageOut:Connect(function(message, kind)
-	send({level = levels[kind] or "print", message = string.sub(message, 1, 2000), timestamp = os.time()})
+local HttpService = game:GetService("HttpService")
+table.insert(connections, LogService.MessageOut:Connect(function(message, kind, context)
+	-- A structured log's context table, as JSON; plain prints pass an empty one.
+	-- Values JSON has no shape for (Vector3, Instance) become text, not null.
+	local function plain(value, depth)
+		local kind = typeof(value)
+		if kind == "string" or kind == "number" or kind == "boolean" then return value end
+		if kind == "Instance" then return value:GetFullName() end
+		if kind ~= "table" then return tostring(value) end
+		if depth >= 4 then return "<table>" end
+		local copy = {}
+		for key, item in value do copy[if type(key) == "number" then key else tostring(key)] = plain(item, depth + 1) end
+		return copy
+	end
+	local encoded
+	if type(context) == "table" and next(context) ~= nil then
+		local ok, json = pcall(function() return HttpService:JSONEncode(plain(context, 0)) end)
+		encoded = if ok then string.sub(json, 1, 1000) else nil
+	end
+	send({level = levels[kind] or "print", message = string.sub(message, 1, 2000), timestamp = os.time(), context = encoded})
 end))
 pcall(function()
 	table.insert(connections, ScriptContext.Error:Connect(function(message, stack, source)

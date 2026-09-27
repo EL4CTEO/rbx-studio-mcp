@@ -319,43 +319,28 @@ end
 	What is there, without reading a voxel.
 
 	`CountCells` is the cheap answer to "does this place even use terrain",
-	which is the question worth asking before any of the above. The bounding box
-	tells an agent where to aim without guessing at the origin.
+	which is the question worth asking before any of the above.
 ]]
 function Terrain.stats(_params: { [string]: any }): { [string]: any }
 	local field = terrain()
 
 	--[[
-		Formatted here rather than through `Serialize.value`.
+		No bounds, and no limit.
 
-		`MaxExtents` is a Region3int16 and its corners are Vector3int16, which is
-		a type `Serialize.value` has no case for -- it would have fallen through
-		to the generic tail and reported whatever `tostring` makes of it. The
-		extents are also in VOXELS, not studs, which is the sort of unit
-		confusion that produces a fill a thousand studs from where it was meant,
-		so they are converted and named for what they are.
-	]]
-	--[[
-		`MaxExtents` is deliberately not reported.
-
-		It reads like the bounding box of the terrain that exists, and it is
-		not: it is the fixed limit of where terrain is allowed to go, and it
-		answers -32000, -32000, -32000 to 32000, 32000, 32000 on an empty place
-		and on a full one alike. Reporting it as "where the terrain sits" was a
-		misreading of the name -- checked against a place with 2220 cells in a
-		160-stud patch, which returned exactly the same numbers as one with
-		none.
+		`MaxExtents` reads like the bounding box of the terrain that exists and is
+		not: it answers -32000..32000 on an empty place and a full one alike. Nor
+		is it a limit in studs -- a fill at 140,000 studs out still landed -- so
+		the `limitStuds = 32000` this used to report was wrong as well.
 
 		There is no engine call for the occupied box, and finding it means
 		reading every voxel in the world, which is far too expensive for a
-		question meant to be cheap. `cells` already answers the one that
-		matters: whether this place uses terrain at all.
+		question meant to be cheap. `cells` answers the one that matters.
 	]]
 	return {
 		cells = field:CountCells(),
 		waterColor = Serialize.value(field.WaterColor),
-		waterWaveSize = field.WaterWaveSize,
-		limitStuds = 32000,
+		-- Through Serialize so a float32 reads 0.15, not 0.15000000596046448.
+		waterWaveSize = Serialize.value(field.WaterWaveSize),
 	}
 end
 

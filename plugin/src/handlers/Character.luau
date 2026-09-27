@@ -35,6 +35,7 @@ local RunService = game:GetService("RunService")
 
 local Dispatch = require(script.Parent.Parent.Dispatch)
 local Paths = require(script.Parent.Parent.Paths)
+local Serialize = require(script.Parent.Parent.Serialize)
 
 local Character = {}
 
@@ -89,11 +90,11 @@ local function parseVector(value: any, what: string): Vector3
 	if typeof(value) ~= "string" then
 		Dispatch.fail("BAD_PARAMS", string.format("%s must be a string like \"10, 5, 0\".", what))
 	end
-	local x, y, z = string.match(value, "^%s*(-?[%d%.]+)%s*,%s*(-?[%d%.]+)%s*,%s*(-?[%d%.]+)%s*$")
-	if x == nil then
+	local ok, parsed = Serialize.parse(value, "Vector3")
+	if not ok then
 		Dispatch.fail("BAD_PARAMS", string.format("%s must look like \"10, 5, 0\", got %q.", what, value))
 	end
-	return Vector3.new(tonumber(x) :: number, tonumber(y) :: number, tonumber(z) :: number)
+	return parsed :: Vector3
 end
 
 --[[
@@ -249,7 +250,21 @@ end
 	which is usually the finding rather than the failure.
 ]]
 function Character.path(params: { [string]: any }): { [string]: any }
-	local start = endpointOf(params, "fromPath", "from", "`from`")
+	-- No start given means "from the character", as the tool documents. That
+	-- only exists in a running game; in edit mode the start must be named.
+	local start: Vector3
+	local hasStart = params.from ~= nil or (typeof(params.fromPath) == "string" and params.fromPath ~= "")
+	if hasStart then
+		start = endpointOf(params, "fromPath", "from", "`from`")
+	elseif RunService:IsRunning() then
+		start = positionOf((humanoidOf(params)))
+	else
+		Dispatch.fail(
+			"BAD_PARAMS",
+			"path needs `from` or `fromPath` in edit mode.",
+			"Only a running playtest has a character to start from."
+		)
+	end
 	local goal = endpointOf(params, "toPath", "to", "`to`")
 
 	local path = PathfindingService:CreatePath(agentOf(params))
@@ -271,8 +286,8 @@ function Character.path(params: { [string]: any }): { [string]: any }
 		return {
 			reachable = false,
 			status = status,
-			from = tostring(start),
-			to = tostring(goal),
+			from = Serialize.value(start),
+			to = Serialize.value(goal),
 			straightLineDistance = math.round(straightLine * 10) / 10,
 			hint = "Nothing walkable connects these points for an agent this size. "
 				.. "A wall, a gap wider than a jump, or a drop too far. Try a smaller "
@@ -303,7 +318,7 @@ function Character.path(params: { [string]: any }): { [string]: any }
 			table.insert(rows, {
 				index = index,
 				action = action,
-				position = tostring(waypoint.Position),
+				position = Serialize.value(waypoint.Position),
 				label = if waypoint.Label ~= "" then waypoint.Label else nil,
 			})
 		end
@@ -312,8 +327,8 @@ function Character.path(params: { [string]: any }): { [string]: any }
 	return {
 		reachable = true,
 		status = status,
-		from = tostring(start),
-		to = tostring(goal),
+		from = Serialize.value(start),
+		to = Serialize.value(goal),
 		waypointCount = #waypoints,
 		pathDistance = math.round(travelled * 10) / 10,
 		straightLineDistance = math.round(straightLine * 10) / 10,
@@ -404,8 +419,8 @@ function Character.moveTo(params: { [string]: any }): { [string]: any }
 			return {
 				arrived = false,
 				pathStatus = pathStatus,
-				from = tostring(start),
-				goal = tostring(goal),
+				from = Serialize.value(start),
+				goal = Serialize.value(goal),
 				note = "No route exists. Pass direct=true to walk straight at it regardless.",
 			}
 		end
@@ -606,13 +621,13 @@ function Character.moveTo(params: { [string]: any }): { [string]: any }
 		-- the character had to be rescued along.
 		repaths = repaths,
 		pathStatus = pathStatus,
-		from = tostring(start),
-		to = tostring(final),
-		goal = tostring(goal),
+		from = Serialize.value(start),
+		to = Serialize.value(final),
+		goal = Serialize.value(goal),
 	}
 
 	if not arrived then
-		report.stuckAt = if stuckAt ~= nil then tostring(stuckAt) else nil
+		report.stuckAt = if stuckAt ~= nil then Serialize.value(stuckAt) else nil
 		report.blockedBy = blockedBy
 		--[[
 			Said plainly, because the numbers alone read as success to anything
@@ -654,10 +669,10 @@ function Character.act(params: { [string]: any }): { [string]: any }
 
 	if action == "jump" then
 		humanoid.Jump = true
-		return { action = action, at = tostring(positionOf(model)) }
+		return { action = action, at = Serialize.value(positionOf(model)) }
 	elseif action == "stop" then
 		humanoid:MoveTo(positionOf(model))
-		return { action = action, at = tostring(positionOf(model)) }
+		return { action = action, at = Serialize.value(positionOf(model)) }
 	elseif action == "sit" then
 		humanoid.Sit = true
 		return { action = action, sitting = humanoid.Sit }
@@ -783,7 +798,7 @@ function Character.act(params: { [string]: any }): { [string]: any }
 	elseif action == "teleport" then
 		local target = parseVector(params.to, "`to`")
 		model:PivotTo(CFrame.new(target))
-		return { action = action, at = tostring(positionOf(model)), note = "Moved without walking -- collisions and triggers along the way did not fire." }
+		return { action = action, at = Serialize.value(positionOf(model)), note = "Moved without walking -- collisions and triggers along the way did not fire." }
 	end
 
 	Dispatch.fail("BAD_PARAMS", string.format("unknown character action %q", action))
@@ -798,11 +813,11 @@ function Character.state(params: { [string]: any }): { [string]: any }
 	local model, humanoid, player = humanoidOf(params)
 	return {
 		player = player.Name,
-		position = tostring(positionOf(model)),
-		health = humanoid.Health,
-		maxHealth = humanoid.MaxHealth,
-		walkSpeed = humanoid.WalkSpeed,
-		jumpPower = humanoid.JumpPower,
+		position = Serialize.value(positionOf(model)),
+		health = Serialize.value(humanoid.Health),
+		maxHealth = Serialize.value(humanoid.MaxHealth),
+		walkSpeed = Serialize.value(humanoid.WalkSpeed),
+		jumpPower = Serialize.value(humanoid.JumpPower),
 		state = tostring(humanoid:GetState()),
 		sitting = humanoid.Sit,
 		floor = if humanoid.FloorMaterial ~= Enum.Material.Air

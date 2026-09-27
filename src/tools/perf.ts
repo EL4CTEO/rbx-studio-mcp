@@ -11,6 +11,8 @@ interface ConsoleResponse {
     stack?: string;
     /** Script the error came from, as a full path. */
     source?: string;
+    /** A structured log's context table, as JSON. */
+    context?: string;
   }>;
   total: number;
   dropped: number;
@@ -226,7 +228,8 @@ export function registerPerfTools(context: ToolContext): void {
       // read as further unrelated output.
       let lines = response.items.map((entry) => {
         const when = args.target === "client" && entry.timestamp ? ` ${new Date(entry.timestamp * 1000).toISOString()}` : "";
-        const head = `[${entry.level}${when}] ${entry.message}`;
+        const head =
+          `[${entry.level}${when}] ${entry.message}` + (entry.context ? `\n    context: ${entry.context}` : "");
         if (!entry.stack) return head + (entry.source ? `\n    in ${entry.source}` : "");
         const trace = entry.stack
           .split("\n")
@@ -637,24 +640,48 @@ export function registerPerfTools(context: ToolContext): void {
           // ranked list, so cutting it drops whole categories rather than the
           // least interesting tail — the first version hid twelve of them.
           const shown = section.entries.slice(0, 120);
-          const rows = shown
-            .map((entry) => {
-              const indent = "  ".repeat(entry.depth);
-              const size =
-                entry.size !== undefined
-                  ? ` — ${count(entry.size, section.unit)}`
-                  : entry.triangles !== undefined
-                    ? ` — ${count(entry.triangles, "triangles")}, ${count(entry.drawcalls ?? 0, "draw calls")}`
-                    : "";
-              // Owners are what turn a number into something actionable: the
-              // asset's size says how much, the owners say who to go and look at.
-              const owners =
-                entry.owners && entry.owners.length > 0
-                  ? `\n${indent}    used by ${entry.owners.slice(0, 3).join(", ")}`
+
+          const renderEntry = (entry: SceneEntry): string => {
+            const indent = "  ".repeat(entry.depth);
+            const size =
+              entry.size !== undefined
+                ? ` — ${count(entry.size, section.unit)}`
+                : entry.triangles !== undefined
+                  ? ` — ${count(entry.triangles, "triangles")}, ${count(entry.drawcalls ?? 0, "draw calls")}`
                   : "";
-              return `${indent}${entry.name}${size}${owners}`;
-            })
-            .join("\n");
+            // Owners are what turn a number into something actionable: the
+            // asset's size says how much, the owners say who to go and look at.
+            const owners =
+              entry.owners && entry.owners.length > 0
+                ? `\n${indent}    used by ${entry.owners.slice(0, 3).join(", ")}`
+                : "";
+            return `${indent}${entry.name}${size}${owners}`;
+          };
+
+          // A category whose children are bare counts goes on one line —
+          // "Physics — 10 instances: Motor6D 6, WeldConstraint 2" — instead of a
+          // line per class repeating the unit. Children with owners or triangles
+          // keep their own lines, since those say more than a count.
+          const bare = (entry: SceneEntry, parent: SceneEntry) =>
+            entry.depth === parent.depth + 1 &&
+            entry.size !== undefined &&
+            entry.owners === undefined &&
+            entry.triangles === undefined;
+          const lines: string[] = [];
+          for (let index = 0; index < shown.length; index += 1) {
+            const entry = shown[index]!;
+            let end = index + 1;
+            while (end < shown.length && bare(shown[end]!, entry)) end += 1;
+            const closed = end === shown.length || shown[end]!.depth <= entry.depth;
+            if (entry.size !== undefined && end > index + 1 && closed) {
+              const children = shown.slice(index + 1, end);
+              lines.push(`${renderEntry(entry)}: ${children.map((child) => `${child.name} ${child.size}`).join(", ")}`);
+              index = end - 1;
+              continue;
+            }
+            lines.push(renderEntry(entry));
+          }
+          const rows = lines.join("\n");
 
           const dropped = section.entries.length - shown.length;
           blocks.push(`${heading}\n${rows}${dropped > 0 ? `\n  (${dropped} more)` : ""}`);

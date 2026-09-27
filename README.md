@@ -89,10 +89,10 @@ Some calls reach past Studio to Roblox itself. All need one API key; everything 
 | `assets op="upload"` | send a local audio/image/model/video file, get an asset id |
 | `datastore target="live"` | the running game's real player data |
 | `execute_luau target="live"` | run a script on the published place |
-| `universe` | restart servers, message them, ban players |
+| `universe` | restart servers, message them, ban players, read server logs, sell products and passes |
 | also | `assets op="grant"`, `op="publish"`, `script_read`/`script_edit target="live"` |
 
-Make a key at [Creator Dashboard → Credentials](https://create.roblox.com/dashboard/credentials), adding the permissions you want: `assets`, `universe-datastores`, `ordered-data-stores`, `luau-execution-sessions`, `universe-places`, `universe-place-instances`, `universe`, `messaging-service`, `user-restrictions`, `inventory`, `users`, `asset-permissions`.
+Make a key at [Creator Dashboard → Credentials](https://create.roblox.com/dashboard/credentials), adding the permissions you want: `assets`, `universe-datastores`, `ordered-data-stores`, `luau-execution-sessions`, `universe-places`, `universe-place-instances`, `universe`, `messaging-service`, `user-restrictions`, `inventory`, `users`, `asset-permissions`, `developer-products`, `game-passes`.
 
 Then in the Studio panel:
 

@@ -130,29 +130,21 @@ end
 	`poor` is deliberately harsh -- crowded stadium wifi, a phone on one bar --
 	because the failures worth finding only appear at the far end.
 
-	Loss is the percentage of packets thrown away, and it is the field that finds
-	the interesting bugs: latency makes a game feel slow, loss makes it behave
-	wrongly.
+	Loss is the percentage of packets thrown away. Roblox caps it at 0.5%, so
+	the presets climb to that ceiling rather than to real-world figures the
+	engine would clamp anyway.
 ]]
 local PRESETS: { [string]: { latency: number, jitter: number, loss: number } } = {
 	clear = { latency = 0, jitter = 0, loss = 0 },
 	wifi = { latency = 15, jitter = 5, loss = 0 },
-	["4g"] = { latency = 60, jitter = 15, loss = 0.5 },
-	["3g"] = { latency = 150, jitter = 40, loss = 2 },
-	poor = { latency = 400, jitter = 120, loss = 8 },
+	["4g"] = { latency = 60, jitter = 15, loss = 0.1 },
+	["3g"] = { latency = 150, jitter = 40, loss = 0.3 },
+	poor = { latency = 400, jitter = 120, loss = 0.5 },
 }
 
---[[
-	Percent in, fraction out.
-
-	`InboundNetworkLossPercent` does not take a percentage: it takes a fraction
-	and clamps at 0.5. Writing 2 for "2% loss" succeeds, lands at 0.5, and
-	degrades half the traffic -- a hundred times what was asked for, with no
-	error anywhere. Every caller of this file speaks percent, so the conversion
-	is here and only here.
-]]
-local function lossFraction(percent: number): number
-	return math.clamp(percent, 0, Emulation.LOSS_LIMIT_PERCENT) / 100
+-- Percent in, percent out: the property takes a percentage, capped at 0.5.
+local function lossPercent(percent: number): number
+	return math.clamp(percent, 0, Emulation.LOSS_LIMIT_PERCENT)
 end
 
 local function presetNames(): string
@@ -178,6 +170,19 @@ local function apply(service: any, property: string, value: number, refused: { s
 	if not ok then
 		table.insert(refused, property)
 	end
+end
+
+--[[
+	Takes the memory cap off by writing the machine's real memory back. 0 is
+	not "no cap" to the engine -- it is a device with no memory -- so nothing
+	here writes it.
+]]
+local function uncapMemory(service: any, refused: { string })
+	local real = Emulation.machineMemory()
+	if real ~= nil then
+		apply(service, "EmulatedTotalMemoryInMB", real, refused)
+	end
+	Emulation.setMemoryCap(nil)
 end
 
 --[[
@@ -224,9 +229,8 @@ function Device.network(params: { [string]: any }): { [string]: any }
 		latency, jitter, loss = preset.latency, preset.jitter, preset.loss
 		-- "clear" is a whole-connection word, so it takes the memory cap with
 		-- it. Any other preset says nothing about memory and leaves it alone.
-		if name == "clear" then
-			apply(service, "EmulatedTotalMemoryInMB", 0, {})
-			Emulation.setMemoryCap(nil)
+		if name == "clear" and Emulation.memoryCap() ~= nil then
+			uncapMemory(service, {})
 		end
 	end
 
@@ -311,17 +315,21 @@ function Device.network(params: { [string]: any }): { [string]: any }
 		end
 	end
 	if loss ~= nil then
-		local fraction = lossFraction(loss)
+		local percent = lossPercent(loss)
 		if inbound then
-			apply(service, "InboundNetworkLossPercent", fraction, refused)
+			apply(service, "InboundNetworkLossPercent", percent, refused)
 		end
 		if outbound then
-			apply(service, "OutboundNetworkLossPercent", fraction, refused)
+			apply(service, "OutboundNetworkLossPercent", percent, refused)
 		end
 	end
 	if memory ~= nil then
-		apply(service, "EmulatedTotalMemoryInMB", memory, refused)
-		Emulation.setMemoryCap(memory)
+		if memory > 0 then
+			apply(service, "EmulatedTotalMemoryInMB", memory, refused)
+			Emulation.setMemoryCap(memory)
+		else
+			uncapMemory(service, refused)
+		end
 	end
 
 	local state = Emulation.network()
@@ -358,8 +366,11 @@ function Device.stop(_params: { [string]: any }): { [string]: any }
 		apply(service, "OutboundNetworkMinDelayMs", 0, ignored)
 		apply(service, "OutboundNetworkJitterMs", 0, ignored)
 		apply(service, "OutboundNetworkLossPercent", 0, ignored)
-		apply(service, "EmulatedTotalMemoryInMB", 0, ignored)
-		Emulation.setMemoryCap(nil)
+		-- Only a cap this plugin set is undone. Studio's own simulator restores
+		-- its value when it stops, and writing over that is what left 0 behind.
+		if Emulation.memoryCap() ~= nil then
+			uncapMemory(service, ignored)
+		end
 	end
 
 	--[[

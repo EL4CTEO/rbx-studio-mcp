@@ -35,6 +35,10 @@ local SLACK = 500
 -- handful of entries is a mismatch rather than a late delivery.
 local CORRELATION_WINDOW = 20
 
+-- A structured log's context, as JSON, is cut here: Roblox's own server logs
+-- drop context past 1KiB, so nothing longer is worth carrying.
+local MAX_CONTEXT = 1000
+
 export type Entry = {
 	sequence: number?,
 	level: string,
@@ -43,6 +47,8 @@ export type Entry = {
 	-- Present on errors once the matching stack trace has been correlated.
 	stack: string?,
 	source: string?,
+	-- The table a structured log (`LogService:Info(msg, context)`) carried, as JSON.
+	context: string?,
 }
 
 local LEVELS: { [number]: string } = {
@@ -153,6 +159,7 @@ function LogBuffer.pushClient(player: Player, payload: any)
 		timestamp = if typeof(payload.timestamp) == "number" and payload.timestamp >= 0 and payload.timestamp < 100000000000 then payload.timestamp else os.time(),
 		stack = if typeof(payload.stack) == "string" then string.sub(payload.stack, 1, 4000) else nil,
 		source = if typeof(payload.source) == "string" then string.sub(payload.source, 1, 500) else nil,
+		context = if typeof(payload.context) == "string" then string.sub(payload.context, 1, MAX_CONTEXT) else nil,
 	}
 	local waiting = buffer.orphan[entry.message]
 	if level == "error" and waiting then
@@ -183,12 +190,60 @@ function LogBuffer.stream(player: Player?): ({ Entry }, number, string, number, 
 	return table.move(entries, 1, #entries, 1, {}), dropped, studioToken, nextSequence, LogBuffer.recordingSeconds()
 end
 
-local function push(message: string, messageType: Enum.MessageType, timestamp: number?)
+--[[
+	The context table of a structured log, as compact JSON.
+
+	`LogService:Info("{player} leveled up", { player = "Bob" })` prints only the
+	filled-in message; the table is the part that says which player and what
+	state, and MessageOut hands it over as a third argument. Plain prints pass an
+	empty table, which is dropped. Capped at 1000 characters -- the ceiling
+	Roblox's own server logs apply -- and a table JSON cannot hold (a Vector3, an
+	Instance) falls back to text rather than being lost.
+]]
+-- JSONEncode writes a Vector3 or an Instance as `null` without complaint, so
+-- anything JSON has no shape for is turned into its text first.
+local function plain(value: any, depth: number): any
+	local kind = typeof(value)
+	if kind == "string" or kind == "number" or kind == "boolean" then
+		return value
+	elseif kind == "table" then
+		if depth >= 4 then
+			return "<table>"
+		end
+		local copy = {}
+		for key, item in value do
+			copy[if typeof(key) == "number" then key else tostring(key)] = plain(item, depth + 1)
+		end
+		return copy
+	elseif kind == "Instance" then
+		local ok, full = pcall(function()
+			return value:GetFullName()
+		end)
+		return if ok then full else value.Name
+	end
+	return tostring(value)
+end
+
+function LogBuffer.encodeContext(context: any): string?
+	if typeof(context) ~= "table" or next(context) == nil then
+		return nil
+	end
+	local ok, encoded = pcall(function()
+		return HttpService:JSONEncode(plain(context, 0))
+	end)
+	if not ok then
+		return nil
+	end
+	return string.sub(encoded :: string, 1, MAX_CONTEXT)
+end
+
+local function push(message: string, messageType: Enum.MessageType, timestamp: number?, context: any?)
 	local level = LEVELS[messageType.Value] or "print"
 	local entry: Entry = {
 		level = level,
 		message = message,
 		timestamp = timestamp or os.time(),
+		context = LogBuffer.encodeContext(context),
 	}
 
 	-- Claim a trace that beat its own error line here.
@@ -261,7 +316,7 @@ function LogBuffer.start()
 		end
 	end
 
-	LogService.MessageOut:Connect(function(message: string, messageType: Enum.MessageType)
+	LogService.MessageOut:Connect(function(message: string, messageType: Enum.MessageType, context: any?)
 		local buffered = collecting
 
 		if buffered then
@@ -305,7 +360,7 @@ function LogBuffer.start()
 			return
 		end
 
-		push(message, messageType)
+		push(message, messageType, nil, context)
 	end)
 
 	--[[

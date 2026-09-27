@@ -213,6 +213,19 @@ function World.collision(params: { [string]: any }): { [string]: any }
 		if typeof(paths) ~= "table" or #(paths :: { any }) == 0 then
 			Dispatch.fail("BAD_PARAMS", "assign needs a `paths` array.")
 		end
+		-- The engine takes any string here, registered or not, and a part in an
+		-- unregistered group collides as Default: a typo that changes nothing
+		-- and reports success. Measured, so refused up front.
+		local okRegistered, registered = pcall(function()
+			return world:IsCollisionGroupRegistered(name)
+		end)
+		if okRegistered and registered == false then
+			Dispatch.fail(
+				"NO_SUCH_GROUP",
+				string.format("No collision group %q is registered in %s.", name, Paths.of(world)),
+				'Create it first with action="create", or check the name with action="list".'
+			)
+		end
 		local assigned: { string } = {}
 		local _, undoable = Undo.record("MCPCollision", "MCP collision group", function()
 			for _, path in paths :: { string } do
@@ -228,7 +241,10 @@ function World.collision(params: { [string]: any }): { [string]: any }
 				end
 			end
 		end)
-		return { group = name, assigned = #assigned, parts = assigned, undoable = undoable, world = Paths.of(world) }
+		-- A model can hold thousands of parts; the count is the answer and a
+		-- sample of names is enough to see it landed where intended.
+		local sample = if #assigned > 20 then table.move(assigned, 1, 20, 1, {}) else assigned
+		return { group = name, assigned = #assigned, parts = sample, undoable = undoable, world = Paths.of(world) }
 	end
 
 	if action == "remove" then

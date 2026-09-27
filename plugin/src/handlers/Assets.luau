@@ -17,6 +17,7 @@ local InsertService = game:GetService("InsertService")
 
 local Dispatch = require(script.Parent.Parent.Dispatch)
 local Paths = require(script.Parent.Parent.Paths)
+local Serialize = require(script.Parent.Parent.Serialize)
 local Undo = require(script.Parent.Parent.Undo)
 
 local Assets = {}
@@ -52,6 +53,17 @@ function Assets.insert(params: { [string]: any }): { [string]: any }
 	local parent = if typeof(params.parent) == "string" and params.parent ~= ""
 		then Paths.resolve(params.parent)
 		else workspace
+
+	-- Parsed before anything loads. A position that did not parse used to be
+	-- skipped in silence, and the model landed wherever it was saved.
+	local position: Vector3? = nil
+	if typeof(params.position) == "string" and params.position ~= "" then
+		local ok, value, why = Serialize.parse(params.position, "Vector3")
+		if not ok then
+			Dispatch.fail("BAD_PARAMS", string.format("`position` is not a Vector3: %s", tostring(why)), 'Write it as "x, y, z".')
+		end
+		position = value :: Vector3
+	end
 
 	--[[
 		`game:GetObjects`, not `InsertService:LoadAsset`.
@@ -135,10 +147,8 @@ function Assets.insert(params: { [string]: any }): { [string]: any }
 		-- nothing silently is worse than saying so.
 		local remaining: { Instance } = {}
 		for _, child in children do
-			if child.Parent ~= nil or child:IsDescendantOf(game) or child.Name ~= "" then
-				if not child:IsA("LuaSourceContainer") then
-					table.insert(remaining, child)
-				end
+			if not child:IsA("LuaSourceContainer") then
+				table.insert(remaining, child)
 			end
 		end
 		children = remaining
@@ -160,20 +170,19 @@ function Assets.insert(params: { [string]: any }): { [string]: any }
 			table.insert(inserted, Paths.of(child))
 		end
 
-		-- Position after parenting, so PrimaryPart and pivot are settled.
-		if typeof(params.position) == "string" and params.position ~= "" then
-			local x, y, z = string.match(params.position, "^%s*(-?[%d%.]+)%s*,%s*(-?[%d%.]+)%s*,%s*(-?[%d%.]+)%s*$")
-			if x then
-				local target = CFrame.new(tonumber(x) :: number, tonumber(y) :: number, tonumber(z) :: number)
-				for _, child in children do
-					pcall(function()
-						if child:IsA("Model") then
-							(child :: Model):PivotTo(target)
-						elseif child:IsA("BasePart") then
-							(child :: BasePart).CFrame = target
-						end
-					end)
-				end
+		-- Position after parenting, so PrimaryPart and pivot are settled. Only
+		-- the position moves: the asset keeps the rotation it was saved with.
+		if position then
+			for _, child in children do
+				pcall(function()
+					if child:IsA("Model") then
+						local model = child :: Model
+						model:PivotTo(model:GetPivot().Rotation + position)
+					elseif child:IsA("BasePart") then
+						local part = child :: BasePart
+						part.CFrame = part.CFrame.Rotation + position
+					end
+				end)
 			end
 		end
 	end)

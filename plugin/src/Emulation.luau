@@ -75,33 +75,61 @@ local memoryCap: number? = nil
 local NETWORK_FIELDS = {
 	{ key = "inLatency", property = "InboundNetworkMinDelayMs", scale = 1 },
 	{ key = "inJitter", property = "InboundNetworkJitterMs", scale = 1 },
-	{ key = "inLoss", property = "InboundNetworkLossPercent", scale = 100 },
+	{ key = "inLoss", property = "InboundNetworkLossPercent", scale = 1 },
 	{ key = "outLatency", property = "OutboundNetworkMinDelayMs", scale = 1 },
 	{ key = "outJitter", property = "OutboundNetworkJitterMs", scale = 1 },
-	{ key = "outLoss", property = "OutboundNetworkLossPercent", scale = 100 },
+	{ key = "outLoss", property = "OutboundNetworkLossPercent", scale = 1 },
 }
 
 --[[
 	What the engine will actually accept, measured rather than assumed.
 
-	None of this is documented and all three of them bite. Writes outside these
-	ranges SUCCEED and are silently clamped, so a preset asking for 2% loss was
-	reporting 0.5 back and the only way to notice was to read the value again --
-	which is how this was found.
+	Writes outside these ranges SUCCEED and are silently clamped, so the only
+	way to notice is to read the value again.
 
-	* Loss is a FRACTION, despite `LossPercent` in the name: it tops out at 0.5,
-	  and 0.5 is half the packets, not half a percent. Everything above this
-	  layer speaks in percent because that is what a person means by "2% loss",
-	  so the conversion happens at the edges -- `scale` above on the way out, and
-	  `LOSS_LIMIT` on the way in.
+	* Loss is a PERCENT, as the name says, and Roblox caps it at 0.5% "to
+	  prevent interfering with standard congestion control" (the Network
+	  Simulation announcement; its own "Poor" profile is 0.5%). This file once
+	  read the 0.5 ceiling as a fraction -- half of all packets -- and divided
+	  every request by 100, so "0.5% loss" applied 0.005% while the reply,
+	  scaled back up, still said 0.5.
 	* Delay and jitter both stop at 1000ms. A second of latency is already past
 	  anything a real connection does, so this costs nothing but honesty.
 ]]
-local LOSS_LIMIT = 0.5
+local LOSS_LIMIT_PERCENT = 0.5
 local DELAY_LIMIT = 1000
 
-Emulation.LOSS_LIMIT_PERCENT = LOSS_LIMIT * 100
+Emulation.LOSS_LIMIT_PERCENT = LOSS_LIMIT_PERCENT
 Emulation.DELAY_LIMIT = DELAY_LIMIT
+
+--[[
+	The machine's real memory, read before this plugin could have capped it.
+
+	`EmulatedTotalMemoryInMB` defaults to the physical memory and 0 is a real
+	value, not "off": clearing a cap by writing 0 left Studio emulating a
+	device with no memory at all. Removing a cap therefore means writing this
+	back. Read once at load, which is before anything here writes it.
+]]
+local machineMemory: number? = nil
+do
+	local service = networkSettings()
+	if service ~= nil then
+		local ok, value = pcall(function()
+			return service.EmulatedTotalMemoryInMB
+		end)
+		if ok and tonumber(value) and (tonumber(value) :: number) > 0 then
+			machineMemory = tonumber(value)
+		end
+	end
+end
+
+function Emulation.machineMemory(): number?
+	return machineMemory
+end
+
+function Emulation.memoryCap(): number?
+	return memoryCap
+end
 
 --[[
 	What Studio is currently doing to network traffic.
@@ -125,9 +153,9 @@ function Emulation.network(): { [string]: any }
 		local number = if ok then tonumber(value) or 0 else 0
 		--[[
 			Scaled into the caller's units, then rounded to two places. These are
-			32-bit floats: 2% loss is stored as 0.02 and reads back as
-			0.019999999552965164, and reporting that instead of 2 makes a
-			perfectly applied setting look like a failed one.
+			32-bit floats: 0.3% loss reads back as 0.30000001192092896, and
+			reporting that instead of 0.3 makes a perfectly applied setting look
+			like a failed one.
 		]]
 		number *= field.scale
 		state[field.key] = math.round(number * 100) / 100

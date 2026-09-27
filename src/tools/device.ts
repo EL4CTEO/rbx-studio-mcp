@@ -79,7 +79,7 @@ export function registerDeviceTools(context: ToolContext): void {
           .optional()
           .describe(
             "network only: a whole connection in one word. clear=0ms (normal), " +
-              "wifi=15ms, 4g=60ms/0.5% loss, 3g=150ms/2% loss, poor=400ms/8% " +
+              "wifi=15ms, 4g=60ms/0.1% loss, 3g=150ms/0.3% loss, poor=400ms/0.5% " +
               "loss. Named fields below override whichever part you name.",
           ),
         latency: z
@@ -104,13 +104,13 @@ export function registerDeviceTools(context: ToolContext): void {
         loss: z
           .number()
           .min(0)
-          .max(50)
+          .max(0.5)
           .optional()
           .describe(
-            "network only: percentage of packets thrown away, up to 50 — the " +
-              "engine's own ceiling. The field that finds real bugs: latency " +
-              "makes a game feel slow, loss makes it behave wrongly. 2-8% is a " +
-              "bad mobile connection.",
+            "network only: percentage of packets thrown away, up to 0.5 — Roblox " +
+              "caps it there so the simulation does not fight congestion " +
+              "control. Latency makes a game feel slow; loss makes unreliable " +
+              "remotes arrive out of order or not at all.",
           ),
         memory: z
           .number()
@@ -121,7 +121,8 @@ export function registerDeviceTools(context: ToolContext): void {
           .describe(
             "network only: pretend the machine has this many MB of memory. A " +
               "cheap phone is a small screen AND little memory; this is the " +
-              "half that makes textures unload. 0 removes the cap.",
+              "half that makes textures unload. 0 removes the cap, restoring " +
+              "the real amount.",
           ),
         direction: z
           .enum(["in", "out", "both"])

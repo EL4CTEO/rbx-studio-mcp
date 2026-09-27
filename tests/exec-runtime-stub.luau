@@ -5,6 +5,7 @@ local game = { GetService = function() return { MessageOut = { Connect = functio
  return { Disconnect = function() disconnected = true end }
 end } } end }
 local Serialize = { value = function(value) return value end }
+local LogBuffer = { encodeContext = function(context) return if type(context) == "table" and next(context) ~= nil then "{ctx}" else nil end }
 local Enum = { MessageType = { MessageError = "error", MessageWarning = "warning" } }
 local now = 0
 local os = { clock = function() return now end }

@@ -399,6 +399,144 @@ export async function setRestriction(
   };
 }
 
+/**
+ * The Server Management API pages with `MaxPageSize`/`PageToken` in PascalCase
+ * rather than Open Cloud v2's camelCase, so it has its own small loop instead of
+ * going through `paged`.
+ *
+ * `versions/-` is the wildcard: every place version at once. Measured -- a real
+ * version number and `-` answer the same way, and nothing else here knows which
+ * version a server is on until the list comes back.
+ */
+async function serverManagementPages<T>(
+  credentials: Credentials,
+  path: string,
+  field: string,
+  limit: number,
+  query: Record<string, string | undefined>,
+): Promise<{ items: T[]; more: boolean; partial: boolean }> {
+  const items: T[] = [];
+  let token: string | undefined;
+  let partial = false;
+  for (;;) {
+    const page = await call<Record<string, unknown>>(credentials, {
+      path,
+      query: { ...query, MaxPageSize: Math.min(limit - items.length, 100), PageToken: token },
+      scope: "universe:read",
+    });
+    const batch = (page[field] as T[] | null | undefined) ?? [];
+    items.push(...batch);
+    token = (page["nextPageToken"] as string | null | undefined) ?? undefined;
+    // The server list merges live and shut-down servers and says so when one
+    // half failed. Measured: a `status` filter answers every page with an
+    // empty list, a fresh token and this flag -- so an empty page stops the
+    // loop rather than following tokens forever.
+    partial ||= page["activeServersFetchError"] === true || page["shutdownServersFetchError"] === true;
+    if (!token || items.length >= limit || batch.length === 0) {
+      return { items: items.slice(0, limit), more: Boolean(token) && batch.length > 0, partial };
+    }
+  }
+}
+
+interface GameServer {
+  jobId?: string;
+  placeVersion?: string;
+  engineVersion?: string;
+  createTime?: string;
+  uptime?: string;
+  memoryUsageBytes?: number;
+  frameRate?: number;
+  occupancy?: number;
+  maxOccupancy?: number;
+  status?: string;
+  terminationTime?: string | null;
+}
+
+/** Live servers of one place, or past ones with a `status` filter. */
+export async function listGameServers(
+  credentials: Credentials,
+  args: { universeId: string; placeId: string; limit: number; filter?: string },
+): Promise<Record<string, unknown>> {
+  const { items, more, partial } = await serverManagementPages<GameServer>(
+    credentials,
+    `/server-management/v1/universes/${encodeURIComponent(args.universeId)}/places/` +
+      `${encodeURIComponent(args.placeId)}/versions/-/game-servers`,
+    "gameServers",
+    args.limit,
+    { Filter: args.filter, OrderBy: "uptime desc" },
+  );
+  return {
+    items: items.map((server) => ({
+      jobId: server.jobId,
+      status: server.status,
+      players: `${server.occupancy ?? 0}/${server.maxOccupancy ?? "?"}`,
+      uptime: server.uptime,
+      fps: server.frameRate !== undefined ? Math.round(server.frameRate) : undefined,
+      memoryMb:
+        server.memoryUsageBytes !== undefined ? Math.round(server.memoryUsageBytes / 1_048_576) : undefined,
+      version: server.placeVersion,
+      ended: server.terminationTime ?? undefined,
+    })),
+    more,
+    partial,
+  };
+}
+
+interface GameServerLog {
+  messageTimestampMs?: string;
+  severity?: number;
+  message?: string;
+  stackTrace?: string;
+  context?: string;
+  skippedCount?: number;
+  rateLimitedCount?: number;
+}
+
+/** Numeric severities as the API returns them, and the names a caller filters by. */
+const SEVERITY_NAMES = ["output", "info", "warning", "error"];
+
+/**
+ * One server's log. Only errors and warnings are retained by Roblox for now, and
+ * entries arrive about three minutes after they are written.
+ */
+export async function listServerLogs(
+  credentials: Credentials,
+  args: {
+    universeId: string;
+    placeId: string;
+    jobId: string;
+    limit: number;
+    severity?: "error" | "warning";
+    search?: string;
+  },
+): Promise<Record<string, unknown>> {
+  const filters: string[] = [];
+  if (args.severity) filters.push(`severity == ${SEVERITY_NAMES.indexOf(args.severity)}`);
+  if (args.search) filters.push(`search == ${JSON.stringify(args.search)}`);
+  const { items, more } = await serverManagementPages<GameServerLog>(
+    credentials,
+    `/server-management/v1/universes/${encodeURIComponent(args.universeId)}/places/` +
+      `${encodeURIComponent(args.placeId)}/versions/-/game-servers/${encodeURIComponent(args.jobId)}/logs`,
+    "gameServerLogs",
+    args.limit,
+    { Filter: filters.length > 0 ? filters.join(" && ") : undefined, OrderBy: "message_timestamp desc" },
+  );
+  return {
+    items: items.map((entry) => ({
+      time:
+        entry.messageTimestampMs !== undefined
+          ? new Date(Number(entry.messageTimestampMs)).toISOString()
+          : undefined,
+      level: SEVERITY_NAMES[entry.severity ?? -1] ?? String(entry.severity),
+      message: entry.message,
+      stack: entry.stackTrace || undefined,
+      context: entry.context || undefined,
+      repeats: (entry.skippedCount ?? 0) + (entry.rateLimitedCount ?? 0) || undefined,
+    })),
+    more,
+  };
+}
+
 export async function listRestrictions(
   credentials: Credentials,
   args: { universeId: string; limit: number },

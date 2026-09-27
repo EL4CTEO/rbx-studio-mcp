@@ -111,10 +111,10 @@ interface CollisionResponse {
   undoable?: boolean;
 }
 
-/** Roblox's toolbox search. Public, unauthenticated, and the same index Studio's own asset browser uses. */
 /** Segmentation runs the same slow generation backend `generate` does. */
 const SEGMENT_TIMEOUT_MS = 240_000;
 
+/** Roblox's toolbox search. Public, unauthenticated, and the same index Studio's own asset browser uses. */
 const TOOLBOX_SEARCH = "https://apis.roblox.com/toolbox-service/v1/marketplace";
 const TOOLBOX_DETAILS = "https://apis.roblox.com/toolbox-service/v1/items/details";
 
@@ -447,11 +447,13 @@ export function registerWorldTools(context: ToolContext): void {
           .default(false)
           .describe("Leave the input parts in place instead of consuming them."),
         collisionFidelity: z
-          .enum(["Default", "Hull", "Box", "PreciseConvexDecomposition"])
+          .enum(["Default", "Hull", "Box", "PreciseConvexDecomposition", "Tunable"])
           .default("Default")
           .describe(
             "How exactly the result collides. Precise is expensive - raise it " +
-              "only for a surface players walk on.",
+              "only for a surface players walk on. Tunable picks a precision from " +
+              "the size and handles thin details better; adjust it afterwards " +
+              "with `modify` on CollisionPrecision.",
           ),
         splitApart: z
           .boolean()
@@ -858,7 +860,8 @@ export function registerWorldTools(context: ToolContext): void {
           .describe("bake only: MeshParts to convert, or models containing them."),
         studioId: z.string().optional().describe("Target Studio; omit for the active one."),
       },
-      destructive: false,
+      // `publish` replaces the live place and `grant` cannot be revoked.
+      destructive: true,
     },
     async (args): Promise<ToolResult> => {
       if (args.op === "peek") {
@@ -1330,11 +1333,17 @@ export function registerWorldTools(context: ToolContext): void {
         size: z
           .string()
           .optional()
-          .describe('cast shape="block" or overlap region="box": the volume size.'),
+          .describe(
+            'cast shape="block" or overlap region="box": the volume size. Defaults ' +
+              'to "1, 1, 1" for a cast and "4, 4, 4" for an overlap.',
+          ),
         radius: z
           .number()
           .optional()
-          .describe('cast shape="sphere" or overlap region="radius": the radius.'),
+          .describe(
+            'cast shape="sphere" or overlap region="radius": the radius. Defaults ' +
+              "to 1 for a cast and 4 for an overlap.",
+          ),
         region: z
           .enum(["box", "radius", "part"])
           .optional()
@@ -1405,7 +1414,8 @@ export function registerWorldTools(context: ToolContext): void {
           ),
         studioId: z.string().optional().describe("Target Studio; omit for the active one."),
       },
-      destructive: false,
+      // `remove` unregisters a group, and group changes are not undoable.
+      destructive: true,
     },
     async (args): Promise<ToolResult> => {
       if (args.action === "cast" || args.action === "overlap") {
@@ -1432,6 +1442,24 @@ export function registerWorldTools(context: ToolContext): void {
           },
           { studioId: args.studioId, timeoutMs: 30_000 },
         );
+        // A table, not JSON: an overlap is a list of same-shaped rows, and
+        // repeating six keys per part cost more than the parts themselves.
+        if (args.action === "overlap" && Array.isArray(query["items"])) {
+          const items = query["items"] as Array<Record<string, unknown>>;
+          const where =
+            query["region"] === "part"
+              ? `overlapping ${String(query["path"] ?? args.path)}`
+              : query["region"] === "radius"
+                ? `within ${String(query["radius"])} of ${String(query["at"])}`
+                : `in box ${String(query["size"])} at ${String(query["at"])}`;
+          const summary =
+            `${String(query["count"] ?? items.length)} part(s) ${where}, ${String(query["world"] ?? "Workspace")}` +
+            (query["truncated"] === true ? "; truncated — raise `limit` or narrow the region" : "");
+          if (items.length === 0) return text(`Nothing ${where}.`);
+          return table(["path", "class", "position", "size", "canCollide", "collisionGroup"], items, {
+            more: summary,
+          });
+        }
         if (args.action === "cast" && query["hit"] === false) {
           return json(
             query,

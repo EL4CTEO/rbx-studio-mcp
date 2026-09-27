@@ -5,7 +5,15 @@ local LogService = {
 	MessageOut = { Connect = function(_, fn) listeners.message = fn end },
 }
 local ScriptContext = { Error = { Connect = function(_, fn) listeners.error = fn end } }
-local HttpService = { GenerateGUID = function()
+local HttpService = { JSONEncode = function(_, value)
+	local parts = {}
+	for key, item in value do
+		if type(item) == "userdata" then error("cannot encode") end
+		table.insert(parts, string.format("%q:%q", tostring(key), tostring(item)))
+	end
+	table.sort(parts)
+	return "{" .. table.concat(parts, ",") .. "}"
+end, GenerateGUID = function()
 	guid += 1
 	return "token-" .. tostring(guid)
 end }

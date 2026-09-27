@@ -92,7 +92,7 @@ function Viewport.raycast(params: { [string]: any }): { [string]: any }
 		position = Serialize.value(cast.Position),
 		normal = Serialize.value(cast.Normal),
 		distance = math.floor(cast.Distance * 1000 + 0.5) / 1000,
-		material = Serialize.value(cast.Material),
+		material = cast.Material.Name,
 	}
 end
 
@@ -287,9 +287,9 @@ function Viewport.camera(params: { [string]: any }): { [string]: any }
 	end
 
 	return {
-		position = tostring(view.CFrame.Position),
-		lookVector = tostring(view.CFrame.LookVector),
-		fieldOfView = view.FieldOfView,
+		position = Serialize.value(view.CFrame.Position),
+		lookVector = Serialize.value(view.CFrame.LookVector),
+		fieldOfView = Serialize.value(view.FieldOfView),
 	}
 end
 

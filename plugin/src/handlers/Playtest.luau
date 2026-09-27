@@ -68,8 +68,12 @@ end
 
 local function state(): { [string]: any }
 	local players = {}
-	for _, player in game:GetService("Players"):GetPlayers() do
-		table.insert(players, { name = player.Name, userId = player.UserId })
+	-- Only while a test runs: straight after `stop` the editor still lists the
+	-- departing player for a moment, and the reply said one was present.
+	if RunService:IsRunning() then
+		for _, player in game:GetService("Players"):GetPlayers() do
+			table.insert(players, { name = player.Name, userId = player.UserId })
+		end
 	end
 	return {
 		playtestsAllowed = Playtest.isAllowed(),
@@ -121,11 +125,44 @@ end
 
 function Playtest.control(params: { [string]: any }): { [string]: any }
 	local op = params.op
-	if op == "play" or op == "run" or op == "multiplayer" then requireAllowed() end
+	if op == "play" or op == "run" or op == "multiplayer" or op == "addPlayers" then requireAllowed() end
 	local before = state()
 
 	if op == "state" then
 		return { changed = false, state = before }
+	end
+
+	--[[
+		More players joining a test already running: staggered joins, lobby
+		fill-up, the race a second player hits that the first never does.
+
+		Served by the playtest's server session, the only place AddPlayers may be
+		called from; the MCP server routes it there. Returns straight away --
+		new clients take seconds to load, and the caller polls `state` for them.
+	]]
+	if op == "addPlayers" then
+		if RunService:IsEdit() or not RunService:IsServer() then
+			Dispatch.fail(
+				"NOT_RUNNING",
+				"Players can only be added from the server of a running test.",
+				"Start one with `playtest op=\"multiplayer\"` first."
+			)
+		end
+		local count = tonumber(params.players) or 1
+		if count < 1 or count > 8 then
+			Dispatch.fail("BAD_PARAMS", "players must be between 1 and 8.")
+		end
+		local ok, err = pcall(function()
+			service():AddPlayers(count)
+		end)
+		if not ok then
+			Dispatch.fail(
+				"ADD_PLAYERS_FAILED",
+				string.format("Studio refused to add players: %s", tostring(err)),
+				"AddPlayers works in a multiplayer test only, not in Play or Run."
+			)
+		end
+		return { changed = true, state = before }
 	end
 
 	--[[

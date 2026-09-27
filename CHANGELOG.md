@@ -2,6 +2,31 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.8.2
+
+### Added
+- `universe op="servers"` / `op="logs"`: live servers and their error/warning logs.
+- `universe op="products"` / `op="sell"`: list and create developer products and game passes.
+- `playtest op="addPlayers"`: add players to a running multiplayer test.
+- `geometry` supports `Tunable` collision fidelity.
+- `console` and `execute_luau` show structured-log context (`LogService:Info(msg, {…})`).
+
+### Changed
+- Smaller replies: `inspect` children, `collision overlap` as a table, one-line `performance scene` categories, rounded numbers.
+- `inspect` standard detail drops noise (`Rotation`, surfaces, zero velocities).
+
+### Fixed
+- `device network`: packet loss was applied 100x too small; `stop` no longer leaves memory emulated at 0 MB.
+- `datastore set` (Studio and live) no longer wipes a key's user ids and metadata.
+- A bad position/vector is an error instead of being silently ignored.
+- `assets insert` keeps the model's rotation when moved.
+- `collision assign` refuses a group that does not exist.
+- `character op="path"` starts from the character when `from` is omitted.
+- `audio graph` no longer warns about a missing listener that Roblox provides.
+- `playtest stop` no longer reports a leftover player.
+- `terrain stats` no longer reports a wrong limit.
+- Open Cloud calls can no longer hang, and rate limits say how long to wait.
+
 ## 0.8.0
 
 ### Added

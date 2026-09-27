@@ -46,4 +46,13 @@ assert(running)
 clientContext = true
 fresh.stopLocal()
 assert(left == 1 and not running, "client panel can stop without HTTP")
+-- addPlayers: only from a running test server, and it asks Studio for the count.
+fresh.setAllowed(true)
+running, clientContext = false, false
+local okEdit, errEdit = pcall(fresh.control, {op = "addPlayers", players = 2})
+assert(not okEdit and errEdit.code == "NOT_RUNNING" and added == 0, "addPlayers refuses outside a test")
+running = true
+assert(fresh.control({op = "addPlayers", players = 3}).changed and added == 3, "addPlayers reaches Studio")
+local okRange, errRange = pcall(fresh.control, {op = "addPlayers", players = 9})
+assert(not okRange and errRange.code == "BAD_PARAMS" and added == 3)
 print("playtests: defaults, persistence, guards, stop and queued-start lock pass")

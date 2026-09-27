@@ -63,6 +63,8 @@ interface Entry {
   state?: string;
   etag?: string;
   id?: string;
+  users?: string[];
+  attributes?: Record<string, unknown>;
 }
 
 /** The trailing id of a resource path, which is the only part a human wants. */
@@ -235,11 +237,32 @@ export async function liveDataStore(
    * second, empty save beside the real one — the failure mode that makes people
    * think a player's data "reset".
    */
+  /*
+   * Read first, because Open Cloud has no partial update: "if attributes or
+   * users are not provided when updating the value, they will be cleared".
+   * Writing the value alone stripped the key's GDPR user ids and whatever
+   * attributes the game keeps there. The etag rides along too, so a player's
+   * server saving in between makes this write fail rather than lose that save.
+   */
+  let current: Entry | undefined;
+  try {
+    current = await call<Entry>(credentials, {
+      path: entry,
+      scope: "universe-datastores.objects:read" as Scope,
+    });
+  } catch (cause) {
+    if (!(cause instanceof ToolError && cause.code === "NOT_FOUND")) throw cause;
+  }
   const written = await call<Entry>(credentials, {
     method: "PATCH",
     path: entry,
     query: { allowMissing: args.create ? "true" : undefined },
-    body: { value: parseValue(args.value) },
+    body: {
+      value: parseValue(args.value),
+      ...(current?.users ? { users: current.users } : {}),
+      ...(current?.attributes ? { attributes: current.attributes } : {}),
+      ...(current?.etag ? { etag: current.etag } : {}),
+    },
     scope: "universe-datastores.objects:update" as Scope,
   });
   return {

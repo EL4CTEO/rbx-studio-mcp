@@ -97,9 +97,7 @@ async function restrictedNote(classNames: Set<string>): Promise<string | undefin
  * two inspects impossible to diff, and reads as though something changed when
  * nothing did.
  */
-function withSortedProperties(
-  item: InspectResponse["items"][number],
-): InspectResponse["items"][number] {
+function withSortedProperties(item: InspectResponse["items"][number]): Record<string, unknown> {
   const sortKeys = (record: Record<string, unknown> | undefined) =>
     record
       ? Object.fromEntries(Object.entries(record).sort(([a], [b]) => a.localeCompare(b)))
@@ -108,12 +106,21 @@ function withSortedProperties(
   // `requested` exists so callers can correlate an answer with the path they
   // asked about; it is redundant next to the canonical path and only costs
   // tokens here.
-  const { requested: _requested, ...rest } = item as typeof item & { requested?: string };
+  const { requested: _requested, children, ...rest } = item as typeof item & { requested?: string };
 
   return {
     ...rest,
     properties: sortKeys(item.properties) ?? {},
     ...(item.attributes ? { attributes: sortKeys(item.attributes) as Record<string, unknown> } : {}),
+    // "Head (Part)" rather than {"name":"Head","className":"Part"}: half the
+    // characters, and a Model's children are often most of an inspect reply.
+    ...(children
+      ? {
+          children: children.map((child) =>
+            child.name === child.className ? child.name : `${child.name} (${child.className})`,
+          ),
+        }
+      : {}),
   };
 }
 
