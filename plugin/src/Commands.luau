@@ -46,6 +46,9 @@ export type Hooks = {
 	-- Whether the panel may open itself on load, and the setter for it.
 	autoOpen: () -> boolean,
 	saveAutoOpen: (boolean) -> (),
+	-- Whether a line that is not a command is sent to an agent, and the setter.
+	chat: () -> boolean,
+	saveChat: (boolean) -> (),
 	-- The transport's own view of the connection, which the console only ever
 	-- receives second-hand as a string to display.
 	status: () -> string,
@@ -137,11 +140,16 @@ define({
 		for _, entry in entries do
 			Console.log("dim", "   " .. entry.usage, entry.summary)
 		end
-		Console.log(
-			"dim",
-			"   anything else",
-			"sent to a coding agent -- run `agent` to see which"
-		)
+		local current = hooks
+		if current ~= nil and current.chat() then
+			Console.log(
+				"dim",
+				"   anything else",
+				"sent to a coding agent -- run `agent` to see which"
+			)
+		else
+			Console.log("dim", "   anything else", "ignored -- `chat on` sends it to a coding agent")
+		end
 	end,
 })
 
@@ -330,6 +338,56 @@ define({
 				"autoopen off",
 				"from the next place or playtest, open it from the toolbar"
 			)
+		end
+	end,
+})
+
+--[[
+	Whether a sentence typed at the prompt reaches an agent.
+
+	Off by default. A prompt starts a real agent -- a separate session, billed
+	separately -- so a line typed into the panel by habit, or pasted by mistake,
+	should not spend anything until the user has said they want that. Commands
+	are unaffected either way, and so are `agent` and `stop`.
+]]
+define({
+	name = "chat",
+	usage = "chat [on|off]",
+	summary = "let a coding agent answer sentences typed here; OFF by default",
+	run = function(args)
+		local current = hooks
+		if current == nil then
+			return
+		end
+
+		local wanted = args[1]
+		if #args > 1 or (wanted ~= nil and wanted ~= "on" and wanted ~= "off") then
+			Console.log("error", "usage: chat [on|off]")
+			return
+		end
+
+		if wanted == nil then
+			Console.log(
+				"dim",
+				if current.chat()
+					then "chat on -- a sentence is sent to a coding agent"
+					else "chat off -- a sentence is ignored; `chat on` to let an agent answer"
+			)
+			return
+		end
+
+		local value = wanted == "on"
+		if value == current.chat() then
+			Console.log("dim", string.format("already chat %s", wanted))
+			return
+		end
+
+		current.saveChat(value)
+		Console.setPromptChat(value)
+		if value then
+			Console.log("ok", "chat on", "type a sentence and a coding agent answers; `agent` shows which")
+		else
+			Console.log("ok", "chat off", "sentences are ignored; commands still run")
 		end
 	end,
 })
@@ -647,6 +705,15 @@ function Commands.run(line: string)
 				Console.log("dim", string.format("no command %q -- did you mean %s?", head, guess))
 				return
 			end
+		end
+		local current = hooks
+		if current == nil or not current.chat() then
+			Console.log(
+				"dim",
+				"not a command, and chat is off -- nothing was sent",
+				"run `chat on` to let a coding agent answer sentences, or `help` for commands"
+			)
+			return
 		end
 		Console.setPromptBusy(true)
 		remote("prompt", words, trimmed)

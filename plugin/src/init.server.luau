@@ -65,6 +65,9 @@ local SETTING_WIDGET_OPEN = "widgetOpen"
 ]]
 local SETTING_AUTO_OPEN = "autoOpen"
 local SETTING_PLAYTESTS = "playtestsEnabled"
+-- Whether sentences typed at the prompt are sent to an agent. Absent means off:
+-- it only turns on when the user runs `chat on`.
+local SETTING_CHAT = "chatEnabled"
 local SETTING_WIDGET_SIZE = "widgetSize"
 local SETTING_WIDGET_TRACE = "widgetTrace"
 
@@ -261,6 +264,8 @@ local wantOpen = if typeof(storedOpen) == "boolean" then storedOpen else true
 	left exactly as it was, so turning this back on restores the panel to however
 	it was last left rather than to a default.
 ]]
+local chat = plugin:GetSetting(SETTING_CHAT) == true
+
 local storedAutoOpen = plugin:GetSetting(SETTING_AUTO_OPEN)
 local autoOpen = if typeof(storedAutoOpen) == "boolean" then storedAutoOpen else true
 if not autoOpen then
@@ -560,11 +565,20 @@ Commands.setup({
 		autoOpen = value
 		plugin:SetSetting(SETTING_AUTO_OPEN, value)
 	end,
+	chat = function()
+		return chat
+	end,
+	saveChat = function(value)
+		chat = value
+		plugin:SetSetting(SETTING_CHAT, value)
+	end,
 	status = function()
 		return currentStatus
 	end,
 	studioId = studioId,
 })
+
+Console.setPromptChat(chat)
 
 -- The saved preset, now that there is something to paint. Done immediately
 -- after mounting and before the first line is logged, so nothing is ever drawn

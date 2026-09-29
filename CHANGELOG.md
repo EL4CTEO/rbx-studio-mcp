@@ -2,6 +2,11 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.8.4
+
+### Changed
+- Typing a sentence in the panel no longer starts an agent by default. Run `chat on` to turn it on, `chat off` to turn it off again; the choice is remembered. Commands are unaffected.
+
 ## 0.8.3
 
 ### Added

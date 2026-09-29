@@ -162,6 +162,10 @@ type Runtime = {
 	-- back returns it rather than an empty line.
 	draft: string,
 	busy: boolean,
+	-- Whether a line that is not a command goes to an agent. Off until the user
+	-- runs `chat on`; only used to word the placeholder, since `Commands` is what
+	-- actually refuses the line.
+	chat: boolean,
 	--[[
 		What is selected in Studio right now, already worded for display.
 
@@ -195,6 +199,7 @@ local runtime: Runtime = {
 	offset = 0,
 	draft = "",
 	busy = false,
+	chat = false,
 	selection = "",
 	complete = nil,
 	suggest = nil,
@@ -218,9 +223,12 @@ local function paintCaret()
 end
 
 local function placeholder(): string
-	return if runtime.busy
-		then "running -- type stop to cancel"
-		else "type a command, or ask for something"
+	if runtime.busy then
+		return "running -- type stop to cancel"
+	end
+	return if runtime.chat
+		then "type a command, or ask for something"
+		else "type a command -- `chat on` lets an agent answer"
 end
 
 --[[
@@ -897,6 +905,18 @@ end
 function Prompt.setBusy(busy: boolean)
 	runtime.busy = busy
 	paintCaret()
+	local field = runtime.field
+	if field ~= nil then
+		field.PlaceholderText = placeholder()
+	end
+end
+
+--[[
+	Reports whether sentences are answered, so the placeholder does not invite
+	a request the console is about to decline.
+]]
+function Prompt.setChat(enabled: boolean)
+	runtime.chat = enabled
 	local field = runtime.field
 	if field ~= nil then
 		field.PlaceholderText = placeholder()

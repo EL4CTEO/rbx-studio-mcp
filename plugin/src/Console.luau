@@ -1870,6 +1870,11 @@ function Console.setPromptBusy(busy: boolean)
 	Visuals.setThinking(busy)
 end
 
+-- Whether the prompt row invites sentences. See `chat` in Commands.
+function Console.setPromptChat(enabled: boolean)
+	Prompt.setChat(enabled)
+end
+
 --[[
 	Switches the whole panel to the active preset.
 

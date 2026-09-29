@@ -108,7 +108,7 @@ Two things to watch: a playtest connects a second session, so pass `studioId` an
 
 ## The console panel
 
-Every call is logged with how long it took. At the foot of the panel is a command line — type a command, or type a sentence and a coding agent answers it.
+Every call is logged with how long it took. At the foot of the panel is a command line. Type a command — or run `chat on` and type a sentence to have a coding agent answer it.
 
 | | |
 |---|---|
@@ -119,12 +119,13 @@ Every call is logged with how long it took. At the foot of the panel is a comman
 | `theme [name]` `visuals` `autoopen [on\|off]` `log [level]` `clear` `copy` | the panel |
 | `port [n]` `reconnect` | the connection |
 | `cloud [key\|user\|group\|test\|forget]` | the Open Cloud key `upload` uses |
+| `chat [on\|off]` | let an agent answer sentences (off by default) |
 | `agent [use <id>\|new]` `stop` | which agent runs your prompts |
-| anything else | sent to that agent |
+| anything else | sent to that agent, once `chat` is on |
 
 Click the bar and every command is listed with what it does. Keep typing to filter, scroll for the rest, click one to fill it in.
 
-**Prompts start a real agent** — whichever you have on PATH: Claude Code, Codex, opencode, Gemini, Cursor, Amp, Qwen Code, Factory Droid, goose, Copilot CLI, Aider, Crush, DeepSeek Harness. It runs headless, drives the same Studio, and its work appears in the log. It is a separate session from your terminal, billed separately, and allowed the `rbx-studio` tools only. `stop` cancels it.
+**With `chat on`, prompts start a real agent** — whichever you have on PATH: Claude Code, Codex, opencode, Gemini, Cursor, Amp, Qwen Code, Factory Droid, goose, Copilot CLI, Aider, Crush, DeepSeek Harness. It runs headless, drives the same Studio, and its work appears in the log. It is a separate session from your terminal, billed separately, and allowed the `rbx-studio` tools only. `stop` cancels it.
 
 Eight themes behind the tab on the right edge. Your pick is remembered.
 

@@ -30,6 +30,7 @@ if (luau === null) {
 const suites = [
   { module: "plugin/src/handlers/Playtest.luau", test: "tests/playtests.luau", prelude: "tests/playtests-stub.luau" },
   { module: "plugin/src/Commands.luau", test: "tests/playtests-commands.luau", prelude: "tests/playtests-stub.luau", dependency: "plugin/src/handlers/Playtest.luau" },
+  { module: "plugin/src/Commands.luau", test: "tests/chat-commands.luau", prelude: "tests/playtests-stub.luau", dependency: "plugin/src/handlers/Playtest.luau" },
   { module: "plugin/src/RemoteTrace.luau", test: "tests/remote-trace.luau", prelude: "tests/remote-trace-stub.luau" },
   { module: "plugin/src/ExecRuntime.luau", test: "tests/exec-runtime.luau", prelude: "tests/exec-runtime-stub.luau" },
   { module: "plugin/src/ClientRelay.luau", test: "tests/client-relay.luau", prelude: "tests/client-relay-stub.luau" },
