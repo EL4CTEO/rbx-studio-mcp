@@ -1,6 +1,6 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 /**
  * Live Roblox API reflection, sourced from the official API dump.
@@ -63,16 +63,21 @@ let classIndex: Map<string, ApiClass> | null = null;
 const propertyCache = new Map<string, PropertyInfo[]>();
 const restrictionCache = new Map<string, Map<string, PropertyRestriction>>();
 
+/** When the loaded dump is next due a refresh; 0 while none is loaded. */
+let refreshAt = 0;
+let refreshing = false;
+
 function cachePath(): string {
   return join(tmpdir(), "roblox-studio-mcp", "api-dump.json");
 }
 
-async function readCache(): Promise<{ dump: ApiDump; fresh: boolean } | null> {
+async function readCache(): Promise<{ dump: ApiDump; fetchedAt: number; fresh: boolean } | null> {
   try {
     const raw = await readFile(cachePath(), "utf8");
     const cached = JSON.parse(raw) as CacheFile;
     if (!Array.isArray(cached?.dump?.Classes)) return null;
-    return { dump: cached.dump, fresh: Date.now() - cached.fetchedAt <= CACHE_TTL_MS };
+    const fetchedAt = typeof cached.fetchedAt === "number" ? cached.fetchedAt : 0;
+    return { dump: cached.dump, fetchedAt, fresh: Date.now() - fetchedAt <= CACHE_TTL_MS };
   } catch {
     return null;
   }
@@ -95,12 +100,50 @@ async function download(): Promise<ApiDump | null> {
 const RETRY_AFTER_MS = 60_000;
 
 async function writeCache(dump: ApiDump): Promise<void> {
+  // Written beside the real file and renamed over it. Every server process on
+  // the machine shares this path, and one reading it mid-write saw a truncated
+  // document, which reads as "no cache" and costs a 2.4MB download.
+  const path = cachePath();
+  const staging = `${path}.${process.pid}.tmp`;
   try {
-    const path = cachePath();
-    await mkdir(join(path, ".."), { recursive: true });
-    await writeFile(path, JSON.stringify({ fetchedAt: Date.now(), dump }), "utf8");
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(staging, JSON.stringify({ fetchedAt: Date.now(), dump }), "utf8");
+    await rename(staging, path);
   } catch {
     // A read-only or full temp directory only costs us the cache, not the feature.
+    await rm(staging, { force: true }).catch(() => undefined);
+  }
+}
+
+/**
+ * Downloads a newer dump and swaps it in for the one already serving calls.
+ *
+ * A server process lives as long as the MCP client that started it -- days, for
+ * an editor left open -- so a dump loaded at startup used to be the dump for the
+ * whole life of the process. The daily expiry only ever refreshed the copy on
+ * disk for the NEXT process, which meant a class or property added by a Roblox
+ * update was reported as a typo until somebody restarted their editor.
+ *
+ * Everything derived from the dump is dropped with it. Failing leaves the old
+ * one in place and tries again after a short wait, because an outdated dump is
+ * still far better than none.
+ */
+async function refresh(): Promise<void> {
+  if (refreshing) return;
+  refreshing = true;
+  try {
+    const fresh = await download();
+    if (fresh === null) {
+      refreshAt = Date.now() + RETRY_AFTER_MS;
+      return;
+    }
+    classIndex = null;
+    propertyCache.clear();
+    restrictionCache.clear();
+    loaded = Promise.resolve(fresh);
+    refreshAt = Date.now() + CACHE_TTL_MS;
+  } finally {
+    refreshing = false;
   }
 }
 
@@ -112,17 +155,21 @@ async function writeCache(dump: ApiDump): Promise<void> {
  * instance rather than refusing to answer.
  */
 export function loadApiDump(): Promise<ApiDump | null> {
+  if (refreshAt !== 0 && Date.now() >= refreshAt) void refresh();
+
   loaded ??= (async () => {
     //[[ A stale cache is served at once and refreshed behind the call.
     //
     // Engine APIs change slowly, and the refresh used to sit in the path of
     // whichever tool call first needed the dump after the daily expiry: a
     // 2.4MB download, up to 15s on a slow network, billed to one `create`.
-    // The fresh copy lands on disk for the next process.
+    // The fresh copy is swapped in when it arrives, and lands on disk for the
+    // next process.
     //]]
     const cached = await readCache();
     if (cached) {
-      if (!cached.fresh) void download();
+      refreshAt = cached.fetchedAt + CACHE_TTL_MS;
+      if (!cached.fresh) void refresh();
       return cached.dump;
     }
 
@@ -133,6 +180,8 @@ export function loadApiDump(): Promise<ApiDump | null> {
       setTimeout(() => {
         loaded = null;
       }, RETRY_AFTER_MS).unref();
+    } else {
+      refreshAt = Date.now() + CACHE_TTL_MS;
     }
     return dump;
   })();
@@ -414,12 +463,6 @@ export async function standardProperties(className: string): Promise<string[]> {
   const ranked = rankProperties(chosen.map((property) => property.name));
   const names = ranked.slice(0, STANDARD_LIMIT);
   return ["Name", ...names.filter((name) => name !== "Name")];
-}
-
-/** True when the dump knows this class. False also covers "dump unavailable". */
-export async function isKnownClass(className: string): Promise<boolean> {
-  const dump = await loadApiDump();
-  return dump?.Classes.some((entry) => entry.Name === className) ?? false;
 }
 
 /**

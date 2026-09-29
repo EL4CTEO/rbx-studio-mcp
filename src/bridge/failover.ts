@@ -85,13 +85,21 @@ export class FailoverBridge implements StudioBridge {
         await port.close();
         return;
       }
+      //[[ Recorded before anything is awaited.
+      //
+      // `close` looks at `claimed` to know whether there is a listening socket to
+      // shut, and the goodbye below is a round trip during which a shutdown can
+      // arrive. With the assignment after it, that shutdown saw nothing to close,
+      // the bound port outlived it, and a bound port is a ref'd handle -- so the
+      // process, which ends by running out of work, never ended.
+      //]]
+      this.claimed = port;
+      this.current = port.bridge;
+      this.stopWatching();
+      if (this.about !== null) void port.bridge.describe(this.about);
       // Stops the keepalive aimed at the process that is gone. Best effort by
       // construction, and the request would now arrive at this process anyway.
       await this.peer.goodbye();
-      this.claimed = port;
-      this.current = port.bridge;
-      if (this.about !== null) void port.bridge.describe(this.about);
-      this.stopWatching();
       // stdout belongs to the MCP transport, so this goes to stderr. Worth
       // saying: a handover explains a Studio reconnect and a lost target
       // choice, and the absence of any such line is what made the original

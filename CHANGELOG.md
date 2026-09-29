@@ -2,6 +2,32 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.8.3
+
+### Added
+- `inspect` says why a requested property came back missing: a typo (with a suggestion), unset, or unreadable.
+- `find` and `tree` point out a `className` that is not a Roblox class.
+
+### Changed
+- Screenshots encode faster (up to 8x on flat UI screens, same picture).
+- `studio_status` answers faster: its two reads now run at once.
+- Property and class checks stay current in long sessions: the Roblox API list refreshes daily, not only at startup.
+- Dependencies updated (MCP SDK 1.31); CI also tests Node 24.
+
+### Fixed
+- `execute_luau target="client"` failed with "Requested module experienced an error while loading" (broken since 0.8.2).
+- Zero-length inputs are refused instead of answering "nothing there": `viewport raycast`, `collision cast` and `overlap`, and `terrain` fills or regions with an empty side.
+- `viewport focus` (zero `from`) and `viewport camera` (`position` equal to `lookAt`) no longer give the camera a broken position.
+- `collision remove` on a group that does not exist said it was removed.
+- `debug set` on a line past the end of the script blamed the Debugger beta setting.
+- A call that timed out could still run in Studio later; it is now dropped.
+- Calls to a Studio that has just closed fail cleanly instead of escaping error handling.
+- The bridge refuses requests whose `Host` is not loopback, closing a DNS-rebinding hole.
+- A server taking over the bridge port while shutting down could stay running.
+- `assets publish` said to pass `publish: true`; it is `confirm: true`.
+- Panel agent output no longer hides calls to other MCP servers, and its temp files are removed on exit.
+- The panel no longer saves its size while the plugin is unloading.
+
 ## 0.8.2
 
 ### Added

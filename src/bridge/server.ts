@@ -193,15 +193,40 @@ function closeServer(server: Server, reaper: NodeJS.Timeout): Promise<void> {
   });
 }
 
+/**
+ * Whether the Host header names this loopback server the way a local client would.
+ *
+ * The check that actually ends DNS rebinding. A page on `evil.example` can be
+ * made to resolve to 127.0.0.1, after which its requests are same-origin as far
+ * as the browser is concerned: no preflight, so CLIENT_HEADER is no obstacle, and
+ * a same-origin GET carries no Origin header to reject. Routes like /sessions and
+ * /poll are GETs, so a page could list every open place and steal queued
+ * commands. What it cannot do is make the browser send `Host: 127.0.0.1:<port>`,
+ * because the Host header is the name the page was loaded under.
+ *
+ * Compared against the port the connection actually arrived on rather than the
+ * configured one, so a server bound to an ephemeral port still recognises itself.
+ * A request with no Host at all is HTTP/1.0 and cannot come from a browser.
+ */
+function hostIsLoopback(host: string | undefined, localPort: number | undefined): boolean {
+  if (host === undefined) return true;
+  const value = host.toLowerCase();
+  return ["127.0.0.1", "localhost", "[::1]"].some((name) => value === `${name}:${localPort}`);
+}
+
 async function handle(
   bridge: Bridge,
   port: number,
   req: IncomingMessage,
   res: ServerResponse,
 ): Promise<void> {
+  if (!hostIsLoopback(req.headers.host, req.socket.localPort)) {
+    return send(res, 403, { error: "host not allowed" });
+  }
   // A browser cannot set CLIENT_HEADER cross-origin without a preflight we never
   // answer, and same-origin means it is already local. Together with the Origin
-  // rejection below this is what blocks DNS-rebinding attacks on the bridge.
+  // rejection below and the Host check above, this is what blocks DNS-rebinding
+  // attacks on the bridge.
   if (req.headers.origin !== undefined) return send(res, 403, { error: "origin not allowed" });
   if (req.headers[CLIENT_HEADER] === undefined) {
     return send(res, 403, { error: `missing ${CLIENT_HEADER} header` });

@@ -67,6 +67,20 @@ function Viewport.raycast(params: { [string]: any }): { [string]: any }
 	local direction = toVector(params.direction, "direction")
 	local length = tonumber(params.maxDistance) or DEFAULT_RAY_LENGTH
 
+	--[[
+		A zero direction has no `Unit` -- it is NaN -- and a ray along NaN hits
+		nothing, which the reply then reported as "nothing within 1000 studs". That
+		is a confident answer about empty space to a question that was never asked,
+		so the input is refused instead.
+	]]
+	if direction.Magnitude == 0 then
+		Dispatch.fail(
+			"BAD_PARAMS",
+			"`direction` cannot be zero: a ray needs a way to point.",
+			'Give a direction such as "0, -1, 0" for straight down.'
+		)
+	end
+
 	local filter: { Instance } = {}
 	for _, path in (params.ignore or {}) :: { string } do
 		table.insert(filter, Paths.resolve(path))
@@ -225,7 +239,17 @@ function Viewport.focus(params: { [string]: any }): { [string]: any }
 	-- with a flat surface where it would vanish to a line.
 	local direction: Vector3
 	if typeof(params.from) == "string" and params.from ~= "" then
-		direction = toVector(params.from, "`from`").Unit
+		local requested = toVector(params.from, "`from`")
+		-- A zero vector has no direction: its `Unit` is NaN, so the eye position was
+		-- NaN and the camera was handed a CFrame that is not a place at all.
+		if requested.Magnitude == 0 then
+			Dispatch.fail(
+				"BAD_PARAMS",
+				"`from` cannot be zero: it is the direction to view the subject from.",
+				'Give a direction such as "0, 1, 0" to look down from above.'
+			)
+		end
+		direction = requested.Unit
 	else
 		direction = Vector3.new(0.45, 0.35, 1).Unit
 	end
@@ -278,6 +302,14 @@ function Viewport.camera(params: { [string]: any }): { [string]: any }
 		local target = if params.lookAt ~= nil
 			then toVector(params.lookAt, "`lookAt`")
 			else eye + view.CFrame.LookVector
+		-- Aiming at where the camera already is has no direction to face.
+		if (target - eye).Magnitude == 0 then
+			Dispatch.fail(
+				"BAD_PARAMS",
+				"`position` and `lookAt` are the same point, so there is nothing to face.",
+				"Move `lookAt` to what the camera should be looking at."
+			)
+		end
 		view.CFrame = CFrame.lookAt(eye, target)
 		-- Same reason as focus: without this the rotation survives a frame.
 		view.Focus = CFrame.new(target)

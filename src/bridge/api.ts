@@ -128,14 +128,14 @@ export class LocalBridge implements StudioBridge {
     this.inner.forgetClient(this.clientId);
   }
 
-  call<T = unknown>(
+  async call<T = unknown>(
     op: string,
     params: Record<string, unknown> = {},
     options: { studioId?: string; timeoutMs?: number } = {},
   ): Promise<T> {
     // Working is proof of being here, exactly as it is for a peer on /call.
     this.inner.noteClient(this.clientId);
-    return this.inner.call<T>(op, params, { ...options, clientId: this.clientId });
+    return await this.inner.call<T>(op, params, { ...options, clientId: this.clientId });
   }
 
   async sessions(): Promise<SessionsView> {

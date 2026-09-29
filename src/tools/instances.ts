@@ -369,7 +369,9 @@ export function registerInstanceTools(context: ToolContext): void {
           // not the agent asking to inspect anything — see discover.ts for
           // why the console needs to be told apart the two.
           {
-            paths: args.targets.flatMap((target) => target.paths),
+            // Each path once: several entries commonly name the same instance,
+            // and every duplicate is a resolve and a serialise in Studio.
+            paths: [...new Set(args.targets.flatMap((target) => target.paths))],
             includeChildren: false,
             probeOnly: true,
           },

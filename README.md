@@ -157,7 +157,7 @@ The same row, commented, is in `config/dsh.cordis.yml` for use with `dsh --patch
 
 ## Security
 
-Loopback only, and requires a header a browser cannot set cross-origin. Your experience's "Allow HTTP Requests" setting is untouched.
+Loopback only. Requests need a header a browser cannot set cross-origin and a loopback `Host`, so a web page cannot reach it, even through DNS rebinding. Your experience's "Allow HTTP Requests" setting is untouched.
 
 ## Development
 
@@ -169,6 +169,8 @@ npm test
 ```
 
 Needs `luau`, `luau-compile` and `luau-analyze` from [the Luau releases](https://github.com/luau-lang/luau/releases) on `PATH` or in `tools/`.
+
+With Studio open and the plugin loaded, `node scripts/test-live.mjs` checks the transport and `node scripts/test-live-tools.mjs [--playtest]` runs every tool. Both clean up after themselves.
 
 ## Licence
 

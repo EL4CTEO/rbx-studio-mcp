@@ -277,7 +277,7 @@ export async function publishPlace(
 
   const result = await call<{ versionNumber?: number }>(credentials, {
     method: "POST",
-    path: `/universes/v1/${args.universeId}/places/${args.placeId}/versions`,
+    path: `/universes/v1/${encodeURIComponent(args.universeId)}/places/${encodeURIComponent(args.placeId)}/versions`,
     query: { versionType: args.publish ? "Published" : "Saved" },
     raw: {
       bytes,
@@ -296,7 +296,7 @@ export async function publishPlace(
     file: path,
     note: args.publish
       ? "This is live to players now."
-      : 'Saved as a new version but NOT live. Pass publish: true to release it.',
+      : "Saved as a new version but NOT live. Call `publish` again with confirm: true to release it.",
     caveat:
       "Roblox's publishing API does not update EditableImage, EditableMesh, " +
       "PartOperation, SurfaceAppearance or BaseWrap instances. If the place uses " +

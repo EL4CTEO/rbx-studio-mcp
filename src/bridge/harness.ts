@@ -21,7 +21,7 @@
  * for still works through `generic`, which simply prints what it prints.
  */
 import { type ChildProcess, spawn } from "node:child_process";
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -105,6 +105,18 @@ function shorten(name: string): string {
 }
 
 /**
+ * Whether a tool name, as a harness spelled it, is one of THIS server's.
+ *
+ * Told apart from the name alone, not from whether a prefix could be stripped:
+ * `shorten` strips any `mcp__<server>__`, so keying on "did anything change"
+ * treated a call to another MCP server as ours and dropped its row -- and Studio
+ * never logs those, so they vanished from the panel entirely.
+ */
+function isOwnTool(name: string): boolean {
+  return name.startsWith(`mcp__${OWN_SERVER}__`) || new RegExp("^" + OWN_SERVER + "[_-]").test(name);
+}
+
+/**
  * Rows for one tool call -- usually one, and none for our own tools.
  *
  * Studio logs every call that reaches it, with a friendly name and the time it
@@ -123,8 +135,8 @@ function shorten(name: string): string {
  * Studio never sees, so those rows are all there is and they stay.
  */
 function toolLines(name: string, input: unknown): HarnessLine[] {
+  if (isOwnTool(name)) return [];
   const short = shorten(name);
-  if (short !== name) return [];
 
   let detail: string | undefined;
   if (input !== null && typeof input === "object") {
@@ -269,7 +281,12 @@ const codex: Harness = {
       return { lines: say(String(item.text ?? "")) };
     }
     if (event.type === "item.started") {
-      if (item.type === "mcp_tool_call") return { lines: toolLines(String(item.tool ?? "tool"), item.arguments) };
+      if (item.type === "mcp_tool_call") {
+        // Codex names the server and the tool separately, so the tool alone
+        // carries no prefix to recognise it by.
+        if (item.server === OWN_SERVER) return NOTHING;
+        return { lines: toolLines(String(item.tool ?? "tool"), item.arguments) };
+      }
       if (item.type === "command_execution") return { lines: toolLines("shell", item.command) };
     }
     if (item.type === "error" && event.type === "item.completed") {
@@ -771,6 +788,33 @@ export function find(id: string): Harness | undefined {
   return REGISTRY.find((entry) => entry.id === id || entry.bin === id);
 }
 
+/** Directories this process made for agent configs; see `scratchDir`. */
+const scratchDirs: string[] = [];
+
+/**
+ * A fresh temp directory that is removed when this process exits.
+ *
+ * The config and overlay files each live in one, written once per process. With
+ * nothing removing them, every server process that ever handed a prompt to an
+ * agent left a `rbx-studio-mcp-XXXXXX` folder in the temp directory for good.
+ */
+function scratchDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), "rbx-studio-mcp-"));
+  if (scratchDirs.length === 0) {
+    process.once("exit", () => {
+      for (const made of scratchDirs) {
+        try {
+          rmSync(made, { recursive: true, force: true });
+        } catch {
+          /* best effort: a temp file that will not go is not worth a crash on the way out */
+        }
+      }
+    });
+  }
+  scratchDirs.push(dir);
+  return dir;
+}
+
 /** Written once per process, reused by every run. */
 let configPath: string | null = null;
 
@@ -788,7 +832,7 @@ let configPath: string | null = null;
 function mcpConfig(): string {
   if (configPath !== null) return configPath;
   const entry = resolve(dirname(fileURLToPath(import.meta.url)), "..", "index.js");
-  const dir = mkdtempSync(join(tmpdir(), "rbx-studio-mcp-"));
+  const dir = scratchDir();
   configPath = join(dir, "mcp.json");
   writeFileSync(
     configPath,
@@ -875,7 +919,7 @@ let overlayPath: string | null = null;
 function dshOverlay(): string {
   if (overlayPath !== null) return overlayPath;
   const entry = resolve(dirname(fileURLToPath(import.meta.url)), "..", "index.js");
-  const dir = mkdtempSync(join(tmpdir(), "rbx-studio-mcp-"));
+  const dir = scratchDir();
   overlayPath = join(dir, "rbx-studio.cordis.yml");
   // Written by hand rather than through a YAML library: it is six fixed keys
   // and one interpolated path, and a dependency for that is a dependency to

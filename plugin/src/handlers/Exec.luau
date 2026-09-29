@@ -160,7 +160,11 @@ end)
 report:FireServer(if ok then result else { ok = false, error = tostring(result), output = {}, milliseconds = 0 })
 ]==], { Timeout = timeout }, timeout + 5, function(relay)
 			-- These modules are required ONLY by the LocalScript, sharing the game's client VM.
-			for _, name in { "ExecRuntime", "Serialize", "Paths", "Dispatch" } do
+			-- Everything ExecRuntime requires has to be listed too: the plugin's own module
+			-- tree does not exist in the client, so `script.Parent.LogBuffer` finds only
+			-- what is cloned beside it. Leaving LogBuffer out made every client run fail
+			-- with "Requested module experienced an error while loading".
+			for _, name in { "ExecRuntime", "LogBuffer", "Serialize", "Paths", "Dispatch" } do
 				local copy = script.Parent.Parent[name]:Clone()
 				copy.Parent = relay
 			end

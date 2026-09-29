@@ -1,5 +1,12 @@
 import { z } from "zod";
-import { propertiesOf, restrictionsOf, standardProperties } from "../lib/apidump.js";
+import {
+  describeRestriction,
+  propertiesOf,
+  restrictionsOf,
+  standardProperties,
+  suggestClass,
+  suggestProperty,
+} from "../lib/apidump.js";
 import { errorText, cursorSchema, decodeCursor, detailSchema, encodeCursor, json, limitSchema, table, text, textOf, type Detail, type ToolResult } from "../lib/format.js";
 import { defineTool, type ToolContext } from "../lib/tool.js";
 
@@ -87,6 +94,72 @@ async function restrictedNote(classNames: Set<string>): Promise<string | undefin
     "those in Studio's Properties panel:\n" +
     lines.join("\n")
   );
+}
+
+/** Most instances one "requested but not returned" note will name. */
+const ABSENT_SHOWN = 10;
+
+/**
+ * Says why a property the caller named came back missing.
+ *
+ * A property that is unset (a nil `PrimaryPart`), one the identity cannot read,
+ * and one that does not exist are all simply absent from the reply -- so a typo
+ * in `properties` looked exactly like a property with nothing in it, and the
+ * agent went on to reason from a value it never received. The three want
+ * different responses, and the dump can tell them apart.
+ */
+async function absentNote(
+  requested: string[],
+  items: InspectResponse["items"],
+): Promise<string | undefined> {
+  const lines: string[] = [];
+
+  for (const item of items) {
+    const absent = requested.filter((name) => !Object.hasOwn(item.properties, name));
+    if (absent.length === 0) continue;
+
+    const known = new Set((await propertiesOf(item.className)).map((property) => property.name));
+    const restricted = await restrictionsOf(item.className);
+    const reasons: string[] = [];
+
+    for (const name of absent) {
+      const restriction = restricted.get(name);
+      if (known.has(name)) {
+        reasons.push(`${name} (unset, or not readable in this session)`);
+      } else if (restriction && restriction.blocked !== "write") {
+        reasons.push(`${name} (exists, but a plugin cannot read it)`);
+      } else if (known.size > 0) {
+        const near = await suggestProperty(item.className, name);
+        reasons.push(
+          `${name} (not a property of ${item.className}${near.length > 0 ? `; did you mean ${near.join(", ")}?` : ""})`,
+        );
+      } else {
+        // No dump to check against: say only what is known.
+        reasons.push(name);
+      }
+    }
+
+    lines.push(`  ${item.path}: ${reasons.join("; ")}`);
+    if (lines.length >= ABSENT_SHOWN) break;
+  }
+
+  return lines.length > 0 ? `Requested but not returned:\n${lines.join("\n")}` : undefined;
+}
+
+/**
+ * A `className` filter that names no Roblox class, when nothing matched.
+ *
+ * "No matches" for a misspelt class is indistinguishable from a place that
+ * really has none, and the class filter is the one most likely to be mistyped.
+ * Only spoken when the dump is loaded and something close exists, so a class
+ * newer than the dump is not accused.
+ */
+async function unknownClassNote(className: string | undefined): Promise<string | undefined> {
+  if (!className || (await propertiesOf(className)).length > 0) return undefined;
+  const near = await suggestClass(className);
+  return near.length > 0
+    ? `"${className}" is not a Roblox class, which is why nothing matched. Did you mean: ${near.join(", ")}?`
+    : undefined;
 }
 
 /**
@@ -189,12 +262,18 @@ export function registerDiscoverTools(context: ToolContext): void {
       // Say what was withheld at the root, so an agent that genuinely needs an
       // engine service knows it can ask for one by path.
       const hidden = response.hiddenServices ?? 0;
+      const notAClass = response.items.length === 0 ? await unknownClassNote(args.className) : undefined;
       return pageOf(
         response,
         args.detail,
-        hidden > 0
-          ? `${hidden} engine services hidden — pass an explicit \`path\` to inspect one`
-          : undefined,
+        [
+          hidden > 0
+            ? `${hidden} engine services hidden — pass an explicit \`path\` to inspect one`
+            : undefined,
+          notAClass,
+        ]
+          .filter((part): part is string => part !== undefined)
+          .join("; ") || undefined,
       );
     },
   );
@@ -305,6 +384,12 @@ export function registerDiscoverTools(context: ToolContext): void {
       }
       const restricted = await restrictedNote(probedClasses);
       if (restricted) notes.push(restricted);
+      // Only for names the caller chose. A default detail level lists what a class
+      // usually has, and a property missing from one instance is unremarkable.
+      if (args.properties && args.properties.length > 0) {
+        const absent = await absentNote(args.properties, response.items);
+        if (absent) notes.push(absent);
+      }
 
       return json(
         response.items.map(withSortedProperties),
@@ -466,8 +551,10 @@ export function registerDiscoverTools(context: ToolContext): void {
       );
 
       if (response.total === 0) {
+        const notAClass = await unknownClassNote(args.className);
         return text(
           `No matches (searched ${response.searched ?? 0} instances).\n` +
+            (notAClass ? `${notAClass}\n` : "") +
             "Check spelling and case — names and class names are case-sensitive. " +
             (args.propertyName !== undefined
               ? "`propertyValue` is compared as text: a Vector3 reads \"0, 5, 0\", an " +

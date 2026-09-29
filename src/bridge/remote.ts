@@ -205,13 +205,15 @@ export class RemoteBridge implements StudioBridge {
     );
   }
 
-  call<T = unknown>(
+  // `async` so a bad timeout is a rejection like every other failure here, not a
+  // throw that skips the caller's `.catch`.
+  async call<T = unknown>(
     op: string,
     params: Record<string, unknown> = {},
     options: { studioId?: string; timeoutMs?: number } = {},
   ): Promise<T> {
     const timeoutMs = normalizeTimeoutMs(options.timeoutMs === undefined ? 15_000 : options.timeoutMs);
-    return this.post<T>("/call", { op, params, ...options, timeoutMs }, timeoutMs);
+    return await this.post<T>("/call", { op, params, ...options, timeoutMs }, timeoutMs);
   }
 
   async sessions(): Promise<SessionsView> {

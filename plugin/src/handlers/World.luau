@@ -257,13 +257,33 @@ function World.collision(params: { [string]: any }): { [string]: any }
 			way to remove it short of `execute_luau`. `UnregisterCollisionGroup`
 			has existed the whole time; it was just never wired up.
 		]]
+		--[[
+			The engine unregisters a group that was never registered without a word,
+			so a misspelt name answered `removed = true` and removed nothing -- while
+			the group the caller meant stayed registered. Said plainly instead, and
+			not as an error: removing something already gone is a cleanup that
+			worked, and treating it as a failure would break every loop that ends
+			by tidying up.
+		]]
+		local okRegistered, registered = pcall(function()
+			return world:IsCollisionGroupRegistered(name)
+		end)
+		if okRegistered and registered == false then
+			return {
+				group = name,
+				removed = false,
+				existed = false,
+				world = Paths.of(world),
+				note = 'No group by that name is registered, so nothing was removed. Check the spelling with action="list".',
+			}
+		end
 		local ok, err = pcall(function()
 			world:UnregisterCollisionGroup(name)
 		end)
 		if not ok then
 			Dispatch.fail("COLLISION_FAILED", string.format("Could not remove %q: %s", name, tostring(err)))
 		end
-		return { group = name, removed = true, world = Paths.of(world) }
+		return { group = name, removed = true, existed = true, world = Paths.of(world) }
 	end
 
 	if action == "collidable" then

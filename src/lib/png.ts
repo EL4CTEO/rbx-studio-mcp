@@ -1,4 +1,4 @@
-import { deflateSync } from "node:zlib";
+import { crc32, deflateSync } from "node:zlib";
 
 /**
  * Writes a PNG from raw RGB bytes.
@@ -15,38 +15,20 @@ import { deflateSync } from "node:zlib";
  * compressing.
  */
 
-const CRC_TABLE = (() => {
-  const table = new Int32Array(256);
-  for (let index = 0; index < 256; index += 1) {
-    let value = index;
-    for (let bit = 0; bit < 8; bit += 1) {
-      // 0xEDB88320: the reversed CRC-32 polynomial. Worth writing out, because
-      // a single wrong digit here (0xED888320) still produces a table, still
-      // produces a checksum, and still produces a PNG that every decoder
-      // rejects — with nothing in the file to say which byte was wrong.
-      value = value & 1 ? 0xedb8_8320 ^ (value >>> 1) : value >>> 1;
-    }
-    table[index] = value;
-  }
-  return table;
-})();
-
-function crc32(data: Buffer): number {
-  let crc = -1;
-  for (const byte of data) {
-    crc = CRC_TABLE[(crc ^ byte) & 0xff]! ^ (crc >>> 8);
-  }
-  return (crc ^ -1) >>> 0;
-}
-
-/** One PNG chunk: length, type, payload, CRC over type+payload. */
+/**
+ * One PNG chunk: length, type, payload, CRC over type+payload.
+ *
+ * Built in a single allocation, with the checksum from zlib's own `crc32` --
+ * the hand-rolled table this replaced walked every byte in JavaScript, and the
+ * payload here is the whole compressed image.
+ */
 function chunk(kind: string, payload: Buffer): Buffer {
-  const length = Buffer.alloc(4);
-  length.writeUInt32BE(payload.length, 0);
-  const body = Buffer.concat([Buffer.from(kind, "ascii"), payload]);
-  const crc = Buffer.alloc(4);
-  crc.writeUInt32BE(crc32(body), 0);
-  return Buffer.concat([length, body, crc]);
+  const out = Buffer.alloc(payload.length + 12);
+  out.writeUInt32BE(payload.length, 0);
+  out.write(kind, 4, "ascii");
+  payload.copy(out, 8);
+  out.writeUInt32BE(crc32(out.subarray(4, 8 + payload.length)), 8 + payload.length);
+  return out;
 }
 
 const SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -88,7 +70,11 @@ export function encodePng(rgb: Buffer, width: number, height: number): Buffer {
   return Buffer.concat([
     SIGNATURE,
     chunk("IHDR", header),
-    chunk("IDAT", deflateSync(raw, { level: 9 })),
+    // Level 6, not 9. Measured on a 1600x900 capture: 9 took 464ms on a flat UI
+    // screen to save 22KB over 6's 55ms, and on a rendered scene it produced the
+    // same bytes as 6 for the same time -- every screenshot paid for a ratio that
+    // was not there.
+    chunk("IDAT", deflateSync(raw, { level: 6 })),
     chunk("IEND", Buffer.alloc(0)),
   ]);
 }

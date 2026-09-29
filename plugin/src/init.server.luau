@@ -398,10 +398,21 @@ local function trace(what: string)
 	end)
 end
 
+--[[
+	Set the moment the plugin starts to unload.
+
+	`persistSize` checked a variable of this name that was never declared, so it
+	read as nil and the guard never applied. A widget that is being torn down
+	reports whatever size it collapses through, and only the minimum-size check
+	stood between that and the saved layout.
+]]
+local unloading = false
+
 if RunService:IsEdit() then
 	trace(string.format("load open=%s", tostring(storedOpen)))
 
 	plugin.Unloading:Connect(function()
+		unloading = true
 		trace("plugin.Unloading")
 	end)
 	widget.Destroying:Connect(function()

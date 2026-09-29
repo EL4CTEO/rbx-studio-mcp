@@ -99,11 +99,18 @@ export function registerSessionTools(context: ToolContext): void {
       readOnly: true,
     },
     async ({ studioId }): Promise<ToolResult> => {
-      const status = await bridge.call<StudioStatus>("studio.status", {}, { studioId });
-
-      const view = await bridge.sessions();
+      // The two reads do not depend on each other, and through a proxying
+      // instance each is an HTTP round trip -- so the tool everyone is told to
+      // call first paid for both in series.
+      const [status, view] = await Promise.all([
+        bridge.call<StudioStatus>("studio.status", {}, { studioId }),
+        bridge.sessions(),
+      ]);
       const targetId = studioId ?? view.activeId;
-      if (targetId) await bridge.notePlaceName(targetId, status.placeName, status.context);
+      // Remembered for later listings, not needed for this answer, so it is not
+      // waited for. Best effort on every implementation; the catch is only there
+      // so a failure cannot surface as an unhandled rejection.
+      if (targetId) void bridge.notePlaceName(targetId, status.placeName, status.context).catch(() => undefined);
 
       // A stale plugin answers with older handlers and no other symptom, so the
       // warning rides along with the one call agents are told to make first —

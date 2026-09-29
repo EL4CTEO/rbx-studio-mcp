@@ -191,6 +191,24 @@ function Spatial.cast(params: { [string]: any }): { [string]: any }
 		end
 		local distance = tonumber(params.distance) or 100
 		direction = towards.Unit * distance
+		--[[
+			Checked below, once `direction` is settled: a zero `direction` has a NaN
+			`Unit`, so it only shows up as a NaN length by the time it gets there.
+		]]
+	end
+
+	--[[
+		A cast with no length is not a cast. `to` equal to `from`, a zero `direction`
+		(whose `Unit` is NaN) or a zero `distance` all end up here, and every shape
+		then "misses" -- reported as a clear line of sight, which is the opposite of
+		"nothing was checked".
+	]]
+	if direction.Magnitude == 0 or direction.Magnitude ~= direction.Magnitude then
+		Dispatch.fail(
+			"BAD_PARAMS",
+			"The cast has no length, so nothing was checked.",
+			"`to` is the same point as `from`, or `direction` or `distance` is zero. Give it somewhere to go."
+		)
 	end
 
 	local query = buildParams(params)
@@ -259,11 +277,27 @@ function Spatial.overlap(params: { [string]: any }): { [string]: any }
 	if region == "box" then
 		local centre = vector(params.at, "at")
 		local size = optionalVector(params.size, "size") or Vector3.new(4, 4, 4)
+		-- A box with no volume overlaps nothing by construction, which then reads
+		-- as "that space is clear" -- an answer to a question nobody asked.
+		if size.X <= 0 or size.Y <= 0 or size.Z <= 0 then
+			Dispatch.fail(
+				"BAD_PARAMS",
+				string.format("`size` is %s, which has no volume.", tostring(size)),
+				"Every side has to be greater than zero."
+			)
+		end
 		found = world:GetPartBoundsInBox(CFrame.new(centre), size, overlap)
 		about.at, about.size = Serialize.value(centre), Serialize.value(size)
 	elseif region == "radius" then
 		local centre = vector(params.at, "at")
 		local radius = tonumber(params.radius) or 4
+		if radius <= 0 then
+			Dispatch.fail(
+				"BAD_PARAMS",
+				string.format("`radius` is %s, which has no volume.", tostring(radius)),
+				"Give a radius greater than zero."
+			)
+		end
 		found = world:GetPartBoundsInRadius(centre, radius, overlap)
 		about.at, about.radius = Serialize.value(centre), radius
 	elseif region == "part" then

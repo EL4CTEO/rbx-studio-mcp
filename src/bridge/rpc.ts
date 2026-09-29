@@ -451,8 +451,22 @@ export class Bridge {
     params: Record<string, unknown> = {},
     options: { clientId: string; studioId?: string; timeoutMs?: number },
   ): Promise<T> {
-    const timeoutMs = normalizeTimeoutMs(options.timeoutMs === undefined ? DEFAULT_TIMEOUT_MS : options.timeoutMs);
-    const session = this.resolveSession(options.clientId, options.studioId);
+    //[[ Always a rejection, never a throw.
+    //
+    // This returns a promise, so callers reasonably write
+    // `bridge.call(...).catch(...)` -- and a NO_STUDIO or UNKNOWN_STUDIO thrown
+    // from here, before any promise exists, walks straight past that handler.
+    // `playtest stop` and `set_active_studio` both rely on one to swallow the
+    // failure of a session that vanished under them.
+    //]]
+    let timeoutMs: number;
+    let session: Session;
+    try {
+      timeoutMs = normalizeTimeoutMs(options.timeoutMs === undefined ? DEFAULT_TIMEOUT_MS : options.timeoutMs);
+      session = this.resolveSession(options.clientId, options.studioId);
+    } catch (cause) {
+      return Promise.reject(cause);
+    }
     const command: Command = { id: randomUUID(), op, params };
 
     return new Promise<T>((resolve, reject) => {
@@ -463,9 +477,16 @@ export class Bridge {
         // whether the plugin has said anything since. A command still sitting in
         // the queue was never seen by Studio, which is a different fault from
         // one Studio took and did not finish.
+        //
+        // And it comes OUT of the queue. Left there, the plugin's next poll (or
+        // the next stream to connect) would pick up a command whose caller was
+        // already told it failed, and run it -- a create or delete nobody is
+        // waiting on any more, which the agent has usually retried by then.
+        const queuedAt = session.queue.findIndex((queued) => queued.id === command.id);
+        if (queuedAt !== -1) session.queue.splice(queuedAt, 1);
         reject(
           TIMEOUT(op, timeoutMs, {
-            delivered: session.queue.every((queued) => queued.id !== command.id),
+            delivered: queuedAt === -1,
             silentForMs: Date.now() - session.lastSeenAt,
             alsoInFlight: session.pending.size,
             transport: session.stream ? "sse" : "poll",
@@ -518,7 +539,7 @@ export class Bridge {
     if (!session) return Promise.resolve(null);
     session.lastSeenAt = Date.now();
 
-    const queued = session.queue.shift();
+    const queued = this.takeQueued(session);
     if (queued) return Promise.resolve(queued);
     if (released?.aborted) return Promise.resolve(null);
 
@@ -706,10 +727,25 @@ export class Bridge {
     session.queue.push(command);
   }
 
+  /**
+   * The next queued command whose caller is still waiting for it.
+   *
+   * A call that timed out has already been answered with a failure, so handing
+   * its command to Studio afterwards would run work nobody is waiting on. The
+   * timeout removes its own entry; this is the second line, for any path that
+   * ever leaves one behind.
+   */
+  private takeQueued(session: Session): Command | undefined {
+    for (let next = session.queue.shift(); next !== undefined; next = session.queue.shift()) {
+      if (session.pending.has(next.id)) return next;
+    }
+    return undefined;
+  }
+
   /** Hands any queued commands to a stream that just (re)connected. */
   private flush(session: Session): void {
     if (!session.stream || session.stream.writableEnded) return;
-    for (const command of session.queue.splice(0)) {
+    for (let command = this.takeQueued(session); command !== undefined; command = this.takeQueued(session)) {
       session.stream.write(sseFrame(command));
     }
   }

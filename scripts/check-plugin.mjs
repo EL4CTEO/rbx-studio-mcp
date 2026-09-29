@@ -136,6 +136,60 @@ const kindless = new Set();
   }
 }
 
+/*
+ * A module cloned into a client relay has to bring everything it requires.
+ *
+ * The relay is a LocalScript in the player's client VM, where the plugin's own
+ * module tree does not exist, so `require(script.Parent.X)` inside a cloned module
+ * finds only what was cloned beside it. ExecRuntime gained a `LogBuffer` require
+ * and the list of modules the exec relay clones did not, so every
+ * `execute_luau target="client"` failed with "Requested module experienced an
+ * error while loading" -- from a client VM nothing offline ever runs, and not
+ * noticed until a live playtest. Each clone list is checked here against the
+ * `require(script.Parent.X)` calls of the modules it names, transitively.
+ */
+const missingClones = [];
+{
+  const modules = new Map(
+    files.map((file) => [
+      file.replace(/\\/g, "/").replace(/^.*plugin\/src\//, "").replace(/\.luau$/, ""),
+      readFileSync(file, "utf8"),
+    ]),
+  );
+  const requiresOf = (name) =>
+    [...(modules.get(name) ?? "").matchAll(/require\(script\.Parent\.(\w+)\)/g)].map((m) => m[1]);
+
+  for (const [where, source] of modules) {
+    for (const list of source.matchAll(
+      /for _, name in \{([^}]*)\} do\s*local copy = script\.Parent\.Parent\[name\]:Clone\(\)/g,
+    )) {
+      const cloned = new Set([...list[1].matchAll(/"(\w+)"/g)].map((m) => m[1]));
+      const needed = new Set();
+      const pending = [...cloned];
+      while (pending.length > 0) {
+        for (const dependency of requiresOf(pending.pop())) {
+          if (!needed.has(dependency)) {
+            needed.add(dependency);
+            pending.push(dependency);
+          }
+        }
+      }
+      for (const dependency of needed) {
+        if (!cloned.has(dependency)) {
+          missingClones.push(`${where}: clones ${[...cloned].join(", ")} but they require ${dependency}`);
+        }
+      }
+    }
+  }
+}
+if (missingClones.length > 0) {
+  failures.push(
+    "A client relay clones modules that require others it does not clone, so the " +
+      "relay fails to load in the client VM:\n  " +
+      missingClones.sort().join("\n  "),
+  );
+}
+
 if (unnamed.length > 0) {
   failures.push(
     "These operations have no entry in Phrase.luau, so the Studio panel shows " +

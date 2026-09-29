@@ -283,6 +283,50 @@ process.stdout.write("client console schema and cursor forwarding: ok\n");
  process.stdout.write("screenshot scaling: ok\n");
 }
 
+// The PNG writer: every chunk carries the right checksum and the pixels survive.
+// A wrong CRC still yields a file, and a file every decoder refuses with no hint
+// which byte was at fault -- so the checksums are recomputed here by a separate
+// implementation rather than by the one under test.
+{
+ const { encodePng } = await import("../dist/lib/png.js");
+ const { inflateSync } = await import("node:zlib");
+ const table = new Int32Array(256).map((_, n) => {
+  let c = n;
+  for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+  return c;
+ });
+ const reference = (bytes) => {
+  let c = -1;
+  for (const byte of bytes) c = table[(c ^ byte) & 0xff] ^ (c >>> 8);
+  return (c ^ -1) >>> 0;
+ };
+ const width = 3, height = 2;
+ const rgb = Buffer.from([255,0,0, 0,255,0, 0,0,255,  10,20,30, 40,50,60, 70,80,90]);
+ const png = encodePng(rgb, width, height);
+ assert.deepEqual([...png.subarray(0, 8)], [0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a], "PNG signature");
+ let offset = 8, idat;
+ const kinds = [];
+ while (offset < png.length) {
+  const length = png.readUInt32BE(offset);
+  const kind = png.toString("ascii", offset + 4, offset + 8);
+  assert.equal(png.readUInt32BE(offset + 8 + length), reference(png.subarray(offset + 4, offset + 8 + length)), `${kind} checksum`);
+  if (kind === "IHDR") {
+   assert.equal(png.readUInt32BE(offset + 8), width, "IHDR width");
+   assert.equal(png.readUInt32BE(offset + 12), height, "IHDR height");
+  }
+  if (kind === "IDAT") idat = png.subarray(offset + 8, offset + 8 + length);
+  kinds.push(kind);
+  offset += 12 + length;
+ }
+ assert.deepEqual(kinds, ["IHDR", "IDAT", "IEND"]);
+ const raw = inflateSync(idat);
+ assert.equal(raw.length, (width * 3 + 1) * height, "one filter byte per row");
+ assert.deepEqual([...raw.subarray(1, 10)], [...rgb.subarray(0, 9)], "first row survives");
+ assert.deepEqual([...raw.subarray(11)], [...rgb.subarray(9)], "second row survives");
+ assert.throws(() => encodePng(Buffer.alloc(5), 2, 2), /short of the 12 needed/, "short pixel data is refused");
+ process.stdout.write("png encoding: ok\n");
+}
+
 // scene: a category of bare counts renders on one line; owned entries keep theirs.
 {
  const perf = registered.get("performance");

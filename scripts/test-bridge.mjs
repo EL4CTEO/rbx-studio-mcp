@@ -273,16 +273,99 @@ function twoStudios() {
   bridge.setActiveForAll("studio-b");
   const late = new LocalBridge(bridge);
   assert.equal((await late.sessions()).activeId, "studio-b");
-  await late.call("studio.ping", {}, { timeoutMs: 50 }).catch((cause) => {
-    assert.notEqual(cause.code, "AMBIGUOUS_STUDIO", "the user's pick routes the call");
-  });
+  const routed = late.call("studio.ping", {}, { timeoutMs: 50 });
+  // Read while the call is outstanding: once it times out the command is taken
+  // back off the queue, so the queue is only evidence of routing until then.
   assert.equal(bridge.sessions.get("studio-b").queue.length, 1, "the call went to the pick");
+  assert.equal(bridge.sessions.get("studio-a").queue.length, 0, "and not to the other one");
+  await assert.rejects(
+    routed,
+    (cause) => cause.code === "TIMEOUT",
+    "the user's pick routes the call, so it fails by timing out and not as ambiguous",
+  );
 
   await assert.rejects(
     async () => late.call("studio.ping", {}, { studioId: "gone", timeoutMs: 50 }),
     (cause) => cause.code === "UNKNOWN_STUDIO",
     "an unknown studioId is not reported as no Studio at all",
   );
+}
+
+/**
+ * A call that has timed out must not be run afterwards.
+ *
+ * The timeout answered the agent with a failure and dropped the request from the
+ * in-flight table, but left the command on the queue. The plugin's next poll --
+ * or the next stream to connect -- then picked it up and ran it: a create or a
+ * delete nobody was waiting for any more, usually after the agent had retried it.
+ */
+{
+  const bridge = new Bridge();
+  bridge.attach(identity("studio-a", 111), null);
+
+  await assert.rejects(
+    bridge.call("studio.ping", {}, { clientId: "c", timeoutMs: 20 }),
+    (cause) => cause.code === "TIMEOUT" && /never reached Studio/.test(cause.message),
+    "nothing collected it, and the error says so",
+  );
+  assert.equal(bridge.sessions.get("studio-a").queue.length, 0, "the abandoned command is gone");
+
+  // A poll arriving now has nothing to take, rather than the command that failed.
+  const held = new AbortController();
+  const waiting = bridge.waitForCommand("studio-a", held.signal);
+  setTimeout(() => held.abort(), 20);
+  assert.equal(await waiting, null, "a later poll is not handed the dead command");
+
+  // The same for a stream that connects after the deadline: nothing to flush.
+  const written = [];
+  const stream = {
+    writableEnded: false,
+    write(chunk) {
+      written.push(chunk);
+      return true;
+    },
+    end() {
+      this.writableEnded = true;
+    },
+  };
+  bridge.attach(identity("studio-a", 111), stream);
+  assert.deepEqual(written, [], "a reconnecting stream is not sent the dead command");
+
+  // And a live one is still delivered, so the queue is not simply being dropped.
+  const live = bridge.call("studio.ping", {}, { clientId: "c", timeoutMs: 1000 });
+  assert.equal(written.length, 1, "a command issued to an open stream is written at once");
+  const frame = JSON.parse(written[0].replace(/^data: /, ""));
+  bridge.settle("studio-a", { id: frame.id, ok: true, data: "pong" });
+  assert.equal(await live, "pong");
+}
+
+/**
+ * `call` returns a promise, so every way it can fail is a rejection.
+ *
+ * NO_STUDIO and UNKNOWN_STUDIO used to be thrown from inside `call`, before a
+ * promise existed. `bridge.call(...).catch(...)` -- how `playtest stop` shrugs
+ * off a session that closed under it -- never got the chance to catch them.
+ */
+{
+  const bridge = new Bridge();
+  let pending;
+  assert.doesNotThrow(() => {
+    pending = bridge.call("studio.ping", {}, { clientId: "c" });
+  }, "no Studio connected does not throw synchronously");
+  await assert.rejects(pending, (cause) => cause.code === "NO_STUDIO");
+
+  bridge.attach(identity("studio-a", 111), null);
+  assert.doesNotThrow(() => {
+    pending = bridge.call("studio.ping", {}, { clientId: "c", timeoutMs: -1 });
+  }, "a bad timeout does not throw synchronously");
+  await assert.rejects(pending, (cause) => cause.code === "BAD_TIMEOUT");
+
+  const local = new LocalBridge(bridge);
+  let caught = false;
+  await local.call("studio.ping", {}, { studioId: "gone" }).catch(() => {
+    caught = true;
+  });
+  assert.equal(caught, true, "a `.catch` on the local bridge sees an unknown Studio");
 }
 
 // A stream that dies without /bye (a crashed Studio) removes its session, and a
@@ -313,6 +396,28 @@ function twoStudios() {
     (await (await fetch(`http://127.0.0.1:${port}/sessions`, { headers: { "x-roblox-studio-mcp": "test" } })).json())
       .list.length;
   const settle = () => new Promise((resolve) => setTimeout(resolve, 250));
+
+  // A page that rebinds its own hostname to 127.0.0.1 is same-origin as far as
+  // the browser is concerned: it can send the custom header without a preflight,
+  // and a same-origin GET carries no Origin to reject. What it cannot do is make
+  // the Host header say 127.0.0.1, so that is what is checked.
+  const statusFor = (host) =>
+    new Promise((resolve, reject) => {
+      const req = request(
+        { host: "127.0.0.1", port, path: "/sessions", method: "GET", headers: { host, "x-roblox-studio-mcp": "test" } },
+        (res) => {
+          res.resume();
+          resolve(res.statusCode);
+        },
+      );
+      req.on("error", reject);
+      req.end();
+    });
+  assert.equal(await statusFor(`127.0.0.1:${port}`), 200, "the address the plugin uses is served");
+  assert.equal(await statusFor(`localhost:${port}`), 200, "and so is localhost");
+  assert.equal(await statusFor(`evil.example:${port}`), 403, "a rebound hostname is refused");
+  assert.equal(await statusFor(`127.0.0.1.evil.example:${port}`), 403, "even one that merely starts like loopback");
+  assert.equal(await statusFor("127.0.0.1"), 403, "and a Host that names no port is not this server");
 
   const first = await open();
   const second = await open();
@@ -432,7 +537,9 @@ function twoStudios() {
   }
   const before = delays.length;
   for (const timeoutMs of [NaN, Infinity, -Infinity, -1, 0, null, "1000", {}, 2 ** 31, Number.MAX_SAFE_INTEGER]) {
-   assert.throws(() => bridge.call("studio.ping", {}, {clientId:"test",timeoutMs}), {code:"BAD_TIMEOUT"});
+   // A rejection rather than a throw: `call` returns a promise, so a caller's
+   // `.catch` has to be able to see this one too.
+   await assert.rejects(bridge.call("studio.ping", {}, {clientId:"test",timeoutMs}), {code:"BAD_TIMEOUT"});
   }
   assert.equal(delays.length, before, "invalid deadlines never create timers");
   assert.equal(bridge.sessions.get("timeout-test").pending.size, 0);

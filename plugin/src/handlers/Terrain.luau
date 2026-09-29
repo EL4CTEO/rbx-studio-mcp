@@ -130,6 +130,16 @@ end
 	something smaller.
 ]]
 local function guard(size: Vector3, what: string)
+	-- An empty extent is not a small fill, it is no fill: the engine raised
+	-- "Extents cannot be empty" from inside the recording, and that came back as
+	-- an unstructured HANDLER_ERROR with no hint which side was zero.
+	if size.X <= 0 or size.Y <= 0 or size.Z <= 0 then
+		Dispatch.fail(
+			"BAD_PARAMS",
+			string.format("%s has a size of %s, which is empty.", what, tostring(size)),
+			"Every side of the size has to be greater than zero."
+		)
+	end
 	local voxels = math.ceil(size.X / RESOLUTION)
 		* math.ceil(size.Y / RESOLUTION)
 		* math.ceil(size.Z / RESOLUTION)
