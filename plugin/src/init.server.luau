@@ -13,7 +13,6 @@ local Selection = game:GetService("Selection")
 
 local Commands = require(script.Commands)
 local Config = require(script.Config)
-local Context = require(script.Context)
 local Console = require(script.Console)
 local Dispatch = require(script.Dispatch)
 local History = require(script.History)
@@ -45,6 +44,7 @@ local Device = require(script.handlers.Device)
 local Data = require(script.handlers.Data)
 local Api = require(script.handlers.Api)
 local Scripts = require(script.handlers.Scripts)
+local Sync = require(script.handlers.Sync)
 local Session = require(script.handlers.Session)
 
 local SETTING_PORT = "port"
@@ -91,7 +91,6 @@ local TRACE_LIMIT = 24
 	reload, so ghost entries do not accumulate.
 ]]
 local SESSION_ID = HttpService:GenerateGUID(false)
-Context.setup(SESSION_ID)
 
 local function studioId(): string
 	return SESSION_ID
@@ -198,6 +197,7 @@ Audio.register()
 Exec.register()
 Viewport.register()
 Scripts.register()
+Sync.register()
 Input.register()
 Device.register()
 Data.register()
@@ -582,6 +582,12 @@ Commands.setup({
 
 Console.setPromptChat(chat)
 
+-- Sync reports what it changed in the log; handed a function rather than the
+-- console itself, for the same reason `Commands` is.
+Sync.setup(function(level, message, detail)
+	Console.log(level :: any, message, detail)
+end)
+
 -- The saved preset, now that there is something to paint. Done immediately
 -- after mounting and before the first line is logged, so nothing is ever drawn
 -- in the wrong palette.
@@ -757,7 +763,30 @@ end
 	and any `*Async` call does -- and serialising them would let one slow edit
 	stall every other request on the stream.
 ]]
+--[[
+	Commands that run without a line in the log.
+
+	`sync watch` asks what changed twice a second for as long as it runs, and
+	`sync.log` exists to print a line of its own. Logging either call would bury
+	everything else the panel shows under a heartbeat nobody needs to see.
+]]
+local QUIET: { [string]: boolean } = {
+	["sync.changes"] = true,
+	["sync.log"] = true,
+	["sync.shape"] = true,
+	["sync.revisions"] = true,
+}
+
 local function onCommand(id: string, op: string, params: { [string]: any }?, deadlineMs: number?)
+	-- A sync op can also ask to be quiet: `watch` runs the same scans a manual
+	-- sync does, and logging each would print a heartbeat. What a watch
+	-- actually changes is still logged, by `sync.apply` and `sync.log`.
+	if QUIET[op] or (string.sub(op, 1, 5) == "sync." and params ~= nil and params.quiet == true) then
+		task.spawn(function()
+			Transport.sendResult(Dispatch.invoke(id, op, params, deadlineMs))
+		end)
+		return
+	end
 	task.spawn(function()
 		local startedAt = os.clock()
 		--[[
@@ -915,7 +944,6 @@ end)
 
 plugin.Unloading:Connect(function()
 	ClientRelay.stopDiagnostics()
-	Context.cleanup()
 	Transport.stop()
 end)
 

@@ -102,10 +102,9 @@ async function playtestShot(
   rect?: string,
   player?: string,
 ): Promise<ScreenshotResponse> {
-  const editors = sessions.filter((session) => !isPlaytest(session) &&
-    (playtest.editorStudioId ? session.studioId === playtest.editorStudioId : session.placeId === playtest.placeId));
-  const runtimes = sessions.filter((session) => isPlaytest(session) && session.placeId === playtest.placeId);
-  const editor = editors.length === 1 && (playtest.editorStudioId || runtimes.length === 1) ? editors[0] : undefined;
+  const editor = sessions.find(
+    (session) => session.placeId === playtest.placeId && !isPlaytest(session),
+  );
   if (editor === undefined) {
     throw new ToolError(
       "NO_EDITOR_SESSION",
@@ -185,7 +184,10 @@ export function registerScreenshotTools(context: ToolContext): void {
               "earlier screenshot using the scale its caption states.",
           ),
         studioId: z.string().optional().describe("Target Studio; omit for the active one."),
-        player: z.string().optional().describe("Playtest player name; required with multiple players."),
+        player: z
+          .string()
+          .optional()
+          .describe("Playtest only: whose screen to capture. Required when the test has several players."),
       },
       readOnly: true,
     },

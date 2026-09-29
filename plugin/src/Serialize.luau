@@ -413,7 +413,22 @@ function Serialize.parse(text: any, valueType: string): (boolean, any, string?)
 		end
 		-- 0-255 is a common mistake and unambiguous to detect, so accept it.
 		local scale = if numbers[1] > 1 or numbers[2] > 1 or numbers[3] > 1 then 255 else 1
-		return true, Color3.new(numbers[1] / scale, numbers[2] / scale, numbers[3] / scale), nil
+		--[[
+			Snapped back to an exact 1/255 step when the text is that step
+			rounded to PRECISION places.
+
+			Part colours are stored as bytes. "0.7686" is how 196/255 prints,
+			but it is a hair under it, and the engine truncates on the way in
+			-- so a colour read and written back came out as 195, one step
+			darker each round trip. A value genuinely between steps, like 0.5,
+			is further than half a printed digit from one and is left alone.
+		]]
+		local function component(value: number): number
+			local unit = value / scale
+			local step = math.round(unit * 255) / 255
+			return if math.abs(unit - step) <= 0.5 * 10 ^ -PRECISION then step else unit
+		end
+		return true, Color3.new(component(numbers[1]), component(numbers[2]), component(numbers[3])), nil
 	end
 	if valueType == "BrickColor" then
 		-- Cast because the API definitions type this overload as a literal union

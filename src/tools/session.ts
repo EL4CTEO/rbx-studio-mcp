@@ -233,8 +233,6 @@ export function registerSessionTools(context: ToolContext): void {
         {
           studios: sessions.map((session, index) => ({
             studioId: session.studioId,
-            editorStudioId: session.editorStudioId,
-            testId: session.testId,
             ...detail[index],
             placeId: session.placeId,
             connectedAt: new Date(session.connectedAt).toISOString(),

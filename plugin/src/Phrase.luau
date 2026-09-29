@@ -91,6 +91,42 @@ type Describer = (params: { [string]: any }) -> string
 	playtest is about a mode, a find is about what was searched for.
 ]]
 local DESCRIBERS: { [string]: Describer } = {
+	["sync.scan"] = function(params)
+		return if params.revisions == false then "Check script layout for sync" else "Scan scripts for sync"
+	end,
+	["sync.read"] = function(params)
+		return "Read " .. subjectOf(params.paths, "script") .. " for sync"
+	end,
+	["sync.apply"] = function(params)
+		local total = count(params.writes) + count(params.creates) + count(params.deletes) + count(params.moves)
+		return string.format("Sync %d change%s from files", total, if total == 1 then "" else "s")
+	end,
+	["sync.shape"] = function()
+		return "Check script layout for sync"
+	end,
+	["sync.revisions"] = function()
+		return "Check script revisions"
+	end,
+	["sync.changes"] = function()
+		return "Check for script changes"
+	end,
+	["sync.stop"] = function()
+		return "Stop sync tracking"
+	end,
+	["sync.log"] = function()
+		return "Sync note"
+	end,
+	["sync.classes"] = function(params)
+		return "List classes in " .. (leaf(params.path) or "tree")
+	end,
+	["sync.export"] = function(params)
+		return "Export " .. (leaf(params.path) or "tree") .. " to a build file"
+	end,
+	["sync.build"] = function(params)
+		local spec = params.spec
+		local name = if typeof(spec) == "table" then spec.name or spec.className else nil
+		return "Build " .. tostring(name or "tree") .. " from a build file"
+	end,
 	["script.read"] = function(params)
 		return "Read " .. subjectOf(params.paths, "script")
 	end,
@@ -756,6 +792,8 @@ local KINDS: { [string]: string } = {
 	terrain = "write",
 	generate = "write",
 	data = "write",
+	-- Applies files to the place; the reads inside the group are carved out below.
+	sync = "write",
 }
 
 function Phrase.kindOf(op: string): string
@@ -768,6 +806,9 @@ function Phrase.kindOf(op: string): string
 	end
 	-- Same shape as the script group: one read sitting among writes.
 	if op == "audio.inspect" then
+		return "read"
+	end
+	if op == "sync.scan" or op == "sync.shape" or op == "sync.revisions" or op == "sync.read" or op == "sync.changes" or op == "sync.classes" or op == "sync.export" then
 		return "read"
 	end
 	return KINDS[group] or "read"

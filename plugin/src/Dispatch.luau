@@ -18,17 +18,39 @@ export type Error = {
 export type Handler = (params: { [string]: any }) -> any
 
 local handlers: { [string]: Handler } = {}
+
+--[[
+	When the server stops waiting for each running command, keyed by the
+	command's thread.
+
+	The server drops a timed-out command it has not delivered yet, but one
+	already delivered can still be sitting behind the mutation lock, or behind
+	a slow editor write. Starting it then does work nobody will hear about --
+	and the agent, told "timed out", may be retrying it at that moment. So the
+	deadline travels with the command and is checked where work would begin.
+
+	Both clocks are this machine's, so there is no skew to allow for. Weak keys,
+	so a thread that dies mid-command does not leave its entry behind.
+]]
 local deadlines: { [thread]: number } = setmetatable({}, { __mode = "k" }) :: any
 
 function Dispatch.deadline(): number?
 	return deadlines[coroutine.running()]
 end
 
+--[[
+	Refuses to go on once the command's deadline has passed. Pass the deadline
+	explicitly from code that runs on another thread -- an engine callback, or
+	a spawned task -- which the table above cannot see.
+]]
 function Dispatch.checkDeadline(explicit: number?)
 	local deadline = explicit or Dispatch.deadline()
 	if deadline and DateTime.now().UnixTimestampMillis >= deadline then
-		Dispatch.fail("DEADLINE_EXPIRED", "The request expired before this mutation began; nothing further was written.",
-			"Verify the current state before retrying a mutation.")
+		Dispatch.fail(
+			"DEADLINE_EXPIRED",
+			"The request timed out before Studio started this step, so it was not done.",
+			"Earlier steps of the same request may have applied. Check the current state before retrying."
+		)
 	end
 end
 

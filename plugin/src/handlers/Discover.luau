@@ -172,18 +172,7 @@ function Discover.tree(params: { [string]: any }): { [string]: any }
 	local items: { { [string]: any } } = {}
 	local memo: Paths.NameIndex = {}
 	for index = offset + 1, math.min(offset + limit, #matched) do
-		local instance = matched[index] :: Instance
-		local entry = summarise(instance, memo)
-		if typeof(params.properties) == "table" then
-			local properties, unreadable = {}, {}
-			for _, name in params.properties do
-				local ok, value = Serialize.readProperty(instance, name)
-				if ok then properties[name] = value else table.insert(unreadable, name) end
-			end
-			entry.properties = properties
-			if #unreadable > 0 then entry.unreadable = unreadable end
-		end
-		table.insert(items, entry)
+		table.insert(items, summarise(matched[index] :: Instance, memo))
 	end
 
 	return {
@@ -671,10 +660,40 @@ function Discover.find(params: { [string]: any }): { [string]: any }
 
 	stableOrder(matched)
 
+	--[[
+		`properties` reads named properties onto each row returned.
+
+		The usual follow-up to a find is an inspect of every match for the one or
+		two values that decide what to do with it -- a call per row, or one wide
+		call returning every property. Projecting just those names here makes it
+		one call returning what was asked. Names that cannot be read on a row are
+		listed on that row, since a class that lacks the property is an answer too.
+	]]
+	local projected = params.properties
+	if projected ~= nil and (typeof(projected) ~= "table" or #projected > 16) then
+		Dispatch.fail("BAD_PARAMS", "`properties` must be a list of at most 16 property names.")
+	end
+
 	local items: { { [string]: any } } = {}
 	local memo: Paths.NameIndex = {}
 	for index = offset + 1, math.min(offset + limit, #matched) do
-		table.insert(items, summarise(matched[index] :: Instance, memo))
+		local instance = matched[index] :: Instance
+		local entry = summarise(instance, memo)
+		if projected ~= nil then
+			local values: { [string]: any } = {}
+			local unreadable: { string } = {}
+			for _, name in projected do
+				local ok, value = Serialize.readProperty(instance, tostring(name))
+				if ok then
+					values[tostring(name)] = value
+				else
+					table.insert(unreadable, tostring(name))
+				end
+			end
+			entry.properties = values
+			entry.unreadable = if #unreadable > 0 then unreadable else nil
+		end
+		table.insert(items, entry)
 	end
 
 	return {

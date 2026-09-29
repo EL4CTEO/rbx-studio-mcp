@@ -21,6 +21,8 @@ local Scope = {isNoisy = function() return false end}
 local ScriptEdit = {
  read = function(node) reads += 1; return node.Source end,
  isScript = function(node) return node:IsA("LuaSourceContainer") end,
+ fingerprint = function(source) return string.format("%x-%x", #source, (string.byte(source, 1) or 0)) end,
+ revisionOf = function(node, source) local text = source or node.Source; return string.format("%x-%x", #text, (string.byte(text, 1) or 0)) end,
  write = function(node, transform)
   writes += 1
   if beforeWrite then beforeWrite(node, writes) end

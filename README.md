@@ -1,6 +1,6 @@
 # Roblox Studio MCP
 
-Let an AI agent drive Roblox Studio: read your place, edit scripts, build geometry, run playtests, take screenshots. 34 tools. MIT.
+Let an AI agent drive Roblox Studio: read your place, edit scripts, build geometry, run playtests, take screenshots. 35 tools. MIT.
 
 ![The Studio MCP panel](docs/rbx-studio.png)
 
@@ -71,7 +71,7 @@ Port is **44755**, loopback only. Change it with `--port` and match it in the pl
 |---|---|
 | **Session** | `studio_status` `list_studios` `set_active_studio` |
 | **Discover** | `tree` `inspect` `find` `api` |
-| **Scripts** | `script_read` `script_edit` `script_grep` `script_create` |
+| **Scripts** | `script_read` `script_edit` `script_grep` `script_create` `sync` |
 | **Instances** | `create` `modify` `delete` `move` |
 | **World** | `geometry` `terrain` `generate` `assets` `collision` `audio` `undo` |
 | **Data & live game** | `datastore` `universe` |
@@ -79,6 +79,23 @@ Port is **44755**, loopback only. Change it with `--port` and match it in the pl
 | **Look** | `screenshot` `viewport` `device` |
 
 Write tools take arrays — ten script edits is one call, one **Ctrl+Z**, and all-or-nothing.
+
+## Work on files
+
+`sync` mirrors your scripts into a folder, so an agent can edit code with its own file tools and use Studio to test.
+
+```
+sync op="pull"      # Studio -> ./studio
+sync op="push"      # ./studio -> Studio
+sync op="watch"     # both ways, live, until op="stop"
+```
+
+- Rojo-style layout: `Main.server.luau`, `.client.luau`, `.luau`; a script with children is a folder with `init`.
+- Rename or move a file and the script moves with it, keeping its attributes and references.
+- Edited on both sides? It's a conflict and neither side is touched. Studio's version waits in `.rbx-sync/conflicts/`; merge into the file and sync again, or pass `prefer: "studio"` / `"disk"`.
+- Deleting a file deletes the script (one Ctrl+Z). A script deleted in Studio sends its file to `.rbx-sync/trash`.
+- `export` writes UI or any instance tree as a `.build.json` file; edit it and `build` rebuilds it, keeping its scripts. Edits made in Studio flow back into the file.
+- `watch` only works when something changes: about 0.5s each way, even with 2,000 scripts. Conflicts show up in the agent's next reply.
 
 ## Open Cloud
 
@@ -105,16 +122,6 @@ cloud place <place id>
 `cloud place` works out the universe for you. The typed key is masked in the log and in the history, and stored at `~/.rbx-studio-mcp/credentials.json` (mode 0600) — never in the place file, never in the conversation. `cloud` shows what is set, `cloud test` re-checks it, `cloud forget` deletes it. `ROBLOX_API_KEY` and friends in the environment work too and take priority.
 
 Two things to watch: a playtest connects a second session, so pass `studioId` and use the edit one for changes that must last; `device` emulation stays on until `device op="stop"`.
-
-### Agent workflows in 0.8.5
-
-- Search several identifiers in one scan: `script_grep patterns=["PlayerAdded", "FireServer"]`. `mode="files"` lists matching scripts; `mode="counts"` gives matching-line counts per needle. Line results carry revisions and merge overlapping context.
-- Pass a script's revision from `script_read` or `script_grep` back to `script_edit`. The editor callback also checks the prepared source before committing. Edits use per-document undo; failed batches attempt conditional compensation and report conflicts as `PARTIAL_EDIT`. Read unresolved scripts before retrying.
-- Use `find properties=["Anchored", "CanCollide"]` to return only the properties you need alongside each match, without an extra inspect call.
-- Start tests from the editor ID. `playtest` returns `editorStudioId` and `runtimeStudioId`; use the runtime ID for game diagnostics. `waitFor="ready"` waits for players and client diagnostic relays, not game initialization. `waitFor="completed"` waits for `StudioTestService:EndTest(value)` and returns its result from the editor. `waitSeconds` is 0–30 (default 6); incomplete waits return state with `waitTimedOut=true`. Multiplayer screenshots require `player`.
-- Use `console mode="drain"` and return `nextCursor` as `since` to consume a busy log without skipping unshown matches. Keep filters unchanged. Default `tail` selects the newest entries and advances to the latest watermark. `group=true` collapses repeated selected entries with counts and timestamps. Late stacks return as updates.
-
-Use paths returned by tools: literal dots, brackets and backslashes in names are escaped (for example `Workspace.A\.B` addresses an instance named `A.B`). A bare duplicate name is refused; indexed paths can shift after structural changes. Large results are bounded, with continuation or explicit truncation instead of silent loss. A delivered mutation may finish after a timeout/disconnect: inspect its outcome before retrying. Update the Studio plugin together with the server to use these behaviors.
 
 ## The console panel
 
@@ -181,7 +188,7 @@ npm test
 
 Needs `luau`, `luau-compile` and `luau-analyze` from [the Luau releases](https://github.com/luau-lang/luau/releases) on `PATH` or in `tools/`.
 
-With Studio open and the plugin loaded, `node scripts/test-live.mjs` checks the transport and `node scripts/test-live-tools.mjs [--playtest]` runs every tool. Both clean up after themselves.
+With Studio open and the plugin loaded, `node scripts/test-live.mjs` checks the transport and `node scripts/test-live-tools.mjs [--playtest]` runs every tool, `node scripts/test-live-sync.mjs` checks `sync`, and `node scripts/test-live-sync-scale.mjs` times it on 2,000 scripts. All clean up after themselves.
 
 ## Licence
 

@@ -2,25 +2,24 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
-## 0.8.5
+## 0.8.6
 
-### Changed
-- `script_edit` checks source again inside the editor write callback, serializes mutation batches, and compensates failed writes only when their source has not changed again. `PARTIAL_EDIT` identifies unresolved scripts instead of silently claiming rollback. Script undo remains per document.
-- Mutation recordings refuse with `UNDO_UNAVAILABLE` when Studio cannot provide independent undo. Expired queued mutations are checked before work begins; timeout/disconnect guidance tells agents to verify delivered changes before retrying.
-- `playtest` pairs MCP-started runtime sessions with their originating editor. Stop, add-player and screenshot routing refuse ambiguous pairs instead of selecting another window. Replies distinguish editor/runtime IDs and report runtime state.
-- `playtest waitFor="ready"` waits for runtime, players and client diagnostic relays; `waitFor="completed"` collects an `EndTest` result from the editor. `waitSeconds` bounds the wait (default 6, maximum 30). Readiness does not promise game initialization. Multiplayer screenshots require `player`.
-- `script_grep` accepts 1–16 literal `patterns` in one scan, with `mode="lines"`, `"files"` or `"counts"`. It includes a script used as the search root, returns revisions, groups by script and merges overlapping context. Counts mean matching lines per needle.
-- `find properties=[...]` projects selected properties on matching instances, avoiding a second inspect call; unreadable names are reported.
-- `console mode="drain"` returns oldest unread matches with continuation through consumed entries; the default `tail` retains its latest-watermark behavior. `group=true` collapses identical selected entries with counts and first/last times. Keep filters unchanged while draining.
-- Search/list cursors advance through rows actually shown when a response budget clips a page. Large structured results remain valid JSON with explicit truncation. Execution results use global node/string budgets across all returns and report omitted output/returns.
-- Shorter descriptions for the largest tool schemas. Still 34 tools, with no AI/API dependency added and no server VM execution capability.
+### Added
+- `sync`: work on scripts as files. Pull, push, two-way sync, or live `watch` between Studio and a folder (Rojo-style layout). Renames keep the same script; edits on both sides become conflicts, never overwrites.
+- `sync export` / `build`: UI and other instance trees as editable `.build.json` files, rebuilt in one undo step with their scripts kept.
+- `script_grep`: several `patterns` in one pass, plus `files` and `counts` modes.
+- `find properties=[...]`, `console mode="drain"`, and `screenshot player=`.
 
 ### Fixed
-- Builds remove stale compiler output, preventing previously removed tools from being included in npm packages.
-- Script verification could overwrite newer text while trying to make a write stick.
-- Late error stack traces did not appear after an incremental console cursor. Stack updates now advance their stream sequence and are marked as updates.
-- `debug clear` without a path removes only MCP-tracked breakpoints; unsuccessful removals remain tracked. Clearing returned snapshots preserves older unread snapshots and pre-clear counts.
-- Same-named siblings now use consistent ordering for path emission/resolution. Bare duplicate names are refused. Literal dots, brackets and backslashes are escaped in emitted paths; use those returned paths instead of ambiguous handwritten names.
+- `script_edit` never overwrites text typed while it writes.
+- A timed-out request no longer runs late in Studio.
+- Paging could skip or repeat rows; `Part[2]` could change meaning between calls.
+- `debug clear` only removes the MCP's breakpoints.
+- Colours read and written back no longer drift darker.
+
+## 0.8.5
+
+Withdrawn; replaced by 0.8.6.
 
 ## 0.8.4
 

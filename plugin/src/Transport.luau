@@ -26,6 +26,8 @@ local Transport = {}
 export type Status = "disconnected" | "connecting" | "connected"
 
 type Callbacks = {
+	-- `deadlineMs` is when the server stops waiting for the reply, on this
+	-- machine's clock: the server sends a duration, never a time (see Command.timeoutMs).
 	onCommand: (id: string, op: string, params: { [string]: any }?, deadlineMs: number?) -> (),
 	onStatus: (status: Status, detail: string?) -> (),
 	--[[
@@ -97,8 +99,6 @@ local function identity(transport: string): { [string]: any }
 		-- with the same place name is raised before any such call could have
 		-- run, so without this it lists them with nothing to choose between.
 		context = Context.of(),
-		editorStudioId = Context.editorId(),
-		testId = Context.testId(),
 	}
 end
 
@@ -245,7 +245,8 @@ local function handleFrame(callbacks: Callbacks, frame: { [string]: any })
 	local id = frame.id
 	local op = frame.op
 	if typeof(id) == "string" and typeof(op) == "string" then
-		callbacks.onCommand(id, op, frame.params, if typeof(frame.deadlineMs) == "number" then frame.deadlineMs else nil)
+		local deadline = if typeof(frame.timeoutMs) == "number" then DateTime.now().UnixTimestampMillis + frame.timeoutMs else nil
+		callbacks.onCommand(id, op, frame.params, deadline)
 		return
 	end
 	if typeof(frame.event) == "string" then

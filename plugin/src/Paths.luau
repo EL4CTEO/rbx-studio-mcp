@@ -18,19 +18,9 @@ local Paths = {}
 ]]
 function Paths.split(path: string): { string }
 	local segments: { string } = {}
-	local current = ""
-	local escaped = false
-	for index = 1, #path do
-		local char = string.sub(path, index, index)
-		if char == "." and not escaped then
-			if current ~= "" then table.insert(segments, current) end
-			current = ""
-		else
-			current ..= char
-		end
-		if char == "\\" and not escaped then escaped = true else escaped = false end
+	for segment in string.gmatch(path, "[^%.]+") do
+		table.insert(segments, segment)
 	end
-	if current ~= "" then table.insert(segments, current) end
 	if segments[1] == "game" then
 		table.remove(segments, 1)
 	end
@@ -49,9 +39,9 @@ end
 local function parseSegment(segment: string): (string, number?)
 	local name, index = string.match(segment, "^(.*)%[(%d+)%]$")
 	if name and index then
-		return (name:gsub("\\(.)", "%1")), tonumber(index)
+		return name, tonumber(index)
 	end
-	return (segment:gsub("\\(.)", "%1")), nil
+	return segment, nil
 end
 
 export type NameIndex = { [Instance]: { [string]: { Instance } } }
@@ -76,13 +66,38 @@ local function childrenByName(parent: Instance, memo: NameIndex?): { [string]: {
 		end
 		table.insert(list, child)
 	end
-	-- Ordinals must use the same ordering in reads and writes, rather than the
-	-- engine's unspecified GetChildren order.
+
+	--[[
+		Same-named siblings put into a fixed order.
+
+		`GetChildren` does not return a stable order (see `stableOrder` in
+		Discover), so `Part[2]` could name a different part on the call that
+		reads the path back than on the one that printed it. The engine's debug
+		id is fixed for an instance's lifetime, which makes it the tiebreak.
+
+		Guarded, because this module also runs in the client relay, where
+		`GetDebugId` is not callable -- there the order is simply the engine's,
+		as it always was, rather than an error on every path.
+	]]
 	for _, list in byName do
 		if #list > 1 then
 			local ids: { [Instance]: string } = {}
-			for _, child in list do ids[child] = child:GetDebugId() end
-			table.sort(list, function(a, b) return ids[a] < ids[b] end)
+			local stable = true
+			for _, child in list do
+				local ok, id = pcall(function()
+					return child:GetDebugId()
+				end)
+				if not ok then
+					stable = false
+					break
+				end
+				ids[child] = id
+			end
+			if stable then
+				table.sort(list, function(a: Instance, b: Instance): boolean
+					return ids[a] < ids[b]
+				end)
+			end
 		end
 	end
 
@@ -170,6 +185,12 @@ local function childBySegment(
 		if child then
 			return child, nil
 		end
+		-- Not an index after all: a child literally named "x[1]". Typed by hand,
+		-- or from a path emitted before `Paths.of` began marking such names.
+		local literal = parent:FindFirstChild(segment)
+		if literal then
+			return literal, nil
+		end
 		if list == nil then
 			return nil, nil
 		end
@@ -194,16 +215,27 @@ local function childBySegment(
 			return service, nil
 		end
 	end
-	local list = childrenByName(parent, nil)[name]
-	if list and #list > 1 then
-		Dispatch.fail("AMBIGUOUS_PATH", string.format('%q has %d children named %q.', parent:GetFullName(), #list, name),
-			"Use an indexed path returned by find or tree; no instance was guessed.")
-	end
-	return if list then list[1] else nil, nil
+	return parent:FindFirstChild(name), nil
 end
 
--- Literal dots, brackets and backslashes are escaped in canonical paths.
--- Never join segments to guess which object a caller intended to edit.
+--[[
+	Resolves a path to an Instance, or raises a NOT_FOUND with the failing
+	segment and its siblings. `FindFirstChild` is used rather than indexing so a
+	missing child never throws a bare Luau error.
+
+	Instance names may contain dots -- "Dr. Simon" is an ordinary name, and so is
+	"v1.2 backup" -- while the separator is a dot too, so such a name arrives
+	here already split into pieces. Each step therefore tries consuming one
+	segment first and rejoins further segments only if that leads nowhere, which
+	means the search has to BACK TRACK: with both "Dr" and "Dr. Who" present,
+	"Workspace.Dr. Who.Head" matches "Dr", fails to find " Who" under it, and
+	must return to try "Dr. Who". A first pass without that backtracking left the
+	tools emitting `Workspace.Dr. Who` as a path and then refusing to read it
+	back, which is worse than either behaviour on its own.
+
+	Shortest-first keeps the old precedence: where a short name resolves the
+	whole remaining path, it still wins over a longer join.
+]]
 function Paths.resolve(path: string): Instance
 	if typeof(path) ~= "string" or path == "" then
 		Dispatch.fail(
@@ -240,10 +272,8 @@ function Paths.resolve(path: string): Instance
 			deepestSegment = nil
 		end
 
-		-- A literal dot must be escaped. Guessing by joining segments could
-		-- direct an edit at A.B instead of child B under A.
-		for last = index, index do
-			local joined = segments[index]
+		for last = index, #segments do
+			local joined = table.concat(segments, ".", index, last)
 			local child, note = childBySegment(current, joined, index == 1)
 			if note and index - 1 == deepest then
 				deepestNote = note
@@ -319,6 +349,14 @@ end
 	The index is positional, so it shifts if same-named siblings are inserted or
 	removed between calls. Read a fresh path after any structural change.
 ]]
+--[[
+	The position among same-named siblings, or nil when the name is unique --
+	the `n` in `Name[n]`. Exposed for `sync`, which names files after it.
+]]
+function Paths.ordinal(instance: Instance, memo: NameIndex?): number?
+	return siblingIndex(instance, memo)
+end
+
 function Paths.of(instance: Instance, memo: NameIndex?): string
 	--[[
 		Refuses anything that is not an Instance, rather than duck-typing it.
@@ -353,11 +391,15 @@ function Paths.of(instance: Instance, memo: NameIndex?): string
 	while current ~= nil and current ~= game do
 		local node = current :: Instance
 		local ordinal = siblingIndex(node, memo)
-		local escapedName = node.Name:gsub("\\", "\\\\"):gsub("%.", "\\."):gsub("%[", "\\["):gsub("%]", "\\]")
+		-- A name that itself ends in "[n]" would read back as an index into a
+		-- shorter name. An explicit index keeps it literal: "x[1][1]".
+		if ordinal == nil and string.match(node.Name, "%[%d+%]$") then
+			ordinal = 1
+		end
 		table.insert(
 			segments,
 			1,
-			if ordinal then string.format("%s[%d]", escapedName, ordinal) else escapedName
+			if ordinal then string.format("%s[%d]", node.Name, ordinal) else node.Name
 		)
 		current = node.Parent
 	end

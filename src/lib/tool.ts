@@ -3,6 +3,7 @@ import { z, type ZodRawShape } from "zod";
 import type { StudioBridge } from "../bridge/api.js";
 import { toToolError } from "./errors.js";
 import { errorText, type ToolResult } from "./format.js";
+import { takeNotices } from "./notices.js";
 
 /** Everything a tool module needs, passed once at registration. */
 export interface ToolContext {
@@ -64,12 +65,17 @@ export function defineTool<Shape extends ZodRawShape>(
       },
     },
     (async (args: ToolArgs<Shape>) => {
+      let result: ToolResult;
       try {
-        return await handler(args);
+        result = await handler(args);
       } catch (cause) {
         const error = toToolError(cause);
-        return errorText(`[${error.code}] ${error.message}`);
+        result = errorText(`[${error.code}] ${error.message}`);
       }
+      // Background news (see notices.ts), on whatever reply goes out next.
+      const notice = takeNotices();
+      if (notice === undefined) return result;
+      return { ...result, content: [...result.content, { type: "text" as const, text: notice }] };
     }) as never,
   );
 }

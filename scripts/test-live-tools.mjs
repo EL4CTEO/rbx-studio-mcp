@@ -138,7 +138,12 @@ try {
   await ok("inspect: named properties", "inspect", { paths: [`${FIXTURE}.A`], properties: ["Name", "Position"] }, /Position/);
   await ok("script_read", "script_read", { paths: [`${FIXTURE}.Mod`] }, /rev [0-9a-f]+/);
   await ok("script_read: a window", "script_read", { paths: [{ path: `${FIXTURE}.Mod`, startLine: 2, endLine: 3 }] }, /lines 2-3 of 5/);
-  await ok("script_grep", "script_grep", { pattern: "add", literal: true, path: FIXTURE }, /Mod:2/);
+  await ok("script_grep", "script_grep", { pattern: "add", literal: true, path: FIXTURE }, /Mod +rev=[0-9a-f]+-[0-9a-f]+\n2: /);
+  await ok("script_grep: patterns", "script_grep", { patterns: ["add", "return"], path: FIXTURE }, /\[patterns 1\]/);
+  await ok("script_grep: counts", "script_grep", { patterns: ["add", "nothing-here"], path: FIXTURE, mode: "counts" }, /"lines": ?0/);
+  await ok("script_grep: files", "script_grep", { pattern: "add", literal: true, path: FIXTURE, mode: "files" }, /Mod \| ModuleScript \| [0-9a-f]+-/);
+  await ok("find: properties", "find", { path: FIXTURE, className: "Part", properties: ["Anchored", "NotAProperty"] }, /"Anchored":\s*true[\s\S]*NotAProperty/);
+  await ok("console: drain", "console", { mode: "drain", limit: 5 }, /nextCursor/);
   await ok("api: describe", "api", { op: "describe", className: "Part" }, /superclass/);
   await ok("api: classes", "api", { op: "classes", contains: "Constraint" }, /HingeConstraint/);
   await ok("console", "console", { limit: 5 });

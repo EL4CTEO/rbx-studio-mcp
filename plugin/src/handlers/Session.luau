@@ -134,8 +134,6 @@ function Session.status(): { [string]: any }
 		dataModelName = if published and published ~= game.Name then game.Name else nil,
 		placeId = game.PlaceId,
 		context = Context.of(),
-		editorStudioId = Context.editorId(),
-		testId = Context.testId(),
 		-- RunService:IsRunning() is true for both Play and Run; IsEdit()
 		-- distinguishes the authoring session from a live one.
 		isRunning = RunService:IsRunning(),

@@ -467,7 +467,7 @@ export class Bridge {
     } catch (cause) {
       return Promise.reject(cause);
     }
-    const command: Command = { id: randomUUID(), op, params, deadlineMs: Date.now() + timeoutMs };
+    const command: Command = { id: randomUUID(), op, params, timeoutMs };
 
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {

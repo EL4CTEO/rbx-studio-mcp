@@ -357,6 +357,84 @@ export async function propertiesOf(className: string): Promise<PropertyInfo[]> {
   return properties;
 }
 
+/** Handled by the build spec itself, never as a property. */
+const STRUCTURAL = new Set(["Name", "Parent", "ClassName", "Archivable"]);
+
+/**
+ * Values that restate another property, and runtime state that is not part of
+ * what was built. A build file holding both halves of a pair lets an edit to
+ * one be overwritten by the other -- `BrickColor` applied after `Color` snaps
+ * the colour to the nearest brick colour -- so only the real half is kept.
+ */
+const DERIVED = new Set([
+  "BrickColor", // Color
+  "Rotation", // CFrame
+  "Axis", // Attachment.CFrame
+  "SecondaryAxis",
+  "WorldAxis",
+  "WorldSecondaryAxis",
+  "WorldCFrame",
+  "AssemblyLinearVelocity", // physics state
+  "AssemblyAngularVelocity",
+  "Jump", // Humanoid state
+  "Sit",
+  "PlatformStand",
+  "TargetPoint",
+  "WalkToPart",
+  "WalkToPoint",
+  "ColorMap", // Decal.Texture
+  "ColorMapContent",
+]);
+
+/**
+ * Properties worth writing into a build file: writable at plugin identity,
+ * scriptable, not deprecated, and not derived from another property.
+ *
+ * `Hidden` is what marks the derived ones -- `BasePart.Position` and
+ * `Orientation` restate `CFrame`, and the legacy `Font` restates `FontFace`.
+ * The dump's "saved" flag looks like the better signal and is not: `Size`,
+ * `Color`, `UICorner.CornerRadius` and `WeldConstraint.Part0` are all marked
+ * unsaved, because the file keeps them under an internal twin, and filtering
+ * on it rebuilt every part at the default size.
+ */
+export async function buildableProperties(className: string): Promise<PropertyInfo[]> {
+  const byName = await classesByName();
+  if (!byName) return [];
+  const properties: PropertyInfo[] = [];
+  const seen = new Set<string>();
+  let current = byName.get(className);
+  while (current) {
+    for (const member of current.Members) {
+      if (member.MemberType !== "Property" || seen.has(member.Name)) continue;
+      seen.add(member.Name);
+      const tags = member.Tags ?? [];
+      const security = securityOf(member);
+      if (
+        STRUCTURAL.has(member.Name) ||
+        !PLUGIN_REACHABLE.has(security.read) ||
+        !PLUGIN_REACHABLE.has(security.write) ||
+        tags.includes("NotScriptable") ||
+        tags.includes("ReadOnly") ||
+        tags.includes("Deprecated") ||
+        tags.includes("Hidden") ||
+        DERIVED.has(member.Name)
+      ) {
+        continue;
+      }
+      properties.push({
+        name: member.Name,
+        valueType: member.ValueType?.Name ?? "unknown",
+        category: member.ValueType?.Category ?? "unknown",
+        declaredBy: current.Name,
+        readOnly: false,
+        deprecated: false,
+      });
+    }
+    current = current.Superclass ? byName.get(current.Superclass) : undefined;
+  }
+  return properties;
+}
+
 /** Bases that describe every instance and so distinguish none of them. */
 const GENERIC_BASES = new Set(["Instance", "PVInstance"]);
 

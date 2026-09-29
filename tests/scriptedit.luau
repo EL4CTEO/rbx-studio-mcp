@@ -13,3 +13,11 @@ ok, err = pcall(function() edit.write(target, function(current)
 end) end)
 assert(not ok and err.code == "STALE_SCRIPT" and target.Source == "concurrent")
 print("script editor: observation and callback failures preserve newer source")
+
+onUpdate = nil
+target.Source = "before"
+local reverted = false
+onWait = function() if not reverted then reverted = true; target.Source = "before" end end
+edit.write(target, function() return "after" end)
+assert(target.Source == "after", "a load that put the old text back is rewritten")
+print("script editor: a reverted write is repaired")
