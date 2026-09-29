@@ -1,275 +1,147 @@
 import { z } from "zod";
-import { errorText, json, type ToolResult } from "../lib/format.js";
+import { json, type ToolResult } from "../lib/format.js";
+import { ToolError } from "../lib/errors.js";
+import type { StudioSession } from "../lib/protocol.js";
 import { defineTool, type ToolContext } from "../lib/tool.js";
 
 interface PlaytestResponse {
   changed: boolean;
   reason?: string;
   state: {
-    playtestsAllowed?: boolean;
     isEdit: boolean;
     isRunning: boolean;
     isRunMode: boolean;
     editModeActive?: boolean;
     playerCount: number;
-    players?: Array<{ name: string; userId: number }>;
+    players?: Array<{ name: string; userId: number; diagnosticsReady?: boolean }>;
+    diagnosticsReady?: boolean;
     testPending: boolean;
     lastResult?: unknown;
     lastError?: string;
-    runningForSeconds?: number;
+    [key: string]: unknown;
   };
 }
 
-/**
- * The studioId of the running playtest's server session, or null.
- *
- * Prefers the cached context so the common case costs nothing, and asks the
- * sessions directly when nothing is cached -- which is the situation right
- * after this tool started a test, since the new session has never been queried
- * and its context is exactly what the caller needs.
- */
-async function findPlaytestSession(bridge: ToolContext["bridge"], exclude: ReadonlySet<string> = new Set()): Promise<string | null> {
-  const sessions = (await bridge.sessions()).list;
-  const cached = sessions.find((session) => !exclude.has(session.studioId) && session.context?.includes("playtest") && !session.context?.includes("client"));
-  if (cached) return cached.studioId;
+const isRuntime = (session: StudioSession): boolean =>
+  Boolean(session.context?.startsWith("playtest") && !session.context.includes("client"));
 
-  const unknown = sessions.filter((session) => !exclude.has(session.studioId) && session.context === undefined);
-  const probed = await Promise.all(
-    unknown.map(async (session) => {
-      try {
-        const status = await bridge.call<{ placeName: string; context?: string }>(
-          "studio.status",
-          {},
-          { studioId: session.studioId, timeoutMs: 3_000 },
-        );
-        await bridge.notePlaceName(session.studioId, status.placeName, status.context);
-        return status.context?.includes("playtest") && !status.context?.includes("client") ? session.studioId : null;
-      } catch {
-        return null;
-      }
-    }),
-  );
-  return probed.find((id): id is string => id !== null) ?? null;
+/** Never route a mutation to the first runtime in a multi-window project. */
+function runtimeFor(sessions: StudioSession[], editor: StudioSession, exclude: ReadonlySet<string> = new Set()): StudioSession | undefined {
+  const paired = sessions.filter(s => isRuntime(s) && s.editorStudioId === editor.studioId && !exclude.has(s.studioId));
+  if (paired.length > 1) throw new ToolError("AMBIGUOUS_PLAYTEST", "Several runtimes belong to this editor. Specify the runtime studioId.");
+  if (paired.length === 1) return paired[0];
+  const legacy = sessions.filter(s => isRuntime(s) && !s.editorStudioId && s.placeId === editor.placeId && !exclude.has(s.studioId));
+  const editors = sessions.filter(s => !isRuntime(s) && s.placeId === editor.placeId);
+  if (legacy.length > 1 || (legacy.length > 0 && editors.length > 1))
+    throw new ToolError("AMBIGUOUS_PLAYTEST", "Cannot identify this editor's runtime. Update the Studio plugin or specify a runtime studioId.");
+  return legacy[0];
+}
+
+function editorFor(sessions: StudioSession[], target: StudioSession): StudioSession | undefined {
+  if (!isRuntime(target)) return target;
+  const editors = sessions.filter(s => !isRuntime(s) && (target.editorStudioId ? s.studioId === target.editorStudioId : s.placeId === target.placeId));
+  const runtimes = sessions.filter(s => isRuntime(s) && s.placeId === target.placeId);
+  return editors.length === 1 && (target.editorStudioId || runtimes.length === 1) ? editors[0] : undefined;
 }
 
 export function registerPlaytestTools(context: ToolContext): void {
   const { bridge } = context;
-
-  defineTool(
-    context,
-    {
-      name: "playtest",
-      title: "Run, pause and stop the simulation",
-      description:
-        "Starts and stops playtests, so scripts can be made to run and then " +
-        "observed without asking the user to press anything.\n\n" +
-        "`play` is the Play button: a character spawns and `Players.PlayerAdded` " +
-        "fires. `run` is Run mode, which executes scripts with no player at all. " +
-        "`multiplayer` starts a test with several players for testing " +
-        "replication. `addPlayers` joins more players to a running multiplayer " +
-        "test, for late joins and lobby fill-up. `state` reports without " +
-        "changing anything.\n\n" +
-        "Play and multiplayer return the playtest server's studioId once it connects. " +
-        "Use that ID directly for `console`, `performance` and `execute_luau`; " +
-        "the editor session has a separate log. If connection takes too long, " +
-        "the reply says so and `list_studios` can find it later.\n\n" +
-        "A test does not block this call: it starts and the reply reports the " +
-        "state reached. Studio only ends it when something inside calls " +
-        "`StudioTestService:EndTest(value)` or when `stop` is used here; whatever " +
-        "EndTest passed comes back as `lastResult` on a later `state`. That makes " +
-        "a scripted check possible end to end: `args` is readable inside the test " +
-        "via `StudioTestService:GetTestArgs()`, so a test can be told what to do " +
-        "and report back what happened.\n\n" +
-        "Stopping discards everything the playtest changed, exactly as pressing " +
-        "Stop does. Build in edit mode, then play — not the other way round.\n\n" +
-        "The reply says whether the mode actually moved, not merely that Studio " +
-        "accepted the request.\n\n" +
-        "The panel's `playtests on` grants permission, never a requirement: obey " +
-        "AGENTS.md, CLAUDE.md, user instructions and project guidance that prohibit " +
-        "playtesting even when ON. `playtests off` is a hard MCP lock: play, run, " +
-        "multiplayer and addPlayers are refused regardless of instructions to test; state and stop " +
-        "remain available. The lock only blocks starting simulation: screenshots, tree, " +
-        "inspect, script reads, edit-mode execute_luau and UI inspection stay available. " +
-        "Continue using edit-mode tools and static inspection where possible. " +
-        "Only the user can re-enable it with `playtests on` in " +
-        "the panel. Do not bypass the lock through execute_luau, Studio APIs or " +
-        "another operation. Manual Studio Play is unaffected.",
-      inputSchema: {
-        op: z
-          .enum(["play", "run", "multiplayer", "addPlayers", "stop", "state"])
-          .describe(
-            "'play' starts a playtest with a character, 'run' runs scripts with " +
-              "no player, 'multiplayer' starts a several-player test, 'addPlayers' " +
-              "joins more to a running multiplayer test, 'stop' ends it and " +
-              "discards its changes, 'state' only reports.",
-          ),
-        players: z
-          .number()
-          .int()
-          .min(1)
-          .max(8)
-          .optional()
-          .describe(
-            "multiplayer: how many players to start (default 2). addPlayers: how " +
-              "many to add (default 1).",
-          ),
-        args: z
-          .string()
-          .optional()
-          .describe(
-            "Value handed to the test, readable inside it with " +
-              "`StudioTestService:GetTestArgs()`. Use it to tell a test which " +
-              "case to exercise.",
-          ),
-        studioId: z.string().optional().describe("Target Studio; omit for the active one."),
-      },
-      readOnly: false,
-      destructive: true,
-    },
-    async (args): Promise<ToolResult> => {
-      //[[
-      // Stopping is routed rather than sent where it was asked.
-      //
-      // Starting a playtest creates a second session, which immediately makes
-      // every later call ambiguous -- including the stop for the test just
-      // started, so the tool could begin something it could not end. And the
-      // stop cannot be served by the editor session anyway: `LeaveTest` is
-      // client-DataModel only and a playtest client can never reach this
-      // bridge, so only `EndTest`, from the playtest's server session, ends a
-      // test. Both problems have the same answer: find that session.
-      //]]
-      if (args.op === "stop") {
-        const playtest = await findPlaytestSession(bridge);
-        if (playtest) {
-          //[[
-          // The stop is sent to the session it will destroy, so its reply is
-          // expected to go missing and a transport failure here says nothing
-          // about whether the test ended. The answer comes from the editor
-          // session, which survives — and which is also the only session that
-          // holds the value EndTest passed back.
-          //]]
-          await bridge
-            .call("playtest.control", { op: "endTest", value: args.args }, {
-              studioId: playtest,
-              timeoutMs: 10_000,
-            })
-            .catch(() => null);
-
-          const survivor = (await bridge.sessions()).list.find(
-            (session) => session.studioId !== playtest,
-          );
-          if (survivor) {
-            //[[
-            // Waited for, not sampled. The teardown is deliberately deferred so
-            // the reply can leave first, and tearing a DataModel down is not
-            // instant either — so a single read taken straight afterwards
-            // reports a test still running that is already on its way out. That
-            // is the same false report as before, just pointing the other way.
-            //]]
-            const deadline = Date.now() + 10_000;
-            let after: PlaytestResponse;
-            for (;;) {
-              after = await bridge.call<PlaytestResponse>(
-                "playtest.control",
-                // `waitingForStop` is inert on the plugin side -- Playtest.control
-                // reads only `op`. It rides along so the console can tell this
-                // poll apart from an agent's own `state` check: without it, five
-                // identical "Check the playtest" lines in two seconds read as
-                // unexplained noise rather than what they are, which is this
-                // call waiting for the teardown it just started.
-                { op: "state", waitingForStop: true },
-                { studioId: survivor.studioId, timeoutMs: 10_000 },
-              );
-              const settled = after.state.editModeActive !== false && !after.state.testPending;
-              if (settled || Date.now() >= deadline) break;
-              await new Promise((resolve) => setTimeout(resolve, 400));
-            }
-
-            const stopped = after.state.editModeActive !== false && !after.state.testPending;
-            return json(
-              after.state,
-              stopped
-                ? undefined
-                : "The stop was sent but Studio is still in a test. Check whether " +
-                    "something inside it is holding the session open.",
-            );
-          }
+  defineTool(context, {
+    name: "playtest", title: "Run and stop the simulation",
+    description:
+      "Start play (one character), run (no player), multiplayer, addPlayers, stop, or read state. " +
+      "Returns separate editorStudioId/runtimeStudioId and runtime state. Use runtimeStudioId for console, performance and execute_luau. " +
+      "waitFor=ready waits for the runtime, requested players and client diagnostic relays; it does not guarantee game initialization. " +
+      "waitFor=completed waits for StudioTestService:EndTest(value); the editor reports lastResult/lastError. " +
+      "args is readable via StudioTestService:GetTestArgs(). Stop discards runtime changes; build in edit mode. " +
+      "Obey AGENTS.md, CLAUDE.md, user instructions and project guidance against playtesting even when ON. " +
+      "The panel's playtests off is a hard lock on play/run/multiplayer/addPlayers; state and stop remain available. " +
+      "Use edit-mode inspection while locked. Only the user can re-enable playtests on. Do not bypass the lock through execute_luau or Studio APIs.",
+    inputSchema: {
+      op: z.enum(["play", "run", "multiplayer", "addPlayers", "stop", "state"]),
+      players: z.number().int().min(1).max(8).optional().describe("multiplayer: initial count (default 2); addPlayers: additional count (default 1)."),
+      args: z.string().optional().describe("Test argument, or stop's EndTest result."),
+      waitFor: z.enum(["ready", "completed"]).optional().describe("Default: ready for starts/addPlayers; completed for stop; otherwise a snapshot."),
+      waitSeconds: z.number().min(0).max(30).default(6).describe("Maximum lifecycle wait in seconds; partial state returned on timeout."),
+      studioId: z.string().optional().describe("Editor or runtime; required if selection is ambiguous."),
+    }, readOnly: false, destructive: true,
+  }, async (args): Promise<ToolResult> => {
+    const view = await bridge.sessions();
+    const sessions = view.list;
+    let target = args.studioId ? sessions.find(s => s.studioId === args.studioId) :
+      sessions.length === 1 ? sessions[0] : view.activeIsChosen ? sessions.find(s => s.studioId === view.activeId) : undefined;
+    if (!target && !args.studioId) {
+      const editors = sessions.filter(s => !isRuntime(s));
+      if (editors.length === 1 && sessions.every(s => s === editors[0] || s.editorStudioId === editors[0]!.studioId ||
+        (!s.editorStudioId && isRuntime(s) && s.placeId === editors[0]!.placeId && sessions.length === 2))) target = editors[0];
+    }
+    if (!target) {
+      if (sessions.length === 0) return json((await bridge.call<PlaytestResponse>("playtest.control", args, { studioId: args.studioId })).state);
+      throw new ToolError(args.studioId ? "NO_STUDIO" : "AMBIGUOUS_STUDIO", "Select the editor or runtime studioId for this test.");
+    }
+    const editor = editorFor(sessions, target);
+    const starting = ["play", "run", "multiplayer"].includes(args.op);
+    if (starting && isRuntime(target)) throw new ToolError("WRONG_CONTEXT", "Start tests from an editor session.");
+    let runtime = isRuntime(target) ? target : runtimeFor(sessions, target);
+    const before = new Set(sessions.map(s => s.studioId));
+    let response: PlaytestResponse;
+    let stateSession: string;
+    if (args.op === "stop" && runtime) {
+      if (!editor) throw new ToolError("NO_EDITOR_SESSION", "Cannot verify teardown without this runtime's editor. Update the plugin.");
+      try {
+        await bridge.call("playtest.control", { op: "endTest", value: args.args }, { studioId: runtime.studioId, timeoutMs: 10_000 });
+      } catch (error) {
+        // Teardown can destroy the responder, but permission/handler errors are real.
+        if (!(error instanceof ToolError) || !["DISCONNECTED", "TIMEOUT", "NO_STUDIO"].includes(error.code)) throw error;
+      }
+      response = await bridge.call<PlaytestResponse>("playtest.control", { op: "state", waitingForStop: true }, { studioId: editor.studioId });
+      stateSession = editor.studioId;
+    } else {
+      if (args.op === "addPlayers" && !runtime) throw new ToolError("NO_PLAYTEST", "Start a multiplayer test first.");
+      if (args.waitFor === "completed" && !editor) throw new ToolError("NO_EDITOR_SESSION", "Completion is reported by the originating editor.");
+      stateSession = args.op === "addPlayers" ? runtime!.studioId : args.op === "state" && args.waitFor === "completed" ? editor!.studioId : target.studioId;
+      response = await bridge.call<PlaytestResponse>("playtest.control", { op: args.op, players: args.players, args: args.args },
+        { studioId: stateSession, timeoutMs: 30_000 });
+    }
+    const waiting = args.op === "stop" ? "completed" : args.waitFor ?? ((starting || args.op === "addPlayers") ? "ready" : undefined);
+    const exclude = starting && response.changed ? before : undefined;
+    const deadline = Date.now() + (args.waitSeconds ?? 6) * 1000;
+    const expected = args.op === "multiplayer" ? args.players ?? 2 : args.op === "addPlayers" ? response.state.playerCount + (args.players ?? 1) : 1;
+    let ready = false;
+    let completed = false;
+    let first = true;
+    do {
+      if (editor) {
+        const current = (await bridge.sessions()).list;
+        runtime = isRuntime(target) ? current.find(s => s.studioId === target.studioId) : runtimeFor(current, editor, exclude);
+      }
+      if (waiting === "completed" && editor) {
+        if (!first || stateSession !== editor.studioId || (args.op !== "state" && args.op !== "stop"))
+          response = await bridge.call<PlaytestResponse>("playtest.control", { op: "state", waitingForStop: args.op === "stop" }, { studioId: editor.studioId, timeoutMs: 3_000 });
+        stateSession = editor.studioId;
+      } else if (runtime) {
+        try {
+          if (!first || stateSession !== runtime.studioId || args.op !== "state")
+            response = await bridge.call<PlaytestResponse>("playtest.control", { op: "state" }, { studioId: runtime.studioId, timeoutMs: 3_000 });
+          stateSession = runtime.studioId;
         }
-      }
-
-      // Routed like `stop`: AddPlayers is only callable from the running test's
-      // server, and the new clients take seconds to load, so the reply waits
-      // until they are in rather than reporting the count from before.
-      if (args.op === "addPlayers") {
-        const playtest = await findPlaytestSession(bridge);
-        if (!playtest) {
-          return errorText('No playtest is running. Start one with `playtest op="multiplayer"` first.');
+        catch (error) {
+          if (!starting || !(error instanceof ToolError) || !["DISCONNECTED", "TIMEOUT", "NO_STUDIO"].includes(error.code)) throw error;
         }
-        const adding = args.players ?? 1;
-        const started = await bridge.call<PlaytestResponse>(
-          "playtest.control",
-          { op: "addPlayers", players: adding },
-          { studioId: playtest, timeoutMs: 10_000 },
-        );
-        const target = started.state.playerCount + adding;
-        const deadline = Date.now() + 20_000;
-        let after = started;
-        while (after.state.playerCount < target && Date.now() < deadline) {
-          await new Promise((resolve) => setTimeout(resolve, 500));
-          after = await bridge.call<PlaytestResponse>(
-            "playtest.control",
-            { op: "state" },
-            { studioId: playtest, timeoutMs: 5_000 },
-          );
-        }
-        return json(
-          { ...after.state, studioId: playtest },
-          after.state.playerCount < target
-            ? `${target - after.state.playerCount} of ${adding} new players had not joined after 20s. Check \`state\` again shortly.`
-            : undefined,
-        );
+      } else if (starting && editor) {
+        response = await bridge.call<PlaytestResponse>("playtest.control", { op: "state" }, { studioId: editor.studioId, timeoutMs: 3_000 });
       }
-
-      const starting = args.op === "play" || args.op === "multiplayer";
-      const before = starting ? new Set((await bridge.sessions()).list.map((session) => session.studioId)) : new Set<string>();
-      const response = await bridge.call<PlaytestResponse>(
-        "playtest.control",
-        { op: args.op, players: args.players, args: args.args },
-        { studioId: args.studioId, timeoutMs: 30_000 },
-      );
-
-      const notes: string[] = [];
-      if (args.op !== "state" && !response.changed) {
-        notes.push(response.reason ?? "Studio accepted the call but nothing changed.");
-      } else if (response.reason) {
-        notes.push(response.reason);
-      }
-
-      // The running game is a different session from the one just asked to start
-      // it, and every subsequent read has to go to that one instead. Said here
-      // because the alternative is an agent reading the editor's empty log and
-      // concluding the playtest did nothing.
-      let runtime: { studioId: string; players?: Array<{ name: string; userId: number }> } | undefined;
-      if (starting && response.changed && response.state.testPending) {
-        const deadline = Date.now() + 6_000;
-        do {
-          const id = runtime?.studioId ?? await findPlaytestSession(bridge, before);
-          if (id) {
-            runtime ??= { studioId: id };
-            try {
-              const state = await bridge.call<PlaytestResponse>("playtest.control", { op: "state" }, { studioId: id, timeoutMs: 2_000 });
-              runtime.players = state.state.players;
-            } catch { /* A connecting session can already be listed before it answers. */ }
-            if ((runtime.players?.length ?? 0) >= (args.op === "multiplayer" ? (args.players ?? 2) : 1)) break;
-          }
-          if (Date.now() >= deadline) break;
-          await new Promise((resolve) => setTimeout(resolve, 300));
-        } while (true);
-        if (!runtime) notes.push("The playtest server has not connected yet. Use list_studios later to find its studioId.");
-        else if (!runtime.players?.length) notes.push("The playtest server connected, but players are still joining. Query playtest state later for names.");
-      }
-
-      return json(runtime ? { ...response.state, ...runtime } : response.state, notes.length > 0 ? notes.join("\n") : undefined);
-    },
-  );
+      first = false;
+      completed = Boolean(editor && response.state.isEdit === true && response.state.editModeActive !== false && !response.state.testPending && !response.state.isRunning);
+      ready = response.state.isRunMode ? response.state.isRunning : Boolean(runtime && response.state.playerCount >= expected && response.state.diagnosticsReady);
+      if (!waiting || response.state.lastError || completed || (waiting === "ready" && ready) || Date.now() >= deadline) break;
+      await new Promise<void>(resolve => setTimeout(resolve, Math.min(300, Math.max(0, deadline - Date.now()))));
+    } while (Date.now() <= deadline);
+    return json({ ...response.state,
+      editorStudioId: editor?.studioId, runtimeStudioId: completed ? undefined : runtime?.studioId,
+      studioId: completed ? editor?.studioId : runtime?.studioId ?? target.studioId,
+      lifecycle: response.state.lastError ? "failed" : completed ? "completed" : ready ? "ready" : response.state.isRunning ? "running" : response.state.testPending ? "starting" : "idle",
+      ready, waitTimedOut: Boolean(waiting && !response.state.lastError && !(waiting === "ready" ? ready || completed : completed)),
+    }, response.reason);
+  });
 }

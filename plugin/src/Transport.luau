@@ -26,7 +26,7 @@ local Transport = {}
 export type Status = "disconnected" | "connecting" | "connected"
 
 type Callbacks = {
-	onCommand: (id: string, op: string, params: { [string]: any }?) -> (),
+	onCommand: (id: string, op: string, params: { [string]: any }?, deadlineMs: number?) -> (),
 	onStatus: (status: Status, detail: string?) -> (),
 	--[[
 		Anything the bridge wants to tell this plugin that is not a command.
@@ -97,6 +97,8 @@ local function identity(transport: string): { [string]: any }
 		-- with the same place name is raised before any such call could have
 		-- run, so without this it lists them with nothing to choose between.
 		context = Context.of(),
+		editorStudioId = Context.editorId(),
+		testId = Context.testId(),
 	}
 end
 
@@ -243,7 +245,7 @@ local function handleFrame(callbacks: Callbacks, frame: { [string]: any })
 	local id = frame.id
 	local op = frame.op
 	if typeof(id) == "string" and typeof(op) == "string" then
-		callbacks.onCommand(id, op, frame.params)
+		callbacks.onCommand(id, op, frame.params, if typeof(frame.deadlineMs) == "number" then frame.deadlineMs else nil)
 		return
 	end
 	if typeof(frame.event) == "string" then

@@ -546,6 +546,8 @@ function parseIdentity(
     // Optional, because a plugin older than this field still connects fine —
     // it simply lists without a context, as every session did before.
     context: typeof raw.context === "string" ? raw.context : undefined,
+    editorStudioId: typeof raw.editorStudioId === "string" ? raw.editorStudioId : undefined,
+    testId: typeof raw.testId === "string" ? raw.testId : undefined,
   };
 }
 

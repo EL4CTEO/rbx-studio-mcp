@@ -4,6 +4,11 @@ import { defineTool, type ToolContext } from "../lib/tool.js";
 
 interface ConsoleResponse {
   items: Array<{
+    sequence?: number;
+    updated?: boolean;
+    count?: number;
+    firstTimestamp?: number;
+    lastTimestamp?: number;
     level: string;
     message: string;
     timestamp?: number;
@@ -21,6 +26,7 @@ interface ConsoleResponse {
   /** How long this session has been recording. Disambiguates an empty log. */
   recordingSeconds?: number;
   nextCursor: string;
+  hasMore?: boolean;
   player?: string;
   capturing?: boolean;
 }
@@ -145,40 +151,13 @@ export function registerPerfTools(context: ToolContext): void {
     {
       name: "console",
       title: "Read Studio output",
-      description:
-        "Reads Studio or playtest client output — prints, warnings and runtime errors, " +
-        "newest last.\n\n" +
-        "This is how to find out what actually happened after a playtest or an " +
-        "`execute_luau` call. An error here usually names the script and line, " +
-        "which `script_read` can then open directly.\n\n" +
-        "Use `target=\"client\"` with the playtest server studioId to read continuously " +
-        "captured client output. In multiplayer, select a player by name. " +
-        "Pass the returned `nextCursor` as `since` to read only newer lines; " +
-        "cursors belong to one session and player. Evicted or limit-skipped lines " +
-        "are reported.\n\n" +
-        "Filter with `level` to see only errors, or `pattern` to follow one " +
-        "subsystem's logging. Up to 2000 lines are held, so prefer a filter over " +
-        "a large `limit`.\n\n" +
-        "Each connected session keeps its own log, recorded from the moment its " +
-        "plugin loaded — the editor session and a running playtest server do not " +
-        "share one. To read what a playtest printed, target the playtest's " +
-        "studioId (see `list_studios`); the editor's log will not have it. " +
-        "Nothing printed before the plugin or client relay loaded is recoverable." +
-        "\n\n" +
-        "A quiet log is not proof nothing was said. Messages Studio itself emits — the ones the " +
-        "Output window attributes to \"Studio\" rather than to a script — are " +
-        "inconsistent, and they arrive in the session that RAISED them, which is " +
-        "not always the one you are looking at: the warning that a Script with a " +
-        "non-legacy RunContext inside a starter container will run multiple times " +
-        "shows up in the playtest server's log, where the script actually loads, " +
-        "and never in the editor's, where it was created. Do not read silence " +
-        "as an all-clear — when a script misbehaves in a way nothing here " +
-        "explains, check the Output window yourself, or ask the user what it " +
-        "says.",
+      description: "Read Studio or playtest client output, newest last, with correlated error stacks and sources. Use the runtime studioId for game logs; editor/runtime buffers are separate. target=client selects a player by name in multiplayer. Pass nextCursor as since for newer entries; cursors belong to one session/player. mode=tail returns newest matches and skips omitted entries; mode=drain pages oldest unread matches without skipping unshown matches. Keep filters unchanged while draining. group=true collapses identical entries with counts and first/last times. Late stack updates reappear with update markers. Up to 2000 entries are retained, with bounded messages/stacks. Output before plugin/relay load is unavailable; Studio-originated messages can be inconsistent, so silence is not an all-clear.",
       inputSchema: {
         target: z.enum(["studio", "client"]).default("studio").describe("Output source; client requires a running playtest server studioId."),
         player: z.string().optional().describe("Client only: player name, required when multiple players are present."),
         since: z.string().optional().describe("Opaque nextCursor from a previous console response; return only newer matching lines."),
+        mode: z.enum(["tail", "drain"]).default("tail").describe("tail: newest entries, cursor skips omitted lines. drain: oldest unread entries, cursor advances only through consumed entries. Keep filters unchanged while draining."),
+        group: z.boolean().default(false).describe("Collapse identical selected entries, preserving count and first/last timestamps."),
         level: z
           .enum(["print", "info", "warning", "error"])
           .optional()
@@ -198,7 +177,7 @@ export function registerPerfTools(context: ToolContext): void {
     async (args): Promise<ToolResult> => {
       const response = await bridge.call<ConsoleResponse>(
         "perf.console",
-        { level: args.level, pattern: args.pattern, limit: args.limit, target: args.target, player: args.player, since: args.since },
+        { level: args.level, pattern: args.pattern, limit: args.limit, target: args.target, player: args.player, since: args.since, mode: args.mode, group: args.group },
         { studioId: args.studioId },
       );
 
@@ -229,7 +208,9 @@ export function registerPerfTools(context: ToolContext): void {
       let lines = response.items.map((entry) => {
         const when = args.target === "client" && entry.timestamp ? ` ${new Date(entry.timestamp * 1000).toISOString()}` : "";
         const head =
-          `[${entry.level}${when}] ${entry.message}` + (entry.context ? `\n    context: ${entry.context}` : "");
+          `[${entry.level}${entry.updated ? " update" : ""}${when}] ${entry.message}` +
+          (entry.count ? ` [count=${entry.count}; first=${entry.firstTimestamp}; last=${entry.lastTimestamp}]` : "") +
+          (entry.context ? `\n    context: ${entry.context}` : "");
         if (!entry.stack) return head + (entry.source ? `\n    in ${entry.source}` : "");
         const trace = entry.stack
           .split("\n")
@@ -245,7 +226,7 @@ export function registerPerfTools(context: ToolContext): void {
       // A noisy script must never turn one console read into a huge prompt.
       let sizeOmitted = 0;
       let size = lines.reduce((sum, line) => sum + line.length + 1, 0);
-      while (lines.length > 1 && size > 20_000) {
+      while (args.mode !== "drain" && lines.length > 1 && size > 20_000) {
         size -= lines.shift()!.length + 1;
         sizeOmitted += 1;
       }
@@ -253,6 +234,7 @@ export function registerPerfTools(context: ToolContext): void {
         lines = [`${lines[0]!.slice(0, 19_900)}… [entry truncated]`];
       }
       if (sizeOmitted > 0) notes.push(`${sizeOmitted} older matching lines omitted to fit the response`);
+      if (response.hasMore) notes.push("more unread entries; continue with since and the same filters");
       if (response.dropped > 0) {
         notes.push(
           `showing the newest ${response.items.length} of ${response.total} matching lines`,

@@ -35,6 +35,7 @@ jobs:
 
       - run: npm test
       - run: npm run build:plugin
+      - run: npm pack --pack-destination build
 
       # Fails the release when CHANGELOG.md has no section for the tag, which is
       # deliberate: a tag with an empty body is worse than a failed workflow,
@@ -44,5 +45,7 @@ jobs:
 
       - uses: softprops/action-gh-release@v3
         with:
-          files: build/StudioMCP.rbxmx
+          files: |
+            build/StudioMCP.rbxmx
+            build/*.tgz
           body_path: release-notes.md

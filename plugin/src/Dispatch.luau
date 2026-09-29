@@ -18,6 +18,19 @@ export type Error = {
 export type Handler = (params: { [string]: any }) -> any
 
 local handlers: { [string]: Handler } = {}
+local deadlines: { [thread]: number } = setmetatable({}, { __mode = "k" }) :: any
+
+function Dispatch.deadline(): number?
+	return deadlines[coroutine.running()]
+end
+
+function Dispatch.checkDeadline(explicit: number?)
+	local deadline = explicit or Dispatch.deadline()
+	if deadline and DateTime.now().UnixTimestampMillis >= deadline then
+		Dispatch.fail("DEADLINE_EXPIRED", "The request expired before this mutation began; nothing further was written.",
+			"Verify the current state before retrying a mutation.")
+	end
+end
 
 function Dispatch.register(op: string, handler: Handler)
 	handlers[op] = handler
@@ -53,7 +66,7 @@ export type Result = {
 	unhandled error inside a handler becomes a HANDLER_ERROR result, because a
 	crashed dispatch would leave the server's promise hanging until it times out.
 ]]
-function Dispatch.invoke(id: string, op: string, params: { [string]: any }?): Result
+function Dispatch.invoke(id: string, op: string, params: { [string]: any }?, deadlineMs: number?): Result
 	local handler = handlers[op]
 	if not handler then
 		return {
@@ -68,7 +81,13 @@ function Dispatch.invoke(id: string, op: string, params: { [string]: any }?): Re
 		}
 	end
 
-	local ok, result = pcall(handler, params or {})
+	local thread = coroutine.running()
+	deadlines[thread] = deadlineMs
+	local ok, result = pcall(function()
+		Dispatch.checkDeadline()
+		return handler(params or {})
+	end)
+	deadlines[thread] = nil
 	if ok then
 		return { id = id, ok = true, data = result }
 	end

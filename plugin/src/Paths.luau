@@ -18,9 +18,19 @@ local Paths = {}
 ]]
 function Paths.split(path: string): { string }
 	local segments: { string } = {}
-	for segment in string.gmatch(path, "[^%.]+") do
-		table.insert(segments, segment)
+	local current = ""
+	local escaped = false
+	for index = 1, #path do
+		local char = string.sub(path, index, index)
+		if char == "." and not escaped then
+			if current ~= "" then table.insert(segments, current) end
+			current = ""
+		else
+			current ..= char
+		end
+		if char == "\\" and not escaped then escaped = true else escaped = false end
 	end
+	if current ~= "" then table.insert(segments, current) end
 	if segments[1] == "game" then
 		table.remove(segments, 1)
 	end
@@ -39,9 +49,9 @@ end
 local function parseSegment(segment: string): (string, number?)
 	local name, index = string.match(segment, "^(.*)%[(%d+)%]$")
 	if name and index then
-		return name, tonumber(index)
+		return (name:gsub("\\(.)", "%1")), tonumber(index)
 	end
-	return segment, nil
+	return (segment:gsub("\\(.)", "%1")), nil
 end
 
 export type NameIndex = { [Instance]: { [string]: { Instance } } }
@@ -65,6 +75,15 @@ local function childrenByName(parent: Instance, memo: NameIndex?): { [string]: {
 			byName[child.Name] = list
 		end
 		table.insert(list, child)
+	end
+	-- Ordinals must use the same ordering in reads and writes, rather than the
+	-- engine's unspecified GetChildren order.
+	for _, list in byName do
+		if #list > 1 then
+			local ids: { [Instance]: string } = {}
+			for _, child in list do ids[child] = child:GetDebugId() end
+			table.sort(list, function(a, b) return ids[a] < ids[b] end)
+		end
 	end
 
 	if memo then
@@ -151,12 +170,6 @@ local function childBySegment(
 		if child then
 			return child, nil
 		end
-		-- Not an index after all: a child literally named "x[1]". Typed by hand,
-		-- or from a path emitted before `Paths.of` began marking such names.
-		local literal = parent:FindFirstChild(segment)
-		if literal then
-			return literal, nil
-		end
 		if list == nil then
 			return nil, nil
 		end
@@ -181,27 +194,16 @@ local function childBySegment(
 			return service, nil
 		end
 	end
-	return parent:FindFirstChild(name), nil
+	local list = childrenByName(parent, nil)[name]
+	if list and #list > 1 then
+		Dispatch.fail("AMBIGUOUS_PATH", string.format('%q has %d children named %q.', parent:GetFullName(), #list, name),
+			"Use an indexed path returned by find or tree; no instance was guessed.")
+	end
+	return if list then list[1] else nil, nil
 end
 
---[[
-	Resolves a path to an Instance, or raises a NOT_FOUND with the failing
-	segment and its siblings. `FindFirstChild` is used rather than indexing so a
-	missing child never throws a bare Luau error.
-
-	Instance names may contain dots -- "Dr. Simon" is an ordinary name, and so is
-	"v1.2 backup" -- while the separator is a dot too, so such a name arrives
-	here already split into pieces. Each step therefore tries consuming one
-	segment first and rejoins further segments only if that leads nowhere, which
-	means the search has to BACK TRACK: with both "Dr" and "Dr. Who" present,
-	"Workspace.Dr. Who.Head" matches "Dr", fails to find " Who" under it, and
-	must return to try "Dr. Who". A first pass without that backtracking left the
-	tools emitting `Workspace.Dr. Who` as a path and then refusing to read it
-	back, which is worse than either behaviour on its own.
-
-	Shortest-first keeps the old precedence: where a short name resolves the
-	whole remaining path, it still wins over a longer join.
-]]
+-- Literal dots, brackets and backslashes are escaped in canonical paths.
+-- Never join segments to guess which object a caller intended to edit.
 function Paths.resolve(path: string): Instance
 	if typeof(path) ~= "string" or path == "" then
 		Dispatch.fail(
@@ -238,8 +240,10 @@ function Paths.resolve(path: string): Instance
 			deepestSegment = nil
 		end
 
-		for last = index, #segments do
-			local joined = table.concat(segments, ".", index, last)
+		-- A literal dot must be escaped. Guessing by joining segments could
+		-- direct an edit at A.B instead of child B under A.
+		for last = index, index do
+			local joined = segments[index]
 			local child, note = childBySegment(current, joined, index == 1)
 			if note and index - 1 == deepest then
 				deepestNote = note
@@ -349,15 +353,11 @@ function Paths.of(instance: Instance, memo: NameIndex?): string
 	while current ~= nil and current ~= game do
 		local node = current :: Instance
 		local ordinal = siblingIndex(node, memo)
-		-- A name that itself ends in "[n]" would read back as an index into a
-		-- shorter name. An explicit index keeps it literal: "x[1][1]".
-		if ordinal == nil and string.match(node.Name, "%[%d+%]$") then
-			ordinal = 1
-		end
+		local escapedName = node.Name:gsub("\\", "\\\\"):gsub("%.", "\\."):gsub("%[", "\\["):gsub("%]", "\\]")
 		table.insert(
 			segments,
 			1,
-			if ordinal then string.format("%s[%d]", node.Name, ordinal) else node.Name
+			if ordinal then string.format("%s[%d]", escapedName, ordinal) else escapedName
 		)
 		current = node.Parent
 	end

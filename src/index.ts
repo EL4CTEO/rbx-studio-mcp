@@ -111,12 +111,14 @@ async function main(): Promise<void> {
         '"Workspace.Map.Spawn" or "ServerScriptService.Systems.Combat". Paths are ' +
         "case-sensitive.\n\n" +
         "The user may have several Studio windows open on different places. When " +
-        "more than one is connected, no place is targeted by default and tools " +
-        "refuse with AMBIGUOUS_STUDIO: call `list_studios`, ask the user which " +
-        "place they mean, then `set_active_studio`. Do the same whenever they " +
+        "more than one is connected, pass studioId explicitly. A paired editor " +
+        "and playtest are one place: use the editor for durable edits and the " +
+        "runtime for observations. Ask which place only when different places " +
+        "are open. Do the same whenever they " +
         "mention their other place — never assume a switch.\n\n" +
         "Prefer the batch tools: `create`, `modify`, `delete`, `move` and " +
-        "`script_edit` all take arrays and apply as a single undo step, so one " +
+        "`script_edit` all take arrays. Instance batches use one undo step; " +
+        "script source uses per-script editor undo. One " +
         "call beats a loop of calls both in latency and in how cleanly the user " +
         "can revert your work. Reach for `execute_luau` only when no dedicated " +
         "tool fits — it is the escape hatch, not the default.",

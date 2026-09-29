@@ -19,10 +19,8 @@ export const detailSchema = z
   .enum(["concise", "standard", "full"])
   .default("standard")
   .describe(
-    "How much to return per item. 'concise' = name + class only, cheapest, use " +
-      "when scanning or counting. 'standard' = the properties that matter for most " +
-      "edits. 'full' = every readable property, expensive — use only after you have " +
-      "narrowed to a handful of instances.",
+    "concise: compact identity. standard: selected facts. full: all readable " +
+      "properties for inspect; tree/find use the same columns as standard.",
   );
 
 export const cursorSchema = z
@@ -165,6 +163,8 @@ export function textOf(result: ToolResult): string {
 }
 
 export interface PageMeta {
+  /** Offset of the fetched page, for continuation after response-budget clipping. */
+  offset?: number;
   /** Total matches Studio found, before this page was sliced out. */
   total?: number;
   nextCursor?: string;
@@ -182,10 +182,17 @@ export function page(items: unknown[], meta: PageMeta = {}): ToolResult {
   const parts: string[] = [];
   let body = stringify(items);
 
-  if (body.length > CHARACTER_LIMIT) {
+  let shown = items.length;
+  if (body.length > CHARACTER_LIMIT - 500) {
     const kept = fitToLimit(items, CHARACTER_LIMIT - 500);
-    body = stringify(kept);
+    let truncatedItem = false;
+    if (kept.length === 0 && items.length > 0) { kept.push(boundedValue(items[0])); truncatedItem = true; }
+    body = truncatedItem ? JSON.stringify(kept) : stringify(kept);
+    while (body.length > CHARACTER_LIMIT - 500 && kept.length > 1) { kept.pop(); body = stringify(kept); }
+    if (body.length > CHARACTER_LIMIT - 500) { body = JSON.stringify([boundedValue(kept[0])]); truncatedItem = true; }
+    shown = kept.length;
     parts.push(body);
+    if (truncatedItem) parts.push("\n[first item truncated to fit the response budget; narrow properties or detail to retrieve it fully]");
     parts.push(
       `\n[${items.length - kept.length} of ${items.length} items dropped: the page ` +
         `exceeded the ${CHARACTER_LIMIT}-character response limit. Re-run with a ` +
@@ -195,12 +202,13 @@ export function page(items: unknown[], meta: PageMeta = {}): ToolResult {
     parts.push(body);
   }
 
-  if (meta.total !== undefined && meta.total > items.length) {
-    parts.push(`\n[showing ${items.length} of ${meta.total} matches]`);
+  if (meta.total !== undefined && meta.total > shown) {
+    parts.push(`\n[showing ${shown} of ${meta.total} matches]`);
   }
-  if (meta.nextCursor) {
+  const nextCursor = continuation(meta, shown);
+  if (nextCursor) {
     parts.push(
-      `\n[more results available — call again with cursor: "${meta.nextCursor}"]`,
+      `\n[more results available — call again with cursor: "${nextCursor}"]`,
     );
   }
   if (meta.more) parts.push(`\n[${meta.more}]`);
@@ -234,7 +242,10 @@ export function table(
   let dropped = 0;
 
   for (const row of rows) {
-    const line = render(row);
+    let line = render(row);
+    if (lines.length === 1 && line.length > CHARACTER_LIMIT - 1000) {
+      line = columns.map(column => formatCell(row[column]).slice(0, 1000)).join(" | ") + " [row truncated]";
+    }
     if (used + line.length + 1 > CHARACTER_LIMIT - 500) {
       dropped = rows.length - (lines.length - 1);
       break;
@@ -250,11 +261,13 @@ export function table(
         `response limit — re-run with a smaller \`limit\`]`,
     );
   }
-  if (meta.total !== undefined && meta.total > rows.length) {
-    trailer.push(`[showing ${rows.length} of ${meta.total} matches]`);
+  const shown = lines.length - 1;
+  if (meta.total !== undefined && meta.total > shown) {
+    trailer.push(`[showing ${shown} of ${meta.total} matches]`);
   }
-  if (meta.nextCursor) {
-    trailer.push(`[more results — call again with cursor: "${meta.nextCursor}"]`);
+  const nextCursor = continuation(meta, shown);
+  if (nextCursor) {
+    trailer.push(`[more results — call again with cursor: "${nextCursor}"]`);
   }
   if (meta.more) trailer.push(`[${meta.more}]`);
 
@@ -263,8 +276,14 @@ export function table(
 
 function formatCell(value: unknown): string {
   if (value === null || value === undefined) return "";
-  if (typeof value === "object") return JSON.stringify(value);
-  return String(value);
+  const cell = typeof value === "object" ? JSON.stringify(value) : String(value);
+  return cell.replaceAll("\n", "\\n").replaceAll("\r", "\\r").replaceAll("|", "\\|");
+}
+
+function continuation(meta: PageMeta, shown: number): string | undefined {
+  if (meta.offset !== undefined && meta.total !== undefined)
+    return meta.offset + shown < meta.total ? encodeCursor(meta.offset + shown) : undefined;
+  return meta.nextCursor;
 }
 
 /** Greedily keeps the longest prefix of `items` that serialises under `budget`. */
@@ -288,7 +307,7 @@ function fitToLimit(items: unknown[], budget: number): unknown[] {
 export function body(content: string, advice: string): ToolResult {
   if (content.length <= CHARACTER_LIMIT) return text(content);
   return text(
-    `${content.slice(0, CHARACTER_LIMIT)}\n\n[clipped at ${CHARACTER_LIMIT} characters — ${advice}]`,
+    `${content.slice(0, CHARACTER_LIMIT - 500)}\n\n[clipped at ${CHARACTER_LIMIT} characters — ${advice}]`,
   );
 }
 
@@ -298,11 +317,43 @@ export function body(content: string, advice: string): ToolResult {
  */
 export function json(value: unknown, note?: string): ToolResult {
   let body = stringify(value);
-  if (body.length > CHARACTER_LIMIT) {
-    body =
-      body.slice(0, CHARACTER_LIMIT) +
-      `\n\n[response clipped at ${CHARACTER_LIMIT} characters — narrow the request ` +
-      `(fewer paths, lower depth, or detail: "concise") to see the rest]`;
+  if (body.length > CHARACTER_LIMIT - 500) {
+    body = JSON.stringify({ truncated: true, data: boundedValue(value) });
   }
-  return text(note ? `${body}\n\n${note}` : body);
+  return text(note ? `${body}\n\n${note.slice(0, 450)}` : body);
+}
+
+/** Preserve valid JSON under one global byte/node budget, even for wide trees. */
+function boundedValue(value: unknown): unknown {
+  let remaining = CHARACTER_LIMIT - 2000;
+  let nodes = 500;
+  const visit = (node: unknown, depth: number): unknown => {
+    if (--nodes < 0 || remaining < 100 || depth > 8) return "<truncated>";
+    remaining -= 30;
+    if (typeof node === "string") {
+      let lo = 0, hi = node.length;
+      while (lo < hi) {
+        const mid = Math.ceil((lo + hi) / 2);
+        if (JSON.stringify(node.slice(0, mid)).length <= remaining) lo = mid;
+        else hi = mid - 1;
+      }
+      const result = lo < node.length ? node.slice(0, Math.max(0, lo - 20)) + "<truncated>" : node;
+      remaining -= JSON.stringify(result).length;
+      return result;
+    }
+    if (node === null || typeof node !== "object") { remaining -= 30; return node; }
+    const result: Record<string, unknown> | unknown[] = Array.isArray(node) ? [] : {};
+    for (const [key, child] of Object.entries(node)) {
+      if (nodes <= 0 || remaining < JSON.stringify(key).length + 100) {
+        if (Array.isArray(result)) result.push("<truncated>");
+        else result["..."] = "<truncated>";
+        break;
+      }
+      remaining -= JSON.stringify(key).length + 5;
+      const entry = visit(child, depth + 1);
+      if (Array.isArray(result)) result.push(entry); else Object.defineProperty(result, key, { value: entry, enumerable: true });
+    }
+    return result;
+  };
+  return visit(value, 0);
 }

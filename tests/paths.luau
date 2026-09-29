@@ -1,0 +1,23 @@
+local paths = ...
+local a = instance("A", workspace)
+local b = instance("B", a)
+local dotted = instance("A.B", workspace)
+assert(paths.resolve("Workspace.A.B") == b)
+assert(paths.resolve(paths.of(dotted)) == dotted)
+assert(paths.of(dotted) == "Workspace.A\\.B")
+for _, name in {"x[1]", "x\\y.z[2]", "literal\\", "."} do
+ local child = instance(name, workspace)
+ assert(paths.resolve(paths.of(child)) == child, name)
+end
+local second = instance("Dup", workspace, "02")
+local first = instance("Dup", workspace, "01")
+assert(paths.of(first) == "Workspace.Dup[1]")
+assert(paths.resolve(paths.of(second)) == second)
+table.sort(workspace.children, function(x, y) return x.id > y.id end)
+assert(paths.resolve("Workspace.Dup[1]") == first)
+local ok, err = pcall(paths.resolve, "Workspace.Dup")
+assert(not ok and err.code == "AMBIGUOUS_PATH")
+ok, err = pcall(paths.resolve, "Workspace.Dup[3]")
+assert(not ok and err.code == "NOT_FOUND")
+assert(paths.resolve("game") == game)
+print("paths: escaping, stable duplicates and refusal to guess pass")

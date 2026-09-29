@@ -40,7 +40,14 @@ interface EditResponse {
 }
 
 interface GrepResponse {
+  counts?: number[];
+  matchedFiles?: number;
   items: Array<{
+    revision?: string;
+    className?: string;
+    matches?: number;
+    needles?: number[];
+    truncated?: boolean;
     path: string;
     line: number;
     text: string;
@@ -132,35 +139,7 @@ export function registerScriptTools(context: ToolContext): void {
     {
       name: "script_read",
       title: "Read scripts",
-      description:
-        "Reads Luau source from one or more scripts, with line numbers that " +
-        "`script_edit` accepts back verbatim.\n\n" +
-        "Source comes from the Studio script editor's live buffer, so anything the " +
-        "user has typed but not yet saved is included. Reading the saved property " +
-        "instead would hand you stale code and you would 'fix' the change they just " +
-        "made.\n\n" +
-        "Pass every script you need in one call, including when you want a " +
-        "different part of each: an entry may be a bare path for the whole file, " +
-        "or `{path, startLine, endLine}` for a window into that one script. The " +
-        "top-level `startLine`/`endLine` are the default for entries that do not " +
-        "carry their own.\n\n" +
-        "A script bound to a file on disk is flagged in the result. Editing one " +
-        "of those is a race: whatever writes the file wins, and your change " +
-        "disappears the next time it does, with nothing anywhere reporting a " +
-        "failure.\n\n" +
-        "`open` puts a script on the user's screen at a line, instead of telling " +
-        "them where to look. Ask for it when you are pointing at something they " +
-        "should see; it is not automatic, and reading twenty scripts does not " +
-        "rearrange their editor.\n\n" +
-        "`target=\"live\"` reads the code of the PUBLISHED place instead, with " +
-        "no Studio involved — which is how you check what is actually " +
-        "deployed rather than what is on someone's machine. Two limits are " +
-        "real and worth knowing before you reach for it: Roblox's Instance " +
-        "API can only see Folders and scripts, so a path through a Model or " +
-        "a Part cannot be walked at all; and it addresses things by GUID " +
-        "with no search, so each segment of the path costs a round trip. " +
-        "Expect seconds. `list: true` shows what is under a path instead of " +
-        "reading it, which is how you find your way down.",
+      description: "Read live editor buffers with numbered lines and whole-file rev values. Batch paths, or {path,startLine,endLine} windows with per-entry ranges; top-level ranges are defaults. Pass rev back as revision to script_edit. Unsaved edits are included; file-synced scripts are flagged. op=open opens the first script at line only when requested. target=live reads the published place through Open Cloud: only Folder/script paths are traversable, each segment costs a request. list=true lists children instead of source.",
       inputSchema: {
         op: z
           .enum(["read", "open"])
@@ -394,43 +373,7 @@ export function registerScriptTools(context: ToolContext): void {
     {
       name: "script_edit",
       title: "Edit scripts",
-      description:
-        "Edits Luau source through the Studio script editor. This is the tool to " +
-        "use for any change to existing code.\n\n" +
-        "Every edit in one call is all-or-nothing: the whole batch is resolved " +
-        "against current source before anything is written, so if one edit cannot " +
-        "be applied nothing is. Batch related changes together, even across " +
-        "different scripts.\n\n" +
-        "Each edit picks exactly one mode:\n" +
-        "  find/replace — literal text, not a pattern. Preferred: it survives line " +
-        "numbers shifting. Fails if the text is not unique, unless you set " +
-        "`replaceAll`, so include enough surrounding lines to pin it down.\n" +
-        "  startLine/endLine + replacement — for line ranges from `script_read`. " +
-        "Numbers refer to the file as you read it; several line edits to one script " +
-        "are applied bottom-up so they do not shift each other.\n" +
-        "  source — replaces the whole script. Only for small files or a rewrite; " +
-        "it discards anything the user changed since you read it.\n\n" +
-        "Pass `revision` on every edit. `script_read` prints it as `rev` beside " +
-        "each file, and sending it back makes the write conditional: if the " +
-        "script changed since you read it the batch is refused with " +
-        "STALE_SCRIPT and nothing is written. Without it the edit is applied " +
-        "blind, which matters most for the two modes that cannot notice: a line " +
-        "range still applies cleanly to source somebody else moved, it just " +
-        "lands on the wrong lines, and `source` discards their work entirely. " +
-        "Another agent editing the same place, or the user typing in the " +
-        "editor, is enough.\n\n" +
-        "Writes go through `ScriptEditorService:UpdateSourceAsync`, so an open " +
-        "editor tab updates in place and unsaved work is preserved. Undo for " +
-        "source changes is the script editor's own, per script — Ctrl+Z in a " +
-        "script tab reverts that script, not the whole batch.\n\n" +
-        "`target=\"live\"` edits the PUBLISHED place instead. It takes ONE " +
-        "edit, it replaces the whole `source` rather than finding and " +
-        "replacing, and there is no undo of any kind — so read the script " +
-        "with `script_read target=\"live\"` first and send back the whole " +
-        "thing. Needs `confirm: true`.\n\n" +
-        "It changes the SAVED place, not running servers: people already " +
-        "playing keep the old code until their server empties. Follow it " +
-        "with `universe op=\"restart\"` to roll them over.",
+      description: "Edit existing scripts using exact find/replace, inclusive line ranges, or complete source; choose one form per entry. Edits to one script are sequential. Batch up to 50 edits. Pass revision from script_read or script_grep; mismatches refuse the batch before writing. Current source is checked again in the editor callback. Writes share a mutation lock; each document has its own editor undo. Failed writes attempt conditional compensation; PARTIAL_EDIT names unresolved scripts and preserves newer text. Read those before retrying. Result rev values support chained edits. target=live rewrites published source, requires path/source/confirm=true, and has no undo.",
       inputSchema: {
         target: z
           .enum(["studio", "live"])
@@ -505,7 +448,7 @@ export function registerScriptTools(context: ToolContext): void {
           .max(50)
           .optional()
           .describe(
-            "Edits to apply together as one undoable step. Required unless target is \"live\". " +
+            "Edits to apply together, with per-script editor undo. Required unless target is \"live\". " +
               "The result carries each script's new `rev`, so a follow-up edit needs no re-read.",
           ),
         studioId: z.string().optional().describe("Target Studio; omit for the active one."),
@@ -573,21 +516,15 @@ export function registerScriptTools(context: ToolContext): void {
     {
       name: "script_grep",
       title: "Search script source",
-      description:
-        "Searches inside Luau source across the place and returns matching lines " +
-        "with their paths and line numbers.\n\n" +
-        "Use this to find where something is defined or used before editing it — " +
-        "it is far cheaper than reading whole scripts to look for one call.\n\n" +
-        "Patterns are Lua patterns, which are not regular expressions: `%` escapes " +
-        "instead of backslash, there is no alternation, and `-` means a lazy " +
-        "quantifier. Set `literal` to search for text exactly as written, which is " +
-        "usually what you want for identifiers.\n\n" +
-        "Matches come from the script editor's live buffer, so unsaved edits are " +
-        "searched too.",
+      description: "Search live editor buffers within a subtree or a single script. Supply pattern (Lua pattern; % escapes, no alternation) or patterns (1-16 literal needles in one scan). literal=true is recommended for identifiers. mode=lines groups matches by script with revisions and merged context; files returns one row per matching script; counts returns matching-line counts per needle. A line matching several needles is returned once with 1-based needle indexes. Results use deterministic path/line order and cursors based on visible matches. Pass revision to script_edit.",
       inputSchema: {
         pattern: z
           .string()
+          .min(1)
+          .optional()
           .describe('Lua pattern, or exact text when `literal` is set, e.g. "PlayerAdded".'),
+        patterns: z.array(z.string().min(1)).min(1).max(16).optional().describe("Batch literal needles in one scan; use instead of pattern. Hit indexes are 1-based."),
+        mode: z.enum(["lines", "files", "counts"]).default("lines").describe("Matching lines with revisions, one row per file, or per-needle matching-line counts."),
         path: z
           .string()
           .optional()
@@ -622,10 +559,13 @@ export function registerScriptTools(context: ToolContext): void {
     },
     async (args): Promise<ToolResult> => {
       const offset = decodeCursor(args.cursor);
+      if (Boolean(args.pattern) === Boolean(args.patterns)) throw new ToolError("BAD_PARAMS", "Supply pattern or patterns, not both.");
       const response = await bridge.call<GrepResponse>(
         "script.grep",
         {
           pattern: args.pattern,
+          patterns: args.patterns,
+          mode: args.mode,
           path: args.path,
           literal: args.literal,
           ignoreCase: args.ignoreCase,
@@ -637,6 +577,10 @@ export function registerScriptTools(context: ToolContext): void {
         { studioId: args.studioId, timeoutMs: 30_000 },
       );
 
+      if (args.mode === "counts") return json({ searched: response.searched, matchedFiles: response.matchedFiles,
+        counts: (args.patterns ?? [args.pattern!]).map((pattern, index) => ({ pattern, lines: response.counts?.[index] ?? 0 })) });
+      if (args.mode === "files") return table(["path", "className", "revision", "matches"], response.items as unknown as Array<Record<string, unknown>>,
+        {offset, total: response.total, more: `searched ${response.searched} scripts`});
       if (response.total === 0) {
         if (response.searched === 0) {
           return text(
@@ -651,7 +595,7 @@ export function registerScriptTools(context: ToolContext): void {
         // silently. A regex habit writes `foo|bar`, Lua reads it as the literal
         // characters, nothing matches, and the empty result looks like an
         // answer rather than like a malformed pattern.
-        const alternation = !args.literal && args.pattern.includes("|");
+        const alternation = !args.literal && !args.patterns && args.pattern?.includes("|");
         return text(
           `No matches in ${response.searched} script(s).\n` +
             (alternation
@@ -665,37 +609,45 @@ export function registerScriptTools(context: ToolContext): void {
         );
       }
 
-      const lines: string[] = [];
-      let previousPath = "";
-      for (const match of response.items) {
-        // Context blocks get a separator; a flat list of adjacent lines is
-        // otherwise impossible to tell apart from a run of separate matches.
-        if (match.path !== previousPath) {
-          if (previousPath !== "") lines.push("");
-          previousPath = match.path;
+      const render = (matches: GrepResponse["items"]): string => {
+        const groups = new Map<string, { header: string; lines: Map<number, string>; hits: Set<number> }>();
+        for (const match of matches) {
+          let group = groups.get(match.path);
+          if (!group) {
+            group = { header: match.path + (match.revision ? " rev=" + match.revision : ""), lines: new Map(), hits: new Set() };
+            groups.set(match.path, group);
+          }
+          for (const [i, line] of (match.before ?? []).entries()) {
+            const number = match.line - (match.before?.length ?? 0) + i;
+            if (!group.hits.has(number)) group.lines.set(number, line);
+          }
+          group.hits.add(match.line);
+          group.lines.set(match.line, match.text + (match.truncated ? " [line truncated; use script_read]" : "") + (match.needles ? " [patterns " + match.needles.join(",") + "]" : ""));
+          for (const [i, line] of (match.after ?? []).entries()) {
+            const number = match.line + i + 1;
+            if (!group.hits.has(number)) group.lines.set(number, line);
+          }
         }
-        for (const [index, before] of (match.before ?? []).entries()) {
-          lines.push(`${match.path}-${match.line - (match.before?.length ?? 0) + index}- ${before}`);
+        return [...groups.values()].map(group => group.header + "\n" +
+          [...group.lines].sort(([a], [b]) => a - b).map(([number, line]) => number + (group.hits.has(number) ? ": " : "- ") + line).join("\n")).join("\n\n");
+      };
+      let shown = response.items.length;
+      let listing = render(response.items);
+      if (listing.length > CHARACTER_LIMIT - 500) {
+        let lo = 0, hi = shown;
+        while (lo < hi) {
+          const mid = Math.ceil((lo + hi) / 2);
+          if (render(response.items.slice(0, mid)).length <= CHARACTER_LIMIT - 500) lo = mid;
+          else hi = mid - 1;
         }
-        lines.push(`${match.path}:${match.line}: ${match.text}`);
-        for (const [index, after] of (match.after ?? []).entries()) {
-          lines.push(`${match.path}-${match.line + index + 1}- ${after}`);
-        }
+        shown = Math.max(1, lo);
+        listing = render(response.items.slice(0, shown));
+        if (lo === 0) listing = listing.slice(0, CHARACTER_LIMIT - 600) + " [match truncated; use script_read for a window]";
       }
-
-      const trailer: string[] = [`[searched ${response.searched} scripts]`];
-      const nextOffset = offset + response.items.length;
-      if (nextOffset < response.total) {
-        trailer.unshift(
-          `[showing ${response.items.length} of ${response.total} matches — call again ` +
-            `with cursor: "${encodeCursor(nextOffset)}"]`,
-        );
-      }
-
-      return body(
-        [...lines, "", ...trailer].join("\n"),
-        "re-run with a smaller `limit` or a narrower `path`",
-      );
+      const nextOffset = offset + shown;
+      const trailer = "[searched " + response.searched + " scripts; showing " + shown + " of " + response.total + " matches" +
+        (nextOffset < response.total ? '; cursor: "' + encodeCursor(nextOffset) + '"' : "") + "]";
+      return text(listing + "\n\n" + trailer);
     },
   );
 

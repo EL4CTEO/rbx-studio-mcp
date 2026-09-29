@@ -106,6 +106,16 @@ cloud place <place id>
 
 Two things to watch: a playtest connects a second session, so pass `studioId` and use the edit one for changes that must last; `device` emulation stays on until `device op="stop"`.
 
+### Agent workflows in 0.8.5
+
+- Search several identifiers in one scan: `script_grep patterns=["PlayerAdded", "FireServer"]`. `mode="files"` lists matching scripts; `mode="counts"` gives matching-line counts per needle. Line results carry revisions and merge overlapping context.
+- Pass a script's revision from `script_read` or `script_grep` back to `script_edit`. The editor callback also checks the prepared source before committing. Edits use per-document undo; failed batches attempt conditional compensation and report conflicts as `PARTIAL_EDIT`. Read unresolved scripts before retrying.
+- Use `find properties=["Anchored", "CanCollide"]` to return only the properties you need alongside each match, without an extra inspect call.
+- Start tests from the editor ID. `playtest` returns `editorStudioId` and `runtimeStudioId`; use the runtime ID for game diagnostics. `waitFor="ready"` waits for players and client diagnostic relays, not game initialization. `waitFor="completed"` waits for `StudioTestService:EndTest(value)` and returns its result from the editor. `waitSeconds` is 0–30 (default 6); incomplete waits return state with `waitTimedOut=true`. Multiplayer screenshots require `player`.
+- Use `console mode="drain"` and return `nextCursor` as `since` to consume a busy log without skipping unshown matches. Keep filters unchanged. Default `tail` selects the newest entries and advances to the latest watermark. `group=true` collapses repeated selected entries with counts and timestamps. Late stacks return as updates.
+
+Use paths returned by tools: literal dots, brackets and backslashes in names are escaped (for example `Workspace.A\.B` addresses an instance named `A.B`). A bare duplicate name is refused; indexed paths can shift after structural changes. Large results are bounded, with continuation or explicit truncation instead of silent loss. A delivered mutation may finish after a timeout/disconnect: inspect its outcome before retrying. Update the Studio plugin together with the server to use these behaviors.
+
 ## The console panel
 
 Every call is logged with how long it took. At the foot of the panel is a command line. Type a command — or run `chat on` and type a sentence to have a coding agent answer it.

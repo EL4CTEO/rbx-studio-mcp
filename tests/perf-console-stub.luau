@@ -1,4 +1,4 @@
-local game = { GetService = function() return {} end }
+local game = { GetService = function(_, name) return if name == "HttpService" then {JSONEncode = function(_, values) local result = {}; for _, value in values do table.insert(result, tostring(value)) end return table.concat(result, "|") end} else {} end }
 local alice = { Name = "Alice" }
 local bob = { Name = "Bob" }
 local players = { Alice = alice, Bob = bob }

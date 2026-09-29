@@ -58,7 +58,7 @@ end
 	Nothing here opens editor tabs any more, so the loading document that
 	caused this is only reachable when the USER opens one in the same moment we
 	write to it -- rare, and cheap enough to cover anyway. One settle, one read,
-	and a rewrite if it did not take.
+	and an explicit failure if it did not take. Newer text is never rewritten.
 ]]
 local SETTLE = 0.2
 
@@ -81,19 +81,12 @@ local function confirm(target: LuaSourceContainer, produced: string?)
 		return
 	end
 
-	-- Three rounds: the race is with one load, so a single rewrite settles it,
-	-- and a script that discards three identical writes is failing for a reason
-	-- repeating will not fix.
-	for _ = 1, 3 do
-		task.wait(SETTLE)
-		if ScriptEdit.read(target) == produced then
-			return
-		end
-		pcall(function()
-			ScriptEditorService:UpdateSourceAsync(target, function()
-				return produced
-			end)
-		end)
+	-- A different buffer may be a newer user edit. Never rewrite it to "verify"
+	-- our own write; verification must observe, not mutate.
+	task.wait(SETTLE)
+	if ScriptEdit.read(target) ~= produced then
+		Dispatch.fail("VERIFY_FAILED", target:GetFullName() .. " changed during write verification.",
+			"Read the current source before retrying. Newer text was not overwritten.")
 	end
 end
 

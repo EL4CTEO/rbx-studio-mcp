@@ -27,11 +27,14 @@ local StudioTestService = {
  AddPlayers = function(_, count) added += count end,
 }
 local game = { GetService = function(_, name)
+ if name == "HttpService" then return {GenerateGUID = function() return "test-id" end} end
  if name == "RunService" then return RunService end
  if name == "StudioTestService" then return StudioTestService end
  if name == "Players" then return {GetPlayers = function() return {} end} end
  return {}
 end }
+local Context = {editorId = function() return "editor" end, testId = function() return nil end, beginTest = function() return function() end end}
+local LogBuffer = {clientReady = function() return true end}
 local function setup(module)
  module.setup(function() return stored end, function(value) stored = value; writes += 1 end)
 end

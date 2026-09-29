@@ -100,10 +100,12 @@ async function playtestShot(
   sessions: StudioSession[],
   width: number,
   rect?: string,
+  player?: string,
 ): Promise<ScreenshotResponse> {
-  const editor = sessions.find(
-    (session) => session.placeId === playtest.placeId && !isPlaytest(session),
-  );
+  const editors = sessions.filter((session) => !isPlaytest(session) &&
+    (playtest.editorStudioId ? session.studioId === playtest.editorStudioId : session.placeId === playtest.placeId));
+  const runtimes = sessions.filter((session) => isPlaytest(session) && session.placeId === playtest.placeId);
+  const editor = editors.length === 1 && (playtest.editorStudioId || runtimes.length === 1) ? editors[0] : undefined;
   if (editor === undefined) {
     throw new ToolError(
       "NO_EDITOR_SESSION",
@@ -116,7 +118,7 @@ async function playtestShot(
 
   const { contentId } = await bridge.call<{ contentId: string }>(
     "capture.playtestId",
-    {},
+    { player },
     { studioId: playtest.studioId, timeoutMs: 40_000 },
   );
 
@@ -183,6 +185,7 @@ export function registerScreenshotTools(context: ToolContext): void {
               "earlier screenshot using the scale its caption states.",
           ),
         studioId: z.string().optional().describe("Target Studio; omit for the active one."),
+        player: z.string().optional().describe("Playtest player name; required with multiple players."),
       },
       readOnly: true,
     },
@@ -192,7 +195,7 @@ export function registerScreenshotTools(context: ToolContext): void {
 
       const response =
         target !== undefined && isPlaytest(target)
-          ? await playtestShot(bridge, target, list, args.width, args.rect)
+          ? await playtestShot(bridge, target, list, args.width, args.rect, args.player)
           : await bridge.call<ScreenshotResponse>(
               "capture.screenshot",
               { width: args.width, path: args.path, rect: args.rect },

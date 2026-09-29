@@ -135,7 +135,7 @@ process.stdout.write("playtest lock errors and instruction precedence: ok\n");
    return {changed:true,state:{testPending:true,isRunning:false}};
   }
   assert.equal(options.studioId, "runtime");
-  return {changed:false,state:{players:operation === "multiplayer" ? [{name:"Alice",userId:123},{name:"Bob",userId:456}] : [{name:"Alice",userId:123}]}};
+  return {changed:false,state:{isEdit:false,isRunning:true,editModeActive:false,playerCount:operation === "multiplayer" ? 2 : 1,diagnosticsReady:true,players:operation === "multiplayer" ? [{name:"Alice",userId:123},{name:"Bob",userId:456}] : [{name:"Alice",userId:123}]}};
  };
  for (operation of ["play", "multiplayer"]) {
   started = false;
@@ -159,7 +159,7 @@ process.stdout.write("playtest runtime identity: ok\n");
   sent.push({op: params.op, studioId: options.studioId, players: params.players});
   if (params.op === "addPlayers") return {changed:true,state:{playerCount:joined}};
   joined = 3;
-  return {changed:false,state:{playerCount:joined}};
+  return {changed:false,state:{isEdit:false,isRunning:true,playerCount:joined,diagnosticsReady:true}};
  };
  const result = await playtest.handler(z.object(playtest.spec.inputSchema).parse({op:"addPlayers",players:2}));
  assert.ok(!result.isError);

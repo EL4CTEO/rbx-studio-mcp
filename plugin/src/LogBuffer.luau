@@ -41,6 +41,8 @@ local MAX_CONTEXT = 1000
 
 export type Entry = {
 	sequence: number?,
+	id: number?,
+	updated: boolean?,
 	level: string,
 	message: string,
 	timestamp: number,
@@ -101,6 +103,10 @@ local collecting: { string }? = nil
 local function pushEntry(entry: Entry)
 	nextSequence += 1
 	entry.sequence = nextSequence
+	entry.id = nextSequence
+	entry.message = string.sub(entry.message, 1, 2000)
+	if entry.stack then entry.stack = string.sub(entry.stack, 1, 4000) end
+	if entry.source then entry.source = string.sub(entry.source, 1, 500) end
 	table.insert(entries, entry)
 
 	if #entries > CAPACITY + SLACK then
@@ -133,18 +139,24 @@ function LogBuffer.pushClient(player: Player, payload: any)
 	if payload.kind == "ready" then buffer.ready = true; return end
 	if payload.kind == "trace" then
 		if typeof(payload.message) ~= "string" or typeof(payload.stack) ~= "string" then return end
+		local traceMessage = string.sub(payload.message, 1, 2000)
 		for index = #buffer.entries, math.max(1, #buffer.entries - CORRELATION_WINDOW + 1), -1 do
 			local item = buffer.entries[index]
-			if item.level == "error" and item.message == payload.message and item.stack == nil then
+			if item.level == "error" and item.message == string.sub(payload.message, 1, 2000) and item.stack == nil then
 				item.stack = string.sub(payload.stack, 1, 4000)
 				item.source = if typeof(payload.source) == "string" then string.sub(payload.source, 1, 500) else nil
+				buffer.sequence += 1
+				item.sequence = buffer.sequence
+				item.updated = true
+				table.remove(buffer.entries, index)
+				table.insert(buffer.entries, item)
 				return
 			end
 		end
 		local orphanCount = 0
 		for _ in buffer.orphan do orphanCount += 1 end
-		if orphanCount < 20 or buffer.orphan[payload.message] ~= nil then
-			buffer.orphan[payload.message] = { stack = string.sub(payload.stack, 1, 4000), source = if typeof(payload.source) == "string" then string.sub(payload.source, 1, 500) else nil }
+		if orphanCount < 20 or buffer.orphan[traceMessage] ~= nil then
+			buffer.orphan[traceMessage] = { stack = string.sub(payload.stack, 1, 4000), source = if typeof(payload.source) == "string" then string.sub(payload.source, 1, 500) else nil }
 		end
 		return
 	end
@@ -154,6 +166,7 @@ function LogBuffer.pushClient(player: Player, payload: any)
 	buffer.sequence += 1
 	local entry: Entry = {
 		sequence = buffer.sequence,
+		id = buffer.sequence,
 		level = level,
 		message = string.sub(payload.message, 1, 2000),
 		timestamp = if typeof(payload.timestamp) == "number" and payload.timestamp >= 0 and payload.timestamp < 100000000000 then payload.timestamp else os.time(),
@@ -202,17 +215,20 @@ end
 ]]
 -- JSONEncode writes a Vector3 or an Instance as `null` without complaint, so
 -- anything JSON has no shape for is turned into its text first.
-local function plain(value: any, depth: number): any
+local function plain(value: any, depth: number, budget: { nodes: number }): any
+	budget.nodes -= 1
+	if budget.nodes <= 0 then return "<truncated>" end
 	local kind = typeof(value)
 	if kind == "string" or kind == "number" or kind == "boolean" then
-		return value
+		return if kind == "string" then string.sub(value, 1, MAX_CONTEXT) else value
 	elseif kind == "table" then
 		if depth >= 4 then
 			return "<table>"
 		end
 		local copy = {}
 		for key, item in value do
-			copy[if typeof(key) == "number" then key else tostring(key)] = plain(item, depth + 1)
+			if budget.nodes <= 0 then copy["..."] = "<truncated>"; break end
+			copy[if typeof(key) == "number" then key else string.sub(tostring(key), 1, 100)] = plain(item, depth + 1, budget)
 		end
 		return copy
 	elseif kind == "Instance" then
@@ -229,15 +245,17 @@ function LogBuffer.encodeContext(context: any): string?
 		return nil
 	end
 	local ok, encoded = pcall(function()
-		return HttpService:JSONEncode(plain(context, 0))
+		return HttpService:JSONEncode(plain(context, 0, {nodes = 50}))
 	end)
 	if not ok then
 		return nil
 	end
-	return string.sub(encoded :: string, 1, MAX_CONTEXT)
+	if #encoded > MAX_CONTEXT then return HttpService:JSONEncode({truncated = string.sub(encoded, 1, 100)}) end
+	return encoded
 end
 
 local function push(message: string, messageType: Enum.MessageType, timestamp: number?, context: any?)
+	message = string.sub(message, 1, 2000)
 	local level = LEVELS[messageType.Value] or "print"
 	local entry: Entry = {
 		level = level,
@@ -270,12 +288,20 @@ end
 	two identical lines.
 ]]
 local function attachStack(message: string, stack: string, source: string?)
+	message = string.sub(message, 1, 2000)
+	stack = string.sub(stack, 1, 4000)
+	if source then source = string.sub(source, 1, 500) end
 	local first = math.max(1, #entries - CORRELATION_WINDOW + 1)
 	for index = #entries, first, -1 do
 		local entry = entries[index]
 		if entry.level == "error" and entry.message == message and entry.stack == nil then
 			entry.stack = stack
 			entry.source = source
+			nextSequence += 1
+			entry.sequence = nextSequence
+			entry.updated = true
+			table.remove(entries, index)
+			table.insert(entries, entry)
 			return
 		end
 	end
@@ -336,7 +362,10 @@ function LogBuffer.start()
 						local existing = recent.stack
 						local existingFrames = if existing then #string.split(existing, "\n") else 0
 						if existing == nil or #buffered > existingFrames then
-							recent.stack = table.concat(buffered, "\n")
+							recent.stack = string.sub(table.concat(buffered, "\n"), 1, 4000)
+							nextSequence += 1
+							recent.sequence = nextSequence
+							recent.updated = true
 						end
 					end
 				end

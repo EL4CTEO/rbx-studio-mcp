@@ -28,6 +28,12 @@ if (luau === null) {
 
 /** Modules under test, paired with the test file that exercises each. */
 const suites = [
+  { module: "plugin/src/Dispatch.luau", test: "tests/deadlines.luau", prelude: "tests/deadlines-stub.luau" },
+  { module: "plugin/src/Context.luau", test: "tests/context.luau", prelude: "tests/context-stub.luau" },
+  { module: "plugin/src/Paths.luau", test: "tests/paths.luau", prelude: "tests/paths-stub.luau" },
+  { module: "plugin/src/ScriptEdit.luau", test: "tests/scriptedit.luau", prelude: "tests/scriptedit-stub.luau" },
+  { module: "plugin/src/Undo.luau", test: "tests/undo.luau", prelude: "tests/undo-stub.luau" },
+  { module: "plugin/src/handlers/Scripts.luau", test: "tests/scripts.luau", prelude: "tests/scripts-stub.luau", dependencies: [{name:"TextEdit", path:"plugin/src/TextEdit.luau"}] },
   { module: "plugin/src/handlers/Playtest.luau", test: "tests/playtests.luau", prelude: "tests/playtests-stub.luau" },
   { module: "plugin/src/Commands.luau", test: "tests/playtests-commands.luau", prelude: "tests/playtests-stub.luau", dependency: "plugin/src/handlers/Playtest.luau" },
   { module: "plugin/src/Commands.luau", test: "tests/chat-commands.luau", prelude: "tests/playtests-stub.luau", dependency: "plugin/src/handlers/Playtest.luau" },
@@ -46,6 +52,8 @@ const suites = [
  * MCP server turns into an actionable error for the agent.
  */
 const DISPATCH_STUB = `local Dispatch = {}
+function Dispatch.checkDeadline() end
+function Dispatch.deadline() return nil end
 function Dispatch.fail(code, message, hint)
 \terror({ code = code, message = message, hint = hint }, 0)
 end
@@ -64,6 +72,7 @@ for (const suite of suites) {
   const bundle = [
     DISPATCH_STUB,
     suite.prelude ? readFileSync(join(root, suite.prelude), "utf8") : "",
+    ...(suite.dependencies ?? []).map(dep => `local ${dep.name} = (function()\n${stripRequires(readFileSync(join(root, dep.path), "utf8"))}\nend)()`),
     suite.dependency ? `local Playtest = (function()\n${stripRequires(readFileSync(join(root, suite.dependency), "utf8"))}\nend)()` : "",
     "local function loadModule()",
     moduleSource,

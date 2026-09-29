@@ -25,3 +25,14 @@ assert(not timeout.ok and string.find(timeout.error, "CLIENT_TIMEOUT"))
 assert(timeout.output[1].message == "before timeout" and cancelled and disconnected)
 local fast = runtime.run(function() return 42 end, 1)
 assert(fast.ok and fast.returned[1] == 42)
+local tree = {}
+for i = 1, 50 do tree[i] = {}; for j = 1, 50 do tree[i][j] = string.rep("x", 10000) end end
+local bounded = runtime.run(function() return tree, tree, tree end)
+local function cost(value)
+ if type(value) == "string" then return #value end
+ if type(value) ~= "table" then return 10 end
+ local size = 0; for _, item in value do size += cost(item) end; return size
+end
+assert(cost(bounded.returned) < 10000, "one budget across nested tables and multiple returns")
+assert(result.outputDropped == 5 and result.returnsDropped == 1)
+print("execution: global result budget and omission metadata pass")

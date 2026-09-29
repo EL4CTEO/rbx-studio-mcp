@@ -9,9 +9,8 @@
 	saved. Reads use the editor buffer for the same reason: handing an agent stale
 	source makes it "fix" changes the user just made.
 
-	Edits are also wrapped in a single `Undo` recording, so a batch across ten
-	scripts is one Ctrl+Z, and a batch that fails half way is rolled back rather
-	than left half applied.
+	Edits share the mutation lock and use per-document editor history. Failed
+	batches compensate only unchanged writes, reporting unresolved conflicts.
 
 	The text manipulation itself lives in `TextEdit`, which has no Roblox
 	dependencies and is unit tested.
@@ -223,7 +222,8 @@ end
 	only a locked or package-owned script -- the scripts already written are
 	restored from the source captured in phase one.
 ]]
-function Scripts.edit(params: { [string]: any }): { [string]: any }
+local function editUnlocked(params: { [string]: any }): { [string]: any }
+	local deadline = Dispatch.deadline()
 	local edits = params.edits
 	if typeof(edits) ~= "table" or #edits == 0 then
 		Dispatch.fail(
@@ -250,7 +250,7 @@ function Scripts.edit(params: { [string]: any }): { [string]: any }
 
 	-- Phase one: transform everything in memory. Any failure raises here, with
 	-- nothing written and the place untouched.
-	type Pending = { target: LuaSourceContainer, before: string, after: string }
+	type Pending = { target: LuaSourceContainer, before: string, after: string, produced: boolean? }
 	local pending: { Pending } = {}
 	for _, target in order do
 		local before = ScriptEdit.read(target)
@@ -299,29 +299,48 @@ function Scripts.edit(params: { [string]: any }): { [string]: any }
 	local results: { { [string]: any } } = {}
 
 	for _, entry in pending do
+		table.insert(written, entry)
 		-- Wrapped in a closure rather than passed to pcall directly: `write`
 		-- returns nothing, and pcall's typed signature expects a value back.
 		local ok, err = pcall(function()
-			ScriptEdit.write(entry.target, function()
+			Dispatch.checkDeadline()
+			ScriptEdit.write(entry.target, function(current)
+				Dispatch.checkDeadline(deadline)
+				if current ~= entry.before then
+					Dispatch.fail("STALE_SCRIPT", entry.target:GetFullName() .. " changed before the write committed.",
+						"Read it again and rebuild the edit against the current source.")
+				end
+				entry.produced = entry.after ~= entry.before
 				return entry.after
 			end)
 		end)
 
 		if not ok then
+			local remaining: { string } = {}
 			for index = #written, 1, -1 do
 				local done = written[index]
-				-- Best effort: a restore that fails leaves that script edited, and
-				-- the original error still describes what actually went wrong.
-				pcall(function()
-					ScriptEdit.write(done.target, function()
+				if not done.produced then continue end
+				local restored, restoreError = pcall(function()
+					ScriptEdit.write(done.target, function(current)
+						if current == done.before then return current end
+						if current ~= done.after then
+							Dispatch.fail("ROLLBACK_CONFLICT", "Newer text was preserved.")
+						end
 						return done.before
 					end)
 				end)
+				if not restored then
+					local reason = if typeof(restoreError) == "table" then restoreError.message else tostring(restoreError)
+					table.insert(remaining, done.target:GetFullName() .. ": " .. tostring(reason))
+				end
+			end
+			if #remaining > 0 then
+				local reason = if typeof(err) == "table" then err.message else tostring(err)
+				Dispatch.fail("PARTIAL_EDIT", tostring(reason), "Not restored (read these before retrying): " .. table.concat(remaining, "; "))
 			end
 			error(err, 0)
 		end
 
-		table.insert(written, entry)
 		table.insert(results, {
 			path = Paths.of(entry.target, memo),
 			className = entry.target.ClassName,
@@ -338,134 +357,116 @@ function Scripts.edit(params: { [string]: any }): { [string]: any }
 	return { items = results }
 end
 
+function Scripts.edit(params: { [string]: any }): { [string]: any }
+	return Undo.exclusive(function() return editUnlocked(params) end)
+end
+
 --[[
 	Searches script source. Matches come from the editor buffer, so text the user
 	has typed but not saved is found too -- which is the state an agent about to
 	edit the file actually needs to see.
 ]]
 function Scripts.grep(params: { [string]: any }): { [string]: any }
-	local pattern = params.pattern
-	if typeof(pattern) ~= "string" or pattern == "" then
-		Dispatch.fail("BAD_PARAMS", "script_grep requires a `pattern`.")
-	end
-
-	local root = if params.path then Paths.resolve(params.path) else game
-	local literal = params.literal == true
-	local ignoreCase = params.ignoreCase == true
-	local contextLines = math.clamp(tonumber(params.contextLines) or DEFAULT_CONTEXT, 0, 10)
-	local limit = math.min(tonumber(params.limit) or 100, MAX_MATCHES)
-	local offset = tonumber(params.offset) or 0
-	local classFilter = params.className
-
-	local needle = if ignoreCase then string.lower(pattern) else pattern
-
-	local targets: { LuaSourceContainer } = {}
-	for _, instance in root:GetDescendants() do
-		if not instance:IsA("LuaSourceContainer") then
-			continue
-		end
-		if root == game and Scope.isNoisy(instance) then
-			continue
-		end
-		if classFilter and not instance:IsA(classFilter) then
-			continue
-		end
-		table.insert(targets, instance)
-	end
-
-	if #targets > MAX_SCRIPTS then
-		Dispatch.fail(
-			"TOO_BROAD",
-			string.format("That search covers %d scripts, over the %d limit.", #targets, MAX_SCRIPTS),
-			"Narrow it with `path` to search one service or folder instead of the whole place."
-		)
-	end
-
-	local function badPattern(reason: any): never
-		Dispatch.fail(
-			"BAD_PATTERN",
-			string.format("%s is not a valid Lua pattern: %s", pattern, tostring(reason)),
-			"Lua patterns escape with %, not backslash, and have no alternation. "
-				.. "Set `literal` to search for the text exactly as written."
-		)
-	end
-
-	--[[
-		One search over the whole file before splitting it into lines.
-
-		Most scripts in a place do not contain what is being looked for, and
-		splitting each into a line table only to find nothing was most of the cost
-		of a place-wide search. A pattern that matches no line cannot match the
-		whole file either -- except one anchored with `^` or `$`, which mean line
-		ends here but file ends there, so those skip this shortcut.
-	]]
-	-- Any trailing `$` counts, escaped or not: skipping the shortcut costs speed,
-	-- taking it wrongly would hide matches.
-	local anchored = not literal and (string.sub(needle, 1, 1) == "^" or string.sub(needle, -1) == "$")
-
-	local matches: { { [string]: any } } = {}
-	local total = 0
-	local memo: Paths.NameIndex = {}
-
-	for _, target in targets do
-		local source = ScriptEdit.read(target)
-		if not anchored then
-			local ok, found = pcall(string.find, if ignoreCase then string.lower(source) else source, needle, 1, literal)
-			if not ok then
-				badPattern(found)
-			end
-			if not found then
-				continue
-			end
-		end
-
-		local lines = TextEdit.toLines(source)
-		local path: string? = nil
-
-		for number, line in lines do
-			local haystack = if ignoreCase then string.lower(line) else line
-			-- An invalid Lua pattern raises rather than simply not matching, so it
-			-- has to be caught and reported as a pattern problem, not a no-match.
-			local ok, from = pcall(string.find, haystack, needle, 1, literal)
-			if not ok then
-				badPattern(from)
-			end
-			if not from then
-				continue
-			end
-
-			total += 1
-			if total <= offset or #matches >= limit then
-				continue
-			end
-
-			if not path then
-				path = Paths.of(target, memo)
-			end
-
-			local entry: { [string]: any } = {
-				path = path,
-				line = number,
-				text = line,
-			}
-			if contextLines > 0 then
-				local before: { string } = {}
-				local after: { string } = {}
-				table.move(lines, math.max(number - contextLines, 1), number - 1, 1, before)
-				table.move(lines, number + 1, math.min(number + contextLines, #lines), 1, after)
-				entry.before = before
-				entry.after = after
-			end
-			table.insert(matches, entry)
-		end
-	end
-
-	return {
-		items = matches,
-		total = total,
-		offset = offset,
-		searched = #targets,
-	}
+ local needles: { string } = {}
+ local literal = params.literal == true
+ if params.patterns ~= nil then
+  if params.pattern ~= nil or typeof(params.patterns) ~= "table" or #params.patterns == 0 or #params.patterns > 16 then
+   Dispatch.fail("BAD_PARAMS", "Supply pattern or 1-16 literal patterns, not both.")
+  end
+  literal = true
+  for _, needle in params.patterns do
+   if typeof(needle) ~= "string" or needle == "" then Dispatch.fail("BAD_PARAMS", "Patterns must be non-empty strings.") end
+   table.insert(needles, needle)
+  end
+ elseif typeof(params.pattern) == "string" and params.pattern ~= "" then
+  table.insert(needles, params.pattern)
+ else Dispatch.fail("BAD_PARAMS", "Supply pattern or patterns.") end
+ local mode = params.mode or "lines"
+ if mode ~= "lines" and mode ~= "files" and mode ~= "counts" then Dispatch.fail("BAD_PARAMS", "mode must be lines, files or counts.") end
+ local ignoreCase = params.ignoreCase == true
+ if ignoreCase then for i, needle in needles do needles[i] = string.lower(needle) end end
+ local root = if params.path then Paths.resolve(params.path) else game
+ local contextLines = math.clamp(tonumber(params.contextLines) or DEFAULT_CONTEXT, 0, 10)
+ local limit = math.clamp(tonumber(params.limit) or 100, 1, MAX_MATCHES)
+ local offset = math.max(0, tonumber(params.offset) or 0)
+ local memo: Paths.NameIndex = {}
+ local targets: { { target: LuaSourceContainer, path: string } } = {}
+ local function consider(instance: Instance)
+  if instance:IsA("LuaSourceContainer") and not (root == game and Scope.isNoisy(instance)) and
+   (not params.className or instance:IsA(params.className)) then
+   table.insert(targets, {target = instance, path = Paths.of(instance, memo)})
+  end
+ end
+ consider(root)
+ for _, instance in root:GetDescendants() do consider(instance) end
+ if #targets > MAX_SCRIPTS then Dispatch.fail("TOO_BROAD", "Too many scripts; narrow path.") end
+ table.sort(targets, function(a, b) return a.path < b.path end)
+ local counts: { number } = table.create(#needles, 0)
+ local matchedFiles, total = 0, 0
+ local matches: { { [string]: any } } = {}
+ local budget, exhausted = 18000, false
+ local HttpService = game:GetService("HttpService")
+ local function emit(entry: { [string]: any })
+  if exhausted then return end
+  local cost = #HttpService:JSONEncode(entry) + 1
+  if cost > budget then
+   if #matches > 0 then exhausted = true; return end
+   entry.before, entry.after = nil, nil
+   if entry.text then entry.text = string.sub(entry.text, 1, 256); entry.truncated = true end
+   cost = #HttpService:JSONEncode(entry) + 1
+   if cost > budget then Dispatch.fail("RESULT_TOO_LARGE", "A search row exceeds the response budget.", "Narrow the search path.") end
+  end
+  budget -= cost
+  table.insert(matches, entry)
+ end
+ for _, candidate in targets do
+  local source = ScriptEdit.read(candidate.target)
+  local searchable = if ignoreCase then string.lower(source) else source
+  local possible = false
+  for _, needle in needles do
+   if not literal and (string.sub(needle, 1, 1) == "^" or string.sub(needle, -1) == "$") then possible = true; break end
+   local ok, found = pcall(string.find, searchable, needle, 1, literal)
+   if not ok then Dispatch.fail("BAD_PATTERN", tostring(found), "Lua patterns escape with %. Use literal=true for identifiers.") end
+   if found then possible = true; break end
+  end
+  if not possible then continue end
+  local lines = TextEdit.toLines(source)
+  local fileMatches = 0
+  local rev: string? = nil
+  for number, line in lines do
+   local haystack = if ignoreCase then string.lower(line) else line
+   local foundNeedles: { number } = {}
+   for index, needle in needles do
+    local ok, found = pcall(string.find, haystack, needle, 1, literal)
+    if not ok then Dispatch.fail("BAD_PATTERN", tostring(found)) end
+    if found then counts[index] += 1; table.insert(foundNeedles, index) end
+   end
+   if #foundNeedles == 0 then continue end
+   fileMatches += 1
+   if mode ~= "lines" then continue end
+   total += 1
+   if total <= offset or #matches >= limit or exhausted then continue end
+   rev = rev or fingerprint(source)
+   local entry: { [string]: any } = {path = candidate.path, className = candidate.target.ClassName, revision = rev,
+    line = number, text = line, needles = if #needles > 1 then foundNeedles else nil}
+   if contextLines > 0 then
+    entry.before = table.move(lines, math.max(number - contextLines, 1), number - 1, 1, {})
+    entry.after = table.move(lines, number + 1, math.min(number + contextLines, #lines), 1, {})
+   end
+   emit(entry)
+  end
+  if fileMatches > 0 then
+   matchedFiles += 1
+   if mode == "files" then
+    total += 1
+    if total > offset and #matches < limit then
+     emit({path = candidate.path, className = candidate.target.ClassName, revision = fingerprint(source), matches = fileMatches})
+    end
+   end
+  end
+ end
+ return {items = matches, total = total, offset = offset, searched = #targets,
+  counts = if mode == "counts" then counts else nil, matchedFiles = if mode == "counts" then matchedFiles else nil}
 end
 
 --[[
@@ -510,6 +511,7 @@ end
 	goes through the editor path.
 ]]
 function Scripts.create(params: { [string]: any }): { [string]: any }
+	local deadline = Dispatch.deadline()
 	local requests = params.scripts
 	if typeof(requests) ~= "table" or #requests == 0 then
 		Dispatch.fail(
@@ -649,9 +651,19 @@ function Scripts.create(params: { [string]: any }): { [string]: any }
 	-- After the recording, because the editor write yields. Undoing the create
 	-- still removes these scripts whole, source and all.
 	for _, entry in oversized do
-		ScriptEdit.write(entry.target, function()
-			return entry.source
+		local ok, err = pcall(function()
+			Undo.exclusive(function()
+				ScriptEdit.write(entry.target, function(current)
+					Dispatch.checkDeadline(deadline)
+					if current ~= "" then Dispatch.fail("STALE_SCRIPT", "The newly created script was edited before its initial source could be written.") end
+					return entry.source
+				end)
+			end)
 		end)
+		if not ok then
+			local reason = if typeof(err) == "table" then err.message else tostring(err)
+			Dispatch.fail("PARTIAL_CREATE", tostring(reason), "The script instances were created; read their sources before retrying. Failed source: " .. Paths.of(entry.target))
+		end
 	end
 
 	return {

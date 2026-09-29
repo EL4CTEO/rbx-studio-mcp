@@ -13,8 +13,13 @@ local MAX_RETURN_VALUES = 10
 -- able to produce a response nothing can read.
 local MAX_TABLE_ENTRIES = 50
 local MAX_TABLE_DEPTH = 4
+type Budget = { nodes: number, chars: number }
 
-local function describe(value: any, depth: number?, seen: { [any]: boolean }?): any
+local function describe(value: any, depth: number?, seen: { [any]: boolean }?, shared: Budget?): any
+	local budget = shared or {nodes = 300, chars = 10000}
+	budget.nodes -= 1
+	budget.chars -= 30
+	if budget.nodes < 0 or budget.chars < 100 then return "<budget exceeded>" end
 	local level = depth or 0
 	local visited = seen or {}
 	local kind = typeof(value)
@@ -23,7 +28,13 @@ local function describe(value: any, depth: number?, seen: { [any]: boolean }?): 
 		return string.format("<%s>", kind)
 	end
 	if kind ~= "table" then
-		return Serialize.value(value)
+		local result = Serialize.value(value)
+		if typeof(result) == "string" then
+			local cap = math.min(2000, math.floor(budget.chars / 6))
+			budget.chars -= math.min(#result, cap) * 6
+			return if #result > cap then string.sub(result, 1, cap) .. "<truncated>" else result
+		end
+		return result
 	end
 
 	local source = value :: { [any]: any }
@@ -41,20 +52,23 @@ local function describe(value: any, depth: number?, seen: { [any]: boolean }?): 
 	visited[source] = true
 
 	local count = 0
-	for _ in source do
+	local isArray = true
+	for key in source do
+		if typeof(key) ~= "number" or key < 1 or key > #source or key % 1 ~= 0 then isArray = false end
 		count += 1
+		if count > MAX_TABLE_ENTRIES then break end
 	end
 
 	-- Arrays keep their shape so they read as lists on the other side; anything
 	-- with non-sequential keys becomes a map with stringified keys.
-	if count == #source then
+	if isArray and (count == #source or count > MAX_TABLE_ENTRIES) then
 		local list: { any } = {}
 		for index, item in ipairs(source) do
-			if index > MAX_TABLE_ENTRIES then
-				table.insert(list, string.format("<%d more>", count - MAX_TABLE_ENTRIES))
+			if index > MAX_TABLE_ENTRIES or budget.nodes <= 0 or budget.chars < 100 then
+				table.insert(list, "<more entries>")
 				break
 			end
-			table.insert(list, describe(item, level + 1, visited))
+			table.insert(list, describe(item, level + 1, visited, budget))
 		end
 		-- Cleared on the way out so the same table appearing twice side by side
 		-- still renders twice; only a table containing itself is a cycle.
@@ -66,11 +80,13 @@ local function describe(value: any, depth: number?, seen: { [any]: boolean }?): 
 	local shown = 0
 	for key, item in source do
 		shown += 1
-		if shown > MAX_TABLE_ENTRIES then
-			map["..."] = string.format("<%d more>", count - MAX_TABLE_ENTRIES)
+		if shown > MAX_TABLE_ENTRIES or budget.nodes <= 0 or budget.chars < 100 then
+			map["..."] = "<more entries>"
 			break
 		end
-		map[tostring(key)] = describe(item, level + 1, visited)
+		local name = string.sub(tostring(key), 1, 100)
+		budget.chars -= #name * 6
+		map[name] = describe(item, level + 1, visited, budget)
 	end
 	visited[source] = nil
 	return map
@@ -83,13 +99,16 @@ function Runtime.run(chunk: () -> ...any, timeout: number?): { [string]: any }
 	-- reading them back from the log afterwards would also pick up whatever else
 	-- the place logged in the meantime.
 	local output: { { [string]: any } } = {}
+	local outputChars, outputDropped = 0, 0
 	local connection = LogService.MessageOut:Connect(function(message, messageType, context)
-		if #output < MAX_OUTPUT_LINES then
+		if #output < MAX_OUTPUT_LINES and outputChars < 8000 then
 			-- A structured log's context rides on the line, as it does in `console`.
 			local encoded = LogBuffer.encodeContext(context)
 			if encoded then
 				message ..= "  " .. encoded
 			end
+			if #message > math.min(2000, 8000 - outputChars) then message = string.sub(message, 1, math.min(2000, 8000 - outputChars)) .. "<truncated>" end
+			outputChars += #message
 			table.insert(output, {
 				message = message,
 				level = if messageType == Enum.MessageType.MessageError
@@ -98,7 +117,7 @@ function Runtime.run(chunk: () -> ...any, timeout: number?): { [string]: any }
 					elseif messageType == Enum.MessageType.MessageInfo then "info"
 					else "print",
 			})
-		end
+		else outputDropped += 1 end
 	end)
 
 	local started = os.clock()
@@ -143,24 +162,27 @@ function Runtime.run(chunk: () -> ...any, timeout: number?): { [string]: any }
 	if not results[1] then
 		return {
 			ok = false,
-			error = tostring(results[2]),
+			error = string.sub(tostring(results[2]), 1, 2000),
 			output = output,
 			milliseconds = math.floor(elapsed * 1000 + 0.5),
 		}
 	end
 
 	local returned: { any } = {}
+	local budget: Budget = {nodes = 300, chars = 6000}
 	for index = 2, math.min(results.n, MAX_RETURN_VALUES + 1) do
 		-- A nil return is written out rather than dropped. `table.insert` of nil
 		-- does nothing, so `return a, nil, b` came back as two values and every
 		-- one after the nil shifted into the wrong position.
 		local value = results[index]
-		table.insert(returned, if value == nil then "nil" else describe(value))
+		table.insert(returned, if value == nil then "nil" else describe(value, nil, nil, budget))
 	end
 
 	return {
 		ok = true,
 		returned = returned,
+		outputDropped = if outputDropped > 0 then outputDropped else nil,
+		returnsDropped = if results.n > MAX_RETURN_VALUES + 1 then results.n - MAX_RETURN_VALUES - 1 else nil,
 		output = output,
 		milliseconds = math.floor(elapsed * 1000 + 0.5),
 	}

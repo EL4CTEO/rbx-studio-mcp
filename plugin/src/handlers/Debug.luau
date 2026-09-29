@@ -441,7 +441,7 @@ function Debug.clear(params: { [string]: any }): { [string]: any }
 			local ok, removed = pcall(function()
 				return service:RemoveBreakpoint(target, line)
 			end)
-			untrack(target, line)
+			if ok and removed == true then untrack(target, line) end
 			return { removed = ok and removed == true, path = Paths.of(target), line = line }
 		end
 
@@ -458,27 +458,29 @@ function Debug.clear(params: { [string]: any }): { [string]: any }
 		local removedLines: { number } = {}
 		if lines then
 			for lineNumber in lines do
-				local ok = pcall(function()
-					service:RemoveBreakpoint(target, lineNumber)
+				local ok, removed = pcall(function()
+					return service:RemoveBreakpoint(target, lineNumber)
 				end)
-				if ok then
+				if ok and removed == true then
 					table.insert(removedLines, lineNumber)
+					lines[lineNumber] = nil
 				end
 			end
-			trackedBreakpoints[target] = nil
+			if next(lines) == nil then trackedBreakpoints[target] = nil end
 		end
 		table.sort(removedLines)
 		return { removed = #removedLines > 0, path = Paths.of(target), lines = removedLines }
 	end
 
-	local ok, err = pcall(function()
-		service:ClearBreakpoints()
-	end)
-	if not ok then
-		Dispatch.fail("REFUSED", string.format("ClearBreakpoints refused: %s", tostring(err)))
+	-- Only remove MCP-owned breakpoints, preserving those set in Studio by users.
+	for target, lines in trackedBreakpoints do
+		for lineNumber in lines do
+			local ok, removed = pcall(function() return service:RemoveBreakpoint(target, lineNumber) end)
+			if ok and removed then lines[lineNumber] = nil end
+		end
+		if next(lines) == nil then trackedBreakpoints[target] = nil end
 	end
-	table.clear(trackedBreakpoints)
-	return { cleared = true }
+	return { cleared = next(trackedBreakpoints) == nil }
 end
 
 function Debug.snapshots(params: { [string]: any }): { [string]: any }
@@ -490,15 +492,16 @@ function Debug.snapshots(params: { [string]: any }): { [string]: any }
 		table.insert(out, snapshots[index])
 	end
 
+	local total, lost = #snapshots, overflow
 	if params.clear == true then
-		snapshots = {}
-		overflow = 0
+		for index = #snapshots, first, -1 do table.remove(snapshots, index) end
+		if #snapshots == 0 then overflow = 0 end
 	end
 
 	return {
 		items = out,
-		total = #snapshots,
-		overflow = if overflow > 0 then overflow else nil,
+		total = total,
+		overflow = if lost > 0 then lost else nil,
 		installed = installed,
 	}
 end

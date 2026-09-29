@@ -17,6 +17,7 @@
 ]]
 
 local ChangeHistoryService = game:GetService("ChangeHistoryService")
+local Dispatch = require(script.Parent.Dispatch)
 
 local Undo = {}
 
@@ -121,42 +122,44 @@ end
 	Runs `body` inside a named recording. Returns its result, and whether a
 	recording was actually opened.
 
-	`TryBeginRecording` returns nil when a recording is already open or when
-	history is unavailable. Since the lock above, that can no longer be another
-	MCP batch: it is Studio's own, the user mid-drag in the viewport. The work
-	still runs in that case -- refusing to act would be worse than a slightly
-	coarser undo stack -- it simply joins the surrounding recording, and the lock
-	is still held throughout so the batch stays whole.
-
-	That second return value is not decoration. Whether an operation is undoable
-	is something tools tell the agent, and therefore the user, so it has to be
-	observed rather than assumed: a claim of "one Ctrl+Z" that silently degrades
-	to no undo entry at all is worse than no claim.
+	If Studio cannot open an independent recording, refuse before mutating.
+	All failures release the lock. Finish failures report an uncertain outcome.
 ]]
 function Undo.record<T>(name: string, displayName: string, body: () -> T): (T, boolean)
 	local acquired = acquire()
 
-	local identifier = ChangeHistoryService:TryBeginRecording(name, displayName)
-	if not identifier then
-		local ok, result = pcall(body)
+	local opened, identifier = pcall(function() return ChangeHistoryService:TryBeginRecording(name, displayName) end)
+	if not opened or not identifier then
 		release(acquired)
-		if not ok then
-			error(result, 0)
-		end
-		return result, false
+		Dispatch.fail("UNDO_UNAVAILABLE", "Studio could not open an independent undo recording; nothing was changed.",
+			"Finish any viewport drag or other recording, then retry in edit mode.")
 	end
 
-	local ok, result = pcall(body)
-	if ok then
-		ChangeHistoryService:FinishRecording(identifier, Enum.FinishRecordingOperation.Commit)
-		release(acquired)
-		return result, true
-	end
-
-	ChangeHistoryService:FinishRecording(identifier, Enum.FinishRecordingOperation.Cancel)
-	dropRedo()
+	local ok, result = pcall(function()
+		Dispatch.checkDeadline()
+		return body()
+	end)
+	local finished, finishError = pcall(function()
+		ChangeHistoryService:FinishRecording(identifier, if ok then Enum.FinishRecordingOperation.Commit else Enum.FinishRecordingOperation.Cancel)
+		if not ok then dropRedo() end
+	end)
 	release(acquired)
+	if not finished then Dispatch.fail("UNDO_FAILED", tostring(finishError), "The mutation outcome is uncertain; inspect the affected instances before retrying.") end
+	if ok then return result, true end
 	error(result, 0)
+end
+
+-- Source edits use per-document history, but share the mutation lock so batches
+-- cannot interleave. Deadline checks happen after waiting, before any work.
+function Undo.exclusive<T>(body: () -> T): T
+	local acquired = acquire()
+	local ok, result = pcall(function()
+		Dispatch.checkDeadline()
+		return body()
+	end)
+	release(acquired)
+	if not ok then error(result, 0) end
+	return result
 end
 
 --[[
@@ -167,19 +170,15 @@ end
 function Undo.recordPartial<T>(name: string, displayName: string, body: () -> T): (T, boolean)
 	local acquired = acquire()
 
-	local identifier = ChangeHistoryService:TryBeginRecording(name, displayName)
-	if not identifier then
-		local ok, result = pcall(body)
+	local opened, identifier = pcall(function() return ChangeHistoryService:TryBeginRecording(name, displayName) end)
+	if not opened or not identifier then
 		release(acquired)
-		if not ok then
-			error(result, 0)
-		end
-		return result, false
+		Dispatch.fail("UNDO_UNAVAILABLE", "Studio could not open an independent undo recording; nothing was changed.")
 	end
-
-	local ok, result = pcall(body)
-	ChangeHistoryService:FinishRecording(identifier, Enum.FinishRecordingOperation.Commit)
+	local ok, result = pcall(function() Dispatch.checkDeadline(); return body() end)
+	local finished, finishError = pcall(function() ChangeHistoryService:FinishRecording(identifier, Enum.FinishRecordingOperation.Commit) end)
 	release(acquired)
+	if not finished then Dispatch.fail("UNDO_FAILED", tostring(finishError), "Inspect the mutation outcome before retrying.") end
 	if not ok then
 		error(result, 0)
 	end

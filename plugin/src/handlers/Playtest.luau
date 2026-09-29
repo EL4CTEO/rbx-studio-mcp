@@ -21,6 +21,9 @@ local RunService = game:GetService("RunService")
 local StudioTestService = game:GetService("StudioTestService")
 
 local Dispatch = require(script.Parent.Parent.Dispatch)
+local Context = require(script.Parent.Parent.Context)
+local LogBuffer = require(script.Parent.Parent.LogBuffer)
+local HttpService = game:GetService("HttpService")
 
 -- Long enough for Studio to actually enter the mode before the state is read
 -- back, so the reply describes what happened rather than what was asked for.
@@ -54,6 +57,7 @@ local pending = false
 local lastResult: any = nil
 local lastError: string? = nil
 local startedAt: number? = nil
+local currentTestId: string? = nil
 
 local function service(): any
 	return StudioTestService :: any
@@ -68,15 +72,21 @@ end
 
 local function state(): { [string]: any }
 	local players = {}
+	local diagnosticReady = true
 	-- Only while a test runs: straight after `stop` the editor still lists the
 	-- departing player for a moment, and the reply said one was present.
 	if RunService:IsRunning() then
 		for _, player in game:GetService("Players"):GetPlayers() do
-			table.insert(players, { name = player.Name, userId = player.UserId })
+			local ready = LogBuffer.clientReady(player)
+			diagnosticReady = diagnosticReady and ready
+			table.insert(players, { name = player.Name, userId = player.UserId, diagnosticsReady = ready })
 		end
 	end
 	return {
 		playtestsAllowed = Playtest.isAllowed(),
+		editorStudioId = Context.editorId(),
+		testId = currentTestId or Context.testId(),
+		diagnosticsReady = #players > 0 and diagnosticReady,
 		isEdit = RunService:IsEdit(),
 		isRunning = RunService:IsRunning(),
 		isRunMode = RunService:IsRunMode(),
@@ -100,17 +110,23 @@ end
 	being raised into a caller that has already been answered.
 ]]
 local function launch(name: string, call: () -> any)
+	local deadline = Dispatch.deadline()
+	local testId = HttpService:GenerateGUID(false)
+	local restore = Context.beginTest(testId)
 	pending = true
 	lastResult = nil
 	lastError = nil
 	startedAt = os.clock()
+	currentTestId = testId
 
 	task.spawn(function()
 		local ok, result = pcall(function()
+			Dispatch.checkDeadline(deadline)
 			-- Recheck after scheduling: OFF may have been entered while queued.
 			requireAllowed()
 			return call()
 		end)
+		pcall(restore)
 		pending = false
 		startedAt = nil
 		if ok then

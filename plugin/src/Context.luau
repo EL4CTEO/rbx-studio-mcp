@@ -18,6 +18,51 @@
 local RunService = game:GetService("RunService")
 
 local Context = {}
+local localId: string? = nil
+local EDITOR_ATTRIBUTE = "_MCPTestEditor"
+local TEST_ATTRIBUTE = "_MCPTestId"
+local activeRestore: (() -> ())? = nil
+
+function Context.cleanup()
+	if activeRestore then pcall(activeRestore); activeRestore = nil end
+end
+
+function Context.setup(id: string)
+	localId = id
+end
+
+function Context.editorId(): string?
+	if RunService:IsEdit() then return localId end
+	local value = game:GetAttribute(EDITOR_ATTRIBUTE)
+	return if typeof(value) == "string" then value else nil
+end
+
+function Context.testId(): string?
+	local value = game:GetAttribute(TEST_ATTRIBUTE)
+	return if typeof(value) == "string" then value else nil
+end
+
+-- These attributes are copied into the test DataModel. They are temporary and
+-- restored when Execute* returns, without changing the user's test arguments.
+function Context.beginTest(id: string): () -> ()
+	local beforeEditor, beforeTest = game:GetAttribute(EDITOR_ATTRIBUTE), game:GetAttribute(TEST_ATTRIBUTE)
+	local ok, err = pcall(function()
+		game:SetAttribute(EDITOR_ATTRIBUTE, localId)
+		game:SetAttribute(TEST_ATTRIBUTE, id)
+	end)
+	if not ok then
+		pcall(function() game:SetAttribute(EDITOR_ATTRIBUTE, beforeEditor); game:SetAttribute(TEST_ATTRIBUTE, beforeTest) end)
+		error(err, 0)
+	end
+	local restore = function()
+		if game:GetAttribute(TEST_ATTRIBUTE) == id then
+			game:SetAttribute(EDITOR_ATTRIBUTE, beforeEditor)
+			game:SetAttribute(TEST_ATTRIBUTE, beforeTest)
+		end
+	end
+	activeRestore = restore
+	return restore
+end
 
 function Context.of(): string
 	if RunService:IsEdit() then

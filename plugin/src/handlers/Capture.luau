@@ -254,7 +254,7 @@ end
 	Deliberately does not try to read it. The editor session does that, because
 	only plugin identity may -- see the note on CLIENT_SOURCE.
 ]]
-function Capture.playtestId(_params: { [string]: any }): { [string]: any }
+function Capture.playtestId(params: { [string]: any }): { [string]: any }
 	if RunService:IsEdit() or not RunService:IsRunning() then
 		Dispatch.fail(
 			"NOT_RUNNING",
@@ -271,7 +271,16 @@ function Capture.playtestId(_params: { [string]: any }): { [string]: any }
 			"Start a playtest with a character using `playtest op=\"play\"`."
 		)
 	end
-	local player = players[1]
+	local player: Player? = nil
+	if params.player then
+		for _, candidate in players do if candidate.Name == params.player then player = candidate end end
+		if not player then Dispatch.fail("NO_PLAYER", "No player named " .. tostring(params.player)) end
+	elseif #players == 1 then
+		player = players[1]
+	else
+		Dispatch.fail("AMBIGUOUS_PLAYER", "Select a screenshot player by name.")
+	end
+	player = player :: Player
 	local playerGui = player:FindFirstChildOfClass("PlayerGui")
 	if playerGui == nil then
 		Dispatch.fail("NO_PLAYER", string.format("%s has no PlayerGui yet.", player.Name))

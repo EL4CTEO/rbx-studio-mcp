@@ -13,6 +13,7 @@ local Selection = game:GetService("Selection")
 
 local Commands = require(script.Commands)
 local Config = require(script.Config)
+local Context = require(script.Context)
 local Console = require(script.Console)
 local Dispatch = require(script.Dispatch)
 local History = require(script.History)
@@ -90,6 +91,7 @@ local TRACE_LIMIT = 24
 	reload, so ghost entries do not accumulate.
 ]]
 local SESSION_ID = HttpService:GenerateGUID(false)
+Context.setup(SESSION_ID)
 
 local function studioId(): string
 	return SESSION_ID
@@ -755,7 +757,7 @@ end
 	and any `*Async` call does -- and serialising them would let one slow edit
 	stall every other request on the stream.
 ]]
-local function onCommand(id: string, op: string, params: { [string]: any }?)
+local function onCommand(id: string, op: string, params: { [string]: any }?, deadlineMs: number?)
 	task.spawn(function()
 		local startedAt = os.clock()
 		--[[
@@ -778,7 +780,7 @@ local function onCommand(id: string, op: string, params: { [string]: any }?)
 		]]
 		Console.beginCall(title, Phrase.kindOf(op))
 
-		local result = Dispatch.invoke(id, op, params)
+		local result = Dispatch.invoke(id, op, params, deadlineMs)
 		local milliseconds = (os.clock() - startedAt) * 1000
 
 		--[[
@@ -913,6 +915,7 @@ end)
 
 plugin.Unloading:Connect(function()
 	ClientRelay.stopDiagnostics()
+	Context.cleanup()
 	Transport.stop()
 end)
 

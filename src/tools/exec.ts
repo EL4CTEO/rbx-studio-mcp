@@ -18,6 +18,8 @@ interface ExecResponse {
   milliseconds: number;
   /** Present only when how the code ran limited what it could do. */
   note?: string;
+  outputDropped?: number;
+  returnsDropped?: number;
 }
 
 interface UiAuditResponse {
@@ -68,52 +70,7 @@ export function registerExecTools(context: ToolContext): void {
     {
       name: "execute_luau",
       title: "Run Luau in Studio",
-      description:
-        "Runs Luau in Studio's plugin context and returns whatever it printed, " +
-        "returned, or threw.\n\n" +
-        "This is the escape hatch. Reach for it only when no dedicated tool " +
-        "fits — `create`, `modify`, `delete`, `move`, `script_edit` and `find` " +
-        "validate their input, type values from the live API dump, and wrap " +
-        "writes in an undo recording. Code run here does none of that, so a typo " +
-        "becomes a runtime error instead of a suggestion, and changes it makes " +
-        "may not be undoable as one step.\n\n" +
-        "Good uses: reading something no tool exposes, a one-off calculation " +
-        "over many instances, or calling an engine API the tools do not cover.\n\n" +
-        "Output printed while it runs is captured and returned, so `print` is a " +
-        "reasonable way to get values out. `return` works too, including " +
-        "returning a table — it comes back as a structure, not a summary. There " +
-        "is no timeout for target=\"studio\": an infinite loop will hang Studio until it is " +
-        "force-quit.\n\n" +
-        "Against a running playtest server, Studio disables `loadstring`, so the " +
-        "code is compiled through a ModuleScript instead and runs at script " +
-        "identity — plugin-only APIs are unavailable there. When that happens it " +
-        "is stated in the result rather than left to be inferred from a failure." +
-        "\n\n" +
-        "With target=\"studio\", do not use `require` to read live state out of a running game. This runs " +
-        "in the plugin's own Luau VM with its own module cache, so `require` here " +
-        "returns a second, freshly-initialised copy of the ModuleScript — its " +
-        "counters and caches read as empty while the real one is running fine, and " +
-        "a zero is indistinguishable from a genuine zero. Read live state off the " +
-        "DataModel instead (instances, attributes, properties), or have the game " +
-        "print it and read that with `console`. The result warns when a call could " +
-        "have hit this.\n\n" +
-        "`target=\"client\"` runs in the selected player's actual playtest client VM, " +
-        "including its live require cache. Requires a running playtest server studioId. " +
-        "Output is capped at 200 lines, 10 returns, table depth 4 and 50 entries. " +
-        "The relay is removed on completion or timeout; non-yielding code can still stall the client. " +
-        "Connections/hooks created by the temporary relay (such as Connect or RenderStepped) " +
-        "do not persist after the call returns.\n\n" +
-        "`target=\"live\"` runs the script on Roblox's servers against the " +
-        "PUBLISHED place instead, with no Studio involved. That is how you " +
-        "read or repair production: a real player's data store entry, what " +
-        "the live game actually holds, a migration over saved data. " +
-        "Everything the script prints comes back in `logs`.\n\n" +
-        "BE CAREFUL WITH IT. The Studio path has an undo stack and a place " +
-        "nobody is playing. This one touches live data and live players, and " +
-        "nothing here can put any of it back — so it needs `confirm: true` " +
-        "and you should read before you write. Roblox queues it as a task, " +
-        "so expect seconds, not milliseconds, and a `state` of COMPLETE or " +
-        "FAILED rather than a bare value.",
+      description: "Run Luau when dedicated tools do not fit. Returns bounded output and serialized returns, or an error. target=studio runs in the plugin VM with plugin permissions; writes have no guaranteed undo and non-yielding loops can hang Studio. In a playtest, loadstring is disabled: compilation uses a ModuleScript at script identity, without plugin-only APIs. The plugin has a separate require cache from game scripts: use DataModel state/console for live server state. target=client runs in the selected player's actual playtest client VM/cache; requires runtime studioId and player in multiplayer. The temporary relay and its hooks are removed on completion/timeout; non-yielding code can still stall the client. Output uses global character/node limits, 200 lines, 10 returns, depth 4 and 50 entries per table. target=live executes against the published place, affects production, requires confirm=true and has no undo. Read before writing; the Open Cloud task returns logs and COMPLETE/FAILED state.",
       inputSchema: {
         source: z
           .string()
@@ -212,6 +169,8 @@ export function registerExecTools(context: ToolContext): void {
       }
 
       if (response.note) parts.push(`Note: ${response.note}`);
+      if (response.outputDropped) parts.push(`[${response.outputDropped} output lines omitted by the result budget]`);
+      if (response.returnsDropped) parts.push(`[${response.returnsDropped} return values omitted]`);
       parts.push(`(${response.milliseconds}ms)`);
       return response.ok ? text(parts.join("\n\n")) : errorText(parts.join("\n\n"));
     },

@@ -105,9 +105,9 @@ export const TIMEOUT = (op: string, ms: number, state?: TimeoutState): ToolError
 
   // The two shapes point in opposite directions, so the advice does too.
   const hint = state.delivered
-    ? "Studio is usually compiling, mid-playtest transition, or blocked on a modal " +
-      "dialog. It often clears on its own — retry once before treating it as broken. " +
-      "If the work is genuinely long, run it through execute_luau in your own coroutine."
+    ? "The outcome is unknown: delivered work may still finish. Do not blindly " +
+      "retry a mutation. Inspect the affected instances or read the edited scripts " +
+      "first; retry only after verifying what actually changed."
     : "The plugin has stopped collecting commands, which normally means Studio is " +
       "starting or stopping a playtest, or the window lost its connection. Call " +
       "list_studios to see which sessions are live, and address the call at one of them.";
@@ -120,7 +120,8 @@ export const DISCONNECTED = (): ToolError =>
     "DISCONNECTED",
     "The Studio connection dropped while the request was in flight.",
     "Studio was closed, the place was switched, or the plugin was disabled. " +
-      "Call studio_status to confirm a live connection, then retry the request.",
+      "Call studio_status to confirm a live connection. Delivered mutations may have " +
+      "completed: inspect the affected state before retrying.",
   );
 
 /** Wraps unknown throwables so every tool boundary reports the same shape. */

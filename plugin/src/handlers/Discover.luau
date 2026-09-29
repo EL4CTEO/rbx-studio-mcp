@@ -172,7 +172,18 @@ function Discover.tree(params: { [string]: any }): { [string]: any }
 	local items: { { [string]: any } } = {}
 	local memo: Paths.NameIndex = {}
 	for index = offset + 1, math.min(offset + limit, #matched) do
-		table.insert(items, summarise(matched[index] :: Instance, memo))
+		local instance = matched[index] :: Instance
+		local entry = summarise(instance, memo)
+		if typeof(params.properties) == "table" then
+			local properties, unreadable = {}, {}
+			for _, name in params.properties do
+				local ok, value = Serialize.readProperty(instance, name)
+				if ok then properties[name] = value else table.insert(unreadable, name) end
+			end
+			entry.properties = properties
+			if #unreadable > 0 then entry.unreadable = unreadable end
+		end
+		table.insert(items, entry)
 	end
 
 	return {

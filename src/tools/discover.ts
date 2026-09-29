@@ -7,7 +7,7 @@ import {
   suggestClass,
   suggestProperty,
 } from "../lib/apidump.js";
-import { errorText, cursorSchema, decodeCursor, detailSchema, encodeCursor, json, limitSchema, table, text, textOf, type Detail, type ToolResult } from "../lib/format.js";
+import { errorText, cursorSchema, decodeCursor, detailSchema, encodeCursor, json, page, limitSchema, table, text, textOf, type Detail, type ToolResult } from "../lib/format.js";
 import { defineTool, type ToolContext } from "../lib/tool.js";
 
 /** Shape the plugin returns for tree/find. */
@@ -48,6 +48,7 @@ function pageOf(response: ListResponse, detail: Detail, more?: string): ToolResu
   const columns = detail === "concise" ? ["path", "className"] : ["path", "className", "childCount"];
   const nextOffset = response.offset + response.items.length;
   return table(columns, response.items as unknown as Array<Record<string, unknown>>, {
+    offset: response.offset,
     total: response.total,
     ...(nextOffset < response.total ? { nextCursor: encodeCursor(nextOffset) } : {}),
     ...(more ? { more } : {}),
@@ -455,6 +456,7 @@ export function registerDiscoverTools(context: ToolContext): void {
           .string()
           .optional()
           .describe('Property that must exist, e.g. "Anchored". Combine with propertyValue.'),
+        properties: z.array(z.string().min(1)).max(16).optional().describe("Project just these properties on matching rows, avoiding a second inspect call. Unreadable names are reported."),
         propertyValue: z
           .string()
           .optional()
@@ -544,6 +546,7 @@ export function registerDiscoverTools(context: ToolContext): void {
           selector: args.selector,
           propertyName: args.propertyName,
           propertyValue: args.propertyValue,
+          properties: args.properties,
           limit: args.limit,
           offset: decodeCursor(args.cursor),
         },
@@ -564,6 +567,7 @@ export function registerDiscoverTools(context: ToolContext): void {
             "Try a shorter `nameContains`, or drop a filter to widen the search.",
         );
       }
+      if (args.properties) return page(response.items, {offset: response.offset, total: response.total, more: `searched ${response.searched ?? 0} instances`});
       return pageOf(response, args.detail, `searched ${response.searched ?? 0} instances`);
     },
   );
