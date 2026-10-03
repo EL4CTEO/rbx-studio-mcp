@@ -1,6 +1,9 @@
 import type { Credentials } from "./credentials.js";
 import { ToolError } from "./errors.js";
+import { createHash } from "node:crypto";
 import { call, paged } from "./opencloud.js";
+import { reportProgress } from "./progress.js";
+import { pollDelayMs } from "./timeout.js";
 
 /**
  * Operating the published experience, over Open Cloud.
@@ -15,7 +18,7 @@ import { call, paged } from "./opencloud.js";
  * a place file is not instant. `awaitOperation` hides that; nothing else should
  * have to know.
  */
-const OPERATION_INTERVAL_MS = 1_000;
+const OPERATION_CEILING_MS = 1_000;
 const OPERATION_TIMEOUT_MS = 60_000;
 
 interface Operation {
@@ -40,6 +43,7 @@ async function awaitOperation(
 ): Promise<Record<string, unknown>> {
   let operation = started;
   const deadline = Date.now() + OPERATION_TIMEOUT_MS;
+  let attempt = 0;
 
   while (!operation.done) {
     if (!operation.path) {
@@ -48,7 +52,8 @@ async function awaitOperation(
     if (Date.now() >= deadline) {
       throw new ToolError("TIMEOUT", "Roblox did not finish this request in time.");
     }
-    await new Promise((done) => setTimeout(done, OPERATION_INTERVAL_MS));
+    reportProgress("waiting for Roblox to finish the operation");
+    await new Promise((done) => setTimeout(done, pollDelayMs(attempt++, OPERATION_CEILING_MS, 250)));
     operation = await call<Operation>(credentials, {
       path: `/cloud/v2/${operation.path}`,
       scope,
@@ -141,21 +146,27 @@ export async function liveInstance(
 
 export async function liveChildren(
   credentials: Credentials,
-  args: { universeId: string; placeId: string; instanceId: string; limit: number },
+  args: { universeId: string; placeId: string; instanceId: string; limit: number; pageToken?: string },
 ): Promise<Record<string, unknown>> {
   const started = await call<Operation>(credentials, {
     path: `${instancePath(args.universeId, args.placeId, args.instanceId)}:listChildren`,
-    query: { maxPageSize: Math.min(args.limit, 100) },
+    query: { maxPageSize: Math.min(args.limit, 100), pageToken: args.pageToken },
     scope: INSTANCE_SCOPE,
   });
   const done = await awaitOperation(credentials, started, INSTANCE_SCOPE);
   const items = (done["instances"] as CloudInstance[] | undefined) ?? [];
+  const next = done["nextPageToken"];
   return {
     parent: args.instanceId,
     items: items.slice(0, args.limit).map(describe),
     count: Math.min(items.length, args.limit),
+    // Present when the folder holds more than this page; see resolveLivePath.
+    nextPageToken: typeof next === "string" && next !== "" ? next : undefined,
   };
 }
+
+/** Pages of children read while looking for one name: 10 x 100 is a very large folder. */
+const MAX_CHILD_PAGES = 10;
 
 /**
  * Resolves a dot path to a cloud instance id by walking down from the root.
@@ -182,14 +193,25 @@ export async function resolveLivePath(
   let found: Record<string, unknown> | null = null;
 
   for (const segment of segments) {
-    const children = await liveChildren(credentials, {
-      universeId: args.universeId,
-      placeId: args.placeId,
-      instanceId: current,
-      limit: 100,
-    });
-    const items = children["items"] as Array<Record<string, unknown>>;
-    const match = items.find((entry) => entry["name"] === segment);
+    // A folder of more than a hundred children comes back a page at a time, and
+    // the name wanted is as likely to be on the second as the first.
+    let items: Array<Record<string, unknown>> = [];
+    let match: Record<string, unknown> | undefined;
+    let pageToken: string | undefined;
+    for (let pages = 0; pages < MAX_CHILD_PAGES && match === undefined; pages += 1) {
+      const children = await liveChildren(credentials, {
+        universeId: args.universeId,
+        placeId: args.placeId,
+        instanceId: current,
+        limit: 100,
+        pageToken,
+      });
+      const page = children["items"] as Array<Record<string, unknown>>;
+      if (pages === 0) items = page;
+      match = page.find((entry) => entry["name"] === segment);
+      pageToken = children["nextPageToken"] as string | undefined;
+      if (pageToken === undefined) break;
+    }
     if (!match) {
       const names = items
         .slice(0, 12)
@@ -216,6 +238,17 @@ export async function resolveLivePath(
   };
 }
 
+/**
+ * A short fingerprint of a script's source, for "has this changed since I read it".
+ *
+ * Not the Studio path's `rev`: that one is computed inside the plugin, which a
+ * published script never passes through. This one is only ever compared with
+ * itself, between a live read and a live write.
+ */
+export function liveRevision(source: string): string {
+  return createHash("sha256").update(source, "utf8").digest("hex").slice(0, 12);
+}
+
 export async function liveScriptWrite(
   credentials: Credentials,
   args: {
@@ -224,6 +257,8 @@ export async function liveScriptWrite(
     instanceId: string;
     className: "Script" | "LocalScript" | "ModuleScript";
     source: string;
+    /** The `rev` a live read printed. When given, the write is refused if the script has moved on. */
+    revision?: string;
   },
 ): Promise<Record<string, unknown>> {
   // Roblox caps the source at 200,000 bytes AFTER UTF-8 encoding, so the check
@@ -235,6 +270,29 @@ export async function liveScriptWrite(
       "TOO_LARGE",
       `That source is ${bytes} bytes; Roblox accepts 200,000 for a cloud script edit.`,
     );
+  }
+
+  //[[ Checked here, because the API offers nothing to check with.
+  //
+  // A live write has no undo and no etag: whatever was published or edited
+  // since the read is replaced without a word. Reading the script again just
+  // before the write narrows that from "any time since the agent looked" to the
+  // moment between two calls, which is as close as this API allows.
+  //]]
+  if (args.revision !== undefined && args.revision !== "") {
+    const now = await liveInstance(credentials, {
+      universeId: args.universeId,
+      placeId: args.placeId,
+      instanceId: args.instanceId,
+    });
+    const found = liveRevision(typeof now["source"] === "string" ? now["source"] : "");
+    if (found !== args.revision) {
+      throw new ToolError(
+        "STALE_SCRIPT",
+        `The published script changed since it was read (expected rev ${args.revision}, found ${found}).`,
+        'Somebody published or edited it in the meantime. Read it again with `script_read target="live"` and rebuild the edit against what is there now.',
+      );
+    }
   }
 
   const started = await call<Operation>(credentials, {
@@ -252,6 +310,8 @@ export async function liveScriptWrite(
     ...describe(done as CloudInstance),
     written: true,
     bytes,
+    // Of what was written, so the next edit can name it without a re-read.
+    rev: liveRevision(args.source),
     note:
       "This changed the SAVED place. Servers already running still have the old " +
       "code — restart them with `assets op=\"publish\" restart:true`, or wait for " +

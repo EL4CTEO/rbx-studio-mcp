@@ -251,6 +251,70 @@ async function saveManifest(dir: string, manifest: Manifest): Promise<void> {
   await rename(`${target}.tmp`, target);
 }
 
+// Sourcemap --------------------------------------------------------------------
+
+const SOURCEMAP = "sourcemap.json";
+
+interface SourcemapNode {
+  name: string;
+  className: string;
+  filePaths?: string[];
+  children?: SourcemapNode[];
+}
+
+/**
+ * Writes a Rojo-style `sourcemap.json` into the sync folder, so luau-lsp can
+ * follow `require(script.Parent.X)` and `game.ServerScriptService.Y` to the
+ * right file. Without one, every require between synced scripts is "unknown"
+ * and a type check drowns in false errors.
+ *
+ * Built from the manifest -- every file sync tracks, where it is in Studio --
+ * with instance classes from the last scan. File paths are relative to the
+ * folder that holds the sync folder, which is where luau-lsp is run from.
+ * Rewritten only when it changes, so it never looks like an edit to `watch`.
+ */
+async function writeSourcemap(dir: string, manifest: Manifest, scan: ScanResult): Promise<void> {
+  const classOf = new Map(scan.nodes.map((node) => [node.path, node.className]));
+  const root: SourcemapNode = { name: "Game", className: "DataModel", children: [] };
+  const base = path.dirname(dir);
+
+  for (const [file, entry] of Object.entries(manifest.files).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+    const parts = file.split("/");
+    const leaf = parts.pop()!;
+    const parsed = classFromFile(leaf);
+    if (!parsed) continue;
+    // An init file stands for its folder: the folder is the script.
+    const chain = parsed.init ? parts : [...parts, parsed.stem];
+    let node = root;
+    let studioPath = "";
+    chain.forEach((segment, index) => {
+      const name = decodeName(segment.replace(/~\d+$/, ""));
+      studioPath = studioPath === "" ? name : `${studioPath}.${name}`;
+      const last = index === chain.length - 1;
+      node.children ??= [];
+      let child = node.children.find((candidate) => candidate.name === name && (!last || candidate.filePaths === undefined));
+      if (!child) {
+        child = {
+          name,
+          className: last ? entry.className : index === 0 ? name : (classOf.get(studioPath) ?? "Folder"),
+        };
+        node.children.push(child);
+      }
+      if (last) {
+        // Children sort before `init`, so the folder may already exist as a plain one.
+        child.className = entry.className;
+        child.filePaths = [posix(path.relative(base, absolute(dir, file)))];
+      }
+      node = child;
+    });
+  }
+
+  const text = `${JSON.stringify(root)}\n`;
+  const target = path.join(dir, SOURCEMAP);
+  const current = await readFile(target, "utf8").catch(() => undefined);
+  if (current !== text) await writeText(dir, SOURCEMAP, text);
+}
+
 // Studio ---------------------------------------------------------------------
 
 interface ReadItem {
@@ -646,6 +710,7 @@ async function syncOnce(bridge: StudioBridge, options: SyncOptions): Promise<Syn
   manifest.placeName = session.placeName;
   manifest.roots = options.roots ?? manifest.roots;
   await saveManifest(dir, manifest);
+  await writeSourcemap(dir, manifest, scan).catch(() => undefined);
 
   const diskSide = ["pull", "create-disk", "delete-disk", "move-disk"]
     .map((kind) => [kind, report.counts[kind] ?? 0] as const)
@@ -1115,6 +1180,9 @@ class Watch {
     this.watcher = watchFolder(this.options.dir, { recursive: true }, (_event, name) => {
       const changed = name ? posix(String(name)) : "";
       if (changed === "" || changed.split("/").some((part) => part.startsWith(".")) || changed.endsWith(".tmp")) return;
+      // The sourcemap is the one file sync writes that is not a change. A name
+      // with a dot is not enough to skip: folders may be called `Config.v2`.
+      if (changed === SOURCEMAP) return;
       this.files.add(changed);
       this.schedule(250);
     });

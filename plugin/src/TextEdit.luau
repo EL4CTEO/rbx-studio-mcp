@@ -28,6 +28,8 @@ type LineEdit = {
 	startLine: number,
 	endLine: number,
 	replacement: string,
+	-- Position in the request: the last tiebreak in the apply order.
+	order: number,
 }
 
 --[[
@@ -183,13 +185,14 @@ function TextEdit.apply(path: string, source: string, edits: { Edit }): string
 
 	local lineEdits: { LineEdit } = {}
 	local findEdits: { Edit } = {}
-	for _, edit in edits do
+	for position, edit in edits do
 		local start = edit.startLine
 		if start ~= nil then
 			table.insert(lineEdits, {
 				startLine = start,
 				endLine = tonumber(edit.endLine) or start,
 				replacement = edit.replacement :: string,
+				order = position,
 			})
 		else
 			table.insert(findEdits, edit)
@@ -199,8 +202,22 @@ function TextEdit.apply(path: string, source: string, edits: { Edit }): string
 	local lines = TextEdit.toLines(source)
 
 	if #lineEdits > 0 then
+		--[[
+			Bottom up, and fully ordered: `table.sort` is not stable, so edits that
+			start on the same line must not be left to land in either order. An
+			insert (`endLine = startLine - 1`) applied before a replace of that line
+			pushes the line down, and the replace then hits the wrong text. The
+			longer range goes first, so an insert sits above what replaces the line;
+			equal ranges apply last-given first, which leaves the first-given on top.
+		]]
 		table.sort(lineEdits, function(a, b)
-			return a.startLine > b.startLine
+			if a.startLine ~= b.startLine then
+				return a.startLine > b.startLine
+			end
+			if a.endLine ~= b.endLine then
+				return a.endLine > b.endLine
+			end
+			return a.order > b.order
 		end)
 
 		-- Every range is checked against the file as the agent read it, before any

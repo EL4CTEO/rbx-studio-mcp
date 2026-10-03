@@ -90,7 +90,7 @@ sync op="push"      # ./studio -> Studio
 sync op="watch"     # both ways, live, until op="stop"
 ```
 
-- Rojo-style layout: `Main.server.luau`, `.client.luau`, `.luau`; a script with children is a folder with `init`.
+- Rojo-style layout: `Main.server.luau`, `.client.luau`, `.luau`; a script with children is a folder with `init`. A `sourcemap.json` is written for luau-lsp.
 - Rename or move a file and the script moves with it, keeping its attributes and references.
 - Edited on both sides? It's a conflict and neither side is touched. Studio's version waits in `.rbx-sync/conflicts/`; merge into the file and sync again, or pass `prefer: "studio"` / `"disk"`.
 - Deleting a file deletes the script (one Ctrl+Z). A script deleted in Studio sends its file to `.rbx-sync/trash`.
@@ -106,10 +106,10 @@ Some calls reach past Studio to Roblox itself. All need one API key; everything 
 | `assets op="upload"` | send a local audio/image/model/video file, get an asset id |
 | `datastore target="live"` | the running game's real player data |
 | `execute_luau target="live"` | run a script on the published place |
-| `universe` | restart servers, message them, ban players, read server logs, sell products and passes |
+| `universe` | restart servers, message them, ban players, read server logs, sell products and passes, read analytics, schedule events |
 | also | `assets op="grant"`, `op="publish"`, `script_read`/`script_edit target="live"` |
 
-Make a key at [Creator Dashboard → Credentials](https://create.roblox.com/dashboard/credentials), adding the permissions you want: `assets`, `universe-datastores`, `ordered-data-stores`, `luau-execution-sessions`, `universe-places`, `universe-place-instances`, `universe`, `messaging-service`, `user-restrictions`, `inventory`, `users`, `asset-permissions`, `developer-products`, `game-passes`.
+Make a key at [Creator Dashboard → Credentials](https://create.roblox.com/dashboard/credentials), adding the permissions you want: `assets`, `universe-datastores`, `ordered-data-stores`, `luau-execution-sessions`, `universe-places`, `universe-place-instances`, `universe`, `messaging-service`, `user-restrictions`, `inventory`, `users`, `asset-permissions`, `developer-products`, `game-passes`, `universe-analytics`. Scheduling events needs the `universe.event:read` and `:write` permissions.
 
 Then in the Studio panel:
 

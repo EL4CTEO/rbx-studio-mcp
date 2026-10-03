@@ -31,6 +31,9 @@ export type Scope =
   | "universe.place.luau-execution-session:write"
   | "universe.place.instance:read"
   | "universe.place.instance:write"
+  | "universe.analytics:read"
+  | "universe.event:read"
+  | "universe.event:write"
   | "developer-product:read"
   | "developer-product:write"
   | "game-pass:read"
@@ -316,6 +319,42 @@ function failure(status: number, body: string, scope: Scope, retryAfter?: string
  * using this.
  */
 export async function call<T>(
+  credentials: Credentials,
+  options: CallOptions,
+): Promise<T> {
+  // A 429 means the request was refused before it did anything, so asking again
+  // is safe for every method; a 5xx might have run, so only a read repeats.
+  // Short waits only: a long Retry-After is the caller's to hear about.
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await callOnce<T>(credentials, options);
+    } catch (cause) {
+      const wait = attempt < MAX_RETRIES ? retryDelayMs(cause, options.method ?? "GET", attempt) : undefined;
+      if (wait === undefined) throw cause;
+      await new Promise((done) => setTimeout(done, wait));
+    }
+  }
+}
+
+const MAX_RETRIES = 2;
+const MAX_RETRY_WAIT_MS = 8_000;
+
+/** How long to wait before repeating a failed request, or undefined if it should not be repeated. */
+function retryDelayMs(cause: unknown, method: string, attempt: number): number | undefined {
+  if (!(cause instanceof ToolError)) return undefined;
+  // The analytics "data point budget" is a 429 too, but waiting does not shrink the query.
+  if (cause.code === "RATE_LIMITED" && !/budget/i.test(cause.message)) {
+    const asked = Number(/wait (\d+)s/.exec(cause.hint ?? "")?.[1]);
+    const wait = Number.isFinite(asked) && asked > 0 ? asked * 1000 : 1_000 * 2 ** attempt;
+    return wait <= MAX_RETRY_WAIT_MS ? wait : undefined;
+  }
+  if (method === "GET" && cause.code === "CLOUD_ERROR" && /^Roblox returned 50[234]\b/.test(cause.message)) {
+    return 500 * 2 ** attempt;
+  }
+  return undefined;
+}
+
+async function callOnce<T>(
   credentials: Credentials,
   options: CallOptions,
 ): Promise<T> {

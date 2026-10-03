@@ -1,5 +1,7 @@
 import { z } from "zod";
 import { ToolError } from "../lib/errors.js";
+import { GRANULARITIES, lastDays, parseFilter, queryMetric, renderSeries } from "../lib/analytics.js";
+import { cancelEvent, getEvent, listEvents, saveEvent } from "../lib/events.js";
 import { json, table, text, textOf, type ToolResult } from "../lib/format.js";
 import {
   getInventory,
@@ -76,16 +78,28 @@ export function registerUniverseTools(context: ToolContext): void {
         "their ids and prices — the ids a purchase script needs. `sell` " +
         "creates one, or changes one given `itemId`. Creating checks the name " +
         "first, so a retried create cannot leave two \"100 Coins\" products.\n\n" +
+        "`analytics` reads the game's own numbers over a date range: players, " +
+        "revenue, retention, crashes, frame rate, as a time series, optionally " +
+        "split by a `breakdown` such as Platform or Country. Common metrics: " +
+        "DailyActiveUsers, Visits, DailyRevenue, PayingUsers, ForwardD1Retention, " +
+        "AverageSessionLengthMinutes, PeakConcurrentPlayers, ClientCrashCount, " +
+        "ClientFpsP50. Give `days` for the last N whole UTC days, or " +
+        "`startTime` and `endTime`.\n\n" +
+        "`events` lists the game's scheduled events, or reads one by " +
+        "`eventId`. `schedule` creates one (`title`, `startTime`, `endTime`) or " +
+        "changes one given `eventId`; `cancel` deletes it. Players see these on " +
+        "the experience's page.\n\n" +
         "Everything here needs an Open Cloud key and a universe id. The user " +
         "sets both once with `cloud` in the Studio panel.",
       inputSchema: {
         op: z
-          .enum(["restart", "message", "ban", "unban", "bans", "user", "inventory", "servers", "logs", "products", "sell"])
+          .enum(["restart", "message", "ban", "unban", "bans", "user", "inventory", "servers", "logs", "products", "sell", "analytics", "events", "schedule", "cancel"])
           .describe(
             "'restart' rolls servers onto the new version, 'message' publishes " +
               "to MessagingService, 'ban'/'unban'/'bans' manage player access, " +
               "'user' and 'inventory' look someone up, 'servers' and 'logs' read " +
-              "live servers, 'products' and 'sell' manage products and passes.",
+              "live servers, 'products' and 'sell' manage products and passes, " +
+              "'analytics' reads metrics, 'events'/'schedule'/'cancel' manage scheduled events.",
           ),
         universeId: z
           .string()
@@ -160,7 +174,8 @@ export function registerUniverseTools(context: ToolContext): void {
             'inventory: an Open Cloud filter, e.g. `gamePassIds=123` or ' +
               "`assetIds=456`, to ask about specific items rather than listing " +
               "everything. servers: a CEL filter over the server fields, e.g. " +
-              "`occupancy > 0`.",
+              "`occupancy > 0`. analytics: Dimension=a,b;Dimension=c, e.g. " +
+              "`Platform=Phone,Tablet;Country=US`.",
           ),
         limit: z
           .number()
@@ -168,12 +183,12 @@ export function registerUniverseTools(context: ToolContext): void {
           .min(1)
           .max(200)
           .default(50)
-          .describe("bans/inventory/servers/logs: how many rows to return."),
+          .describe("bans/inventory/servers/logs/events: how many rows to return. analytics: most breakdown series."),
         confirm: z
           .boolean()
           .optional()
           .describe(
-            "Required for restart, message, ban, unban and sell. Each of these " +
+            "Required for restart, message, ban, unban, sell, schedule and cancel. Each of these " +
               "is visible to players the moment it runs and none can be undone " +
               "from here.",
           ),
@@ -190,7 +205,7 @@ export function registerUniverseTools(context: ToolContext): void {
           .optional()
           .describe("sell only: the product or pass to change. Omit to create a new one."),
         name: z.string().optional().describe("sell only: the item's name. Required to create."),
-        description: z.string().optional().describe("sell only: the item's description."),
+        description: z.string().optional().describe("sell/schedule: the item's or event's description."),
         price: z.number().int().min(1).optional().describe("sell only: price in Robux."),
         forSale: z
           .boolean()
@@ -200,6 +215,32 @@ export function registerUniverseTools(context: ToolContext): void {
           .string()
           .optional()
           .describe("sell only: path to a local .png/.jpg/.bmp/.tga icon."),
+        metric: z.string().optional().describe("analytics only: the metric, e.g. DailyActiveUsers."),
+        granularity: z
+          .enum(GRANULARITIES)
+          .optional()
+          .describe("analytics only: size of each time bucket. Default OneDay. Which a metric allows varies."),
+        breakdown: z
+          .array(z.string())
+          .max(3)
+          .optional()
+          .describe('analytics only: dimensions to split by, e.g. ["Platform"].'),
+        days: z
+          .number()
+          .int()
+          .min(1)
+          .max(730)
+          .optional()
+          .describe("analytics only: the last N whole UTC days, not counting today. Default 7."),
+        startTime: z
+          .string()
+          .optional()
+          .describe("analytics/schedule: ISO 8601 UTC start, e.g. 2026-11-07T18:00:00Z. analytics: inclusive."),
+        endTime: z.string().optional().describe("analytics/schedule: ISO 8601 UTC end. analytics: exclusive."),
+        eventId: z.string().optional().describe("events/schedule/cancel: the event, as listed by `events`."),
+        title: z.string().max(100).optional().describe("schedule only: the event's title."),
+        subtitle: z.string().max(200).optional().describe("schedule only: a line under the title."),
+        visibility: z.string().optional().describe("schedule only: e.g. public."),
       },
       destructive: true,
     },
@@ -211,7 +252,7 @@ export function registerUniverseTools(context: ToolContext): void {
         explicit: args.universeId !== undefined,
       });
 
-      const needsConfirm = ["restart", "message", "ban", "unban", "sell"].includes(args.op);
+      const needsConfirm = ["restart", "message", "ban", "unban", "sell", "schedule", "cancel"].includes(args.op);
       if (needsConfirm && args.confirm !== true) {
         throw new ToolError(
           "NEEDS_CONFIRM",
@@ -221,6 +262,59 @@ export function registerUniverseTools(context: ToolContext): void {
               "user that in plain words, then pass confirm: true."
             : "Nothing here can undo it. Pass confirm: true once the user has agreed.",
         );
+      }
+
+      if (args.op === "analytics") {
+        if (!args.metric) {
+          throw new ToolError("BAD_PARAMS", "analytics needs a `metric`, e.g. DailyActiveUsers.");
+        }
+        if ((args.startTime === undefined) !== (args.endTime === undefined)) {
+          throw new ToolError("BAD_PARAMS", "Give both `startTime` and `endTime`, or `days`.");
+        }
+        const range =
+          args.startTime !== undefined && args.endTime !== undefined
+            ? { startTime: args.startTime, endTime: args.endTime }
+            : lastDays(args.days ?? 7);
+        const query = {
+          universeId,
+          metric: args.metric,
+          granularity: args.granularity ?? "OneDay",
+          ...range,
+          breakdown: args.breakdown,
+          filter: args.filter ? parseFilter(args.filter) : undefined,
+          limit: args.limit,
+        } as const;
+        return text(renderSeries(query, await queryMetric(credentials, query)));
+      }
+
+      if (args.op === "events") {
+        if (args.eventId) return json(await getEvent(credentials, args.eventId));
+        const found = await listEvents(credentials, { universeId, limit: args.limit });
+        if (found.items.length === 0) return text("This game has no scheduled events.");
+        return table(["id", "title", "start", "end", "visibility"], found.items, {
+          more: found.more ? "More events exist: raise `limit`." : undefined,
+        });
+      }
+
+      if (args.op === "schedule") {
+        return json(
+          await saveEvent(credentials, {
+            universeId,
+            eventId: args.eventId,
+            title: args.title,
+            subtitle: args.subtitle,
+            description: args.description,
+            startTime: args.startTime,
+            endTime: args.endTime,
+            visibility: args.visibility,
+          }),
+          "Players can see this on the experience's page and RSVP to it.",
+        );
+      }
+
+      if (args.op === "cancel") {
+        if (!args.eventId) throw new ToolError("BAD_PARAMS", 'cancel needs an `eventId`. List them with `op="events"`.');
+        return json(await cancelEvent(credentials, args.eventId));
       }
 
       if (args.op === "restart") {

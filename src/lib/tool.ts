@@ -4,6 +4,7 @@ import type { StudioBridge } from "../bridge/api.js";
 import { toToolError } from "./errors.js";
 import { errorText, type ToolResult } from "./format.js";
 import { takeNotices } from "./notices.js";
+import { withProgress, type ProgressExtra } from "./progress.js";
 
 /** Everything a tool module needs, passed once at registration. */
 export interface ToolContext {
@@ -64,10 +65,10 @@ export function defineTool<Shape extends ZodRawShape>(
         openWorldHint: true,
       },
     },
-    (async (args: ToolArgs<Shape>) => {
+    (async (args: ToolArgs<Shape>, extra?: ProgressExtra) => {
       let result: ToolResult;
       try {
-        result = await handler(args);
+        result = await withProgress(spec.name, extra, () => handler(args));
       } catch (cause) {
         const error = toToolError(cause);
         result = errorText(`[${error.code}] ${error.message}`);

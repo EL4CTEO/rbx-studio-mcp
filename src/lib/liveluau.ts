@@ -1,6 +1,8 @@
 import type { Credentials } from "./credentials.js";
 import { ToolError } from "./errors.js";
 import { call } from "./opencloud.js";
+import { reportProgress } from "./progress.js";
+import { pollDelayMs } from "./timeout.js";
 
 /**
  * Running Luau against the PUBLISHED game, over Open Cloud.
@@ -20,7 +22,10 @@ import { call } from "./opencloud.js";
  * stack and a place file nobody is playing; this touches live data stores and
  * live players, and nothing here can put any of it back. The tool gates it.
  */
-const POLL_INTERVAL_MS = 2_000;
+const POLL_CEILING_MS = 2_000;
+
+/** Log pages read after a run; a chatty script is cut here and says so. */
+const MAX_LOG_PAGES = 5;
 
 interface Task {
   path?: string;
@@ -32,6 +37,7 @@ interface Task {
 
 interface LogPage {
   luauExecutionSessionTaskLogs?: Array<{ messages?: string[] }>;
+  nextPageToken?: string;
 }
 
 export async function runLiveLuau(
@@ -63,6 +69,7 @@ export async function runLiveLuau(
    */
   const deadline = Date.now() + (args.timeoutSeconds + 30) * 1000;
   let task = started;
+  let attempt = 0;
 
   while (task.state === "QUEUED" || task.state === "PROCESSING" || task.state === undefined) {
     if (Date.now() >= deadline) {
@@ -75,7 +82,8 @@ export async function runLiveLuau(
           "it was not cancelled.",
       };
     }
-    await new Promise((done) => setTimeout(done, POLL_INTERVAL_MS));
+    reportProgress(`script is ${(task.state ?? "starting").toLowerCase()} on Roblox's servers`);
+    await new Promise((done) => setTimeout(done, pollDelayMs(attempt++, POLL_CEILING_MS)));
     task = await call<Task>(credentials, {
       path: `/cloud/v2/${started.path}`,
       query: { view: "FULL" },
@@ -86,13 +94,20 @@ export async function runLiveLuau(
   // Logs are a separate resource from the result, and they hold everything the
   // script printed — which for a diagnostic script is the whole point.
   let logs: string[] = [];
+  let logsCut = false;
   try {
-    const page = await call<LogPage>(credentials, {
-      path: `/cloud/v2/${started.path}/logs`,
-      query: { maxPageSize: 100 },
-      scope: "universe.place.luau-execution-session:write",
-    });
-    logs = (page.luauExecutionSessionTaskLogs ?? []).flatMap((entry) => entry.messages ?? []);
+    let pageToken: string | undefined;
+    for (let pages = 0; pages < MAX_LOG_PAGES; pages += 1) {
+      const page = await call<LogPage>(credentials, {
+        path: `/cloud/v2/${started.path}/logs`,
+        query: { maxPageSize: 100, pageToken },
+        scope: "universe.place.luau-execution-session:write",
+      });
+      logs.push(...(page.luauExecutionSessionTaskLogs ?? []).flatMap((entry) => entry.messages ?? []));
+      pageToken = page.nextPageToken || undefined;
+      if (pageToken === undefined) break;
+      logsCut = pages === MAX_LOG_PAGES - 1;
+    }
   } catch {
     // A missing log page is not worth failing a successful run over.
   }
@@ -104,6 +119,7 @@ export async function runLiveLuau(
     state: task.state,
     results: task.output?.results,
     logs,
+    logsCut: logsCut || undefined,
     error: task.error ? `${task.error.code ?? "error"}: ${task.error.message ?? ""}` : undefined,
   };
 }

@@ -194,3 +194,23 @@ do
 	assert(TextEdit.apply("x", "a\n", { { path = "x", startLine = 1, endLine = 1, replacement = "" } }) == "", "deleting everything leaves nothing")
 end
 print("final newline: ok")
+
+-- Edits that start on the same line apply in a fixed order, whatever order they arrive in.
+do
+	local base = "a\nb\nc\n"
+	local function lines(edits)
+		return TextEdit.apply("x", base, edits)
+	end
+	local insert = function(text) return { path = "x", startLine = 2, endLine = 1, replacement = text } end
+	local replace = { path = "x", startLine = 2, endLine = 2, replacement = "B" }
+
+	-- An insert and a replace on one line: the insert lands above the replacement,
+	-- and the replace still hits the line the agent read, not one the insert pushed down.
+	assert(lines({ insert("new"), replace }) == "a\nnew\nB\nc\n", "insert then replace")
+	assert(lines({ replace, insert("new") }) == "a\nnew\nB\nc\n", "replace then insert")
+
+	-- Two inserts at one line keep the order they were given in.
+	assert(lines({ insert("one"), insert("two") }) == "a\none\ntwo\nb\nc\n", "two inserts keep their order")
+	assert(lines({ insert("two"), insert("one") }) == "a\ntwo\none\nb\nc\n", "and the reverse order too")
+end
+print("same-line edits: ok")

@@ -2,6 +2,26 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.8.7
+
+### Added
+- `sync` writes a `sourcemap.json`, so luau-lsp resolves requires between synced scripts.
+- `universe op="analytics"`: the game's metrics over a date range (players, revenue, retention, crashes, frame rate), optionally split by platform, country and more.
+- `universe op="events"`, `"schedule"`, `"cancel"`: list, create, reschedule and cancel the game's scheduled events.
+- `script_edit target="live"` takes `revision` (the `rev` `script_read target="live"` now prints) and refuses to overwrite a script that was published since.
+- Long calls tell the client they are still working, so clients with a short tool timeout (such as Codex) stop giving up on `generate`, live Luau, uploads and playtests that are fine.
+
+### Changed
+- Dependencies updated (MCP SDK 1.32).
+- Open Cloud calls repeat a rate-limited request (and a failed read) after the wait Roblox asks for, up to twice.
+- Live Luau runs, uploads and place operations are noticed as finished sooner: checks start at 0.4s, not 2s.
+
+### Fixed
+- `script_edit`: line edits starting on the same line (an insert and a replace) now apply in a fixed order; before, one order could hit the wrong lines.
+- `script_read target="live"` could not reach scripts past the first 100 in a folder, and a cut listing did not say so.
+- `execute_luau target="live"` returned only the first page of the script's output.
+- `sync watch` missed changes to folders whose names contain a dot.
+
 ## 0.8.6
 
 ### Added

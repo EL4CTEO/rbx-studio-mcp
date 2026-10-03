@@ -479,3 +479,279 @@ process.stdout.write("client console schema and cursor forwarding: ok\n");
  }
  process.stdout.write("datastore live set keeps users and attributes: ok\n");
 }
+
+// Open Cloud: a 429 is repeated after the wait it names, a 502 only on a read, and
+// a live Luau run polls quickly and reads every page of its logs. Fetch is stubbed.
+{
+ const { call } = await import("../dist/lib/opencloud.js");
+ const { runLiveLuau } = await import("../dist/lib/liveluau.js");
+ const { pollDelayMs } = await import("../dist/lib/timeout.js");
+ const saved = globalThis.fetch;
+ const credentials = { apiKey: "test-key" };
+ const reply = (status, body = {}, headers = {}) => new Response(JSON.stringify(body), { status, headers });
+ try {
+  assert.deepEqual([0, 1, 2, 3, 9].map((attempt) => pollDelayMs(attempt, 2000)), [400, 640, 1024, 1638, 2000]);
+
+  let seen = 0;
+  globalThis.fetch = async () => (++seen === 1 ? reply(429, { message: "slow down" }, { "retry-after": "1" }) : reply(200, { ok: true }));
+  const started = Date.now();
+  assert.deepEqual(await call(credentials, { path: "/x", scope: "universe:read" }), { ok: true });
+  assert.equal(seen, 2, "a 429 is repeated once");
+  assert.ok(Date.now() - started >= 900, "after the wait Roblox asked for");
+
+  seen = 0;
+  globalThis.fetch = async () => (++seen === 1 ? reply(502, { message: "bad gateway" }) : reply(200, { ok: true }));
+  assert.deepEqual(await call(credentials, { path: "/x", scope: "universe:read" }), { ok: true });
+  assert.equal(seen, 2, "a read that got a 502 is repeated");
+
+  seen = 0;
+  globalThis.fetch = async () => (++seen, reply(502, { message: "bad gateway" }));
+  await assert.rejects(call(credentials, { method: "POST", path: "/x", body: {}, scope: "universe:write" }), /502/);
+  assert.equal(seen, 1, "a write that got a 502 may have run, so it is not repeated");
+
+  seen = 0;
+  globalThis.fetch = async () => (++seen, reply(429, { message: "slow down" }, { "retry-after": "60" }));
+  await assert.rejects(call(credentials, { path: "/x", scope: "universe:read" }), /Rate limited/);
+  assert.equal(seen, 1, "a long wait is reported, not slept through");
+
+  const log = (...messages) => ({ luauExecutionSessionTaskLogs: [{ messages }] });
+  const hits = [];
+  globalThis.fetch = async (url, init) => {
+   const href = new URL(String(url));
+   hits.push(`${init?.method ?? "GET"} ${href.pathname}${href.searchParams.get("pageToken") ? "?p=" + href.searchParams.get("pageToken") : ""}`);
+   if (init?.method === "POST") return reply(200, { path: "universes/1/places/2/luau-execution-sessions/s/tasks/t", state: "QUEUED" });
+   if (href.pathname.endsWith("/logs")) {
+    return href.searchParams.get("pageToken") === "two" ? reply(200, log("c")) : reply(200, { ...log("a", "b"), nextPageToken: "two" });
+   }
+   return reply(200, { path: "universes/1/places/2/luau-execution-sessions/s/tasks/t", state: "COMPLETE", output: { results: [1] } });
+  };
+  const began = Date.now();
+  const run = await runLiveLuau(credentials, { universeId: "1", placeId: "2", source: "return 1", timeoutSeconds: 5 });
+  assert.ok(Date.now() - began < 1500, "the first check is not two seconds away");
+  assert.deepEqual(run.logs, ["a", "b", "c"]);
+  assert.equal(run.logsCut, undefined);
+  assert.ok(hits.some((hit) => hit.endsWith("/logs?p=two")), "the second log page was read");
+ } finally {
+  globalThis.fetch = saved;
+ }
+ process.stdout.write("open cloud: retries, quick polling, paged logs: ok\n");
+}
+
+// Live paths: a name on the second page of a big folder is found, and a listing says when it is cut.
+{
+ const { resolveLivePath, liveChildren } = await import("../dist/lib/liveops.js");
+ const saved = globalThis.fetch;
+ const credentials = { apiKey: "test-key" };
+ const entry = (id, name) => ({ path: `i/${id}`, hasChildren: false, engineInstance: { Id: id, Name: name, Details: { ModuleScript: { Source: "" } } } });
+ const seen = [];
+ globalThis.fetch = async (url) => {
+  const href = new URL(String(url));
+  const token = href.searchParams.get("pageToken");
+  seen.push(token ?? "first");
+  const page = token === "p2"
+   ? { instances: [entry("late", "Zeta")] }
+   : { instances: [entry("a", "Alpha"), entry("b", "Beta")], nextPageToken: "p2" };
+  return new Response(JSON.stringify({ done: true, response: page }), { status: 200 });
+ };
+ try {
+  const found = await resolveLivePath(credentials, { universeId: "1", placeId: "2", path: "Zeta" });
+  assert.equal(found.id, "late");
+  assert.deepEqual(seen, ["first", "p2"], "stopped paging at the match");
+  seen.length = 0;
+  await assert.rejects(resolveLivePath(credentials, { universeId: "1", placeId: "2", path: "Nope" }), /no "Nope"/);
+  assert.deepEqual(seen, ["first", "p2"], "a miss reads every page before giving up");
+  const listed = await liveChildren(credentials, { universeId: "1", placeId: "2", instanceId: "root", limit: 100 });
+  assert.equal(listed.nextPageToken, "p2");
+ } finally {
+  globalThis.fetch = saved;
+ }
+ process.stdout.write("live paths: paged folders: ok\n");
+}
+
+// universe analytics: a query that answers 202 is polled, filters and breakdowns reach the
+// request, and the data-point budget is reported once instead of retried. Fetch is stubbed.
+{
+ const universe = registered.get("universe");
+ const saved = { fetch: globalThis.fetch, env: { ...process.env } };
+ Object.assign(process.env, { ROBLOX_API_KEY: "test-key", ROBLOX_USER_ID: "1", ROBLOX_UNIVERSE_ID: "10", ROBLOX_PLACE_ID: "20" });
+ context.bridge.call = async () => ({ placeId: 20 });
+ const sent = [];
+ let mode = "ok";
+ globalThis.fetch = async (url, init) => {
+  const href = String(url);
+  sent.push({ href, method: init?.method ?? "GET", body: init?.body });
+  if (href.includes("/universes/v1/places/")) return new Response(JSON.stringify({ universeId: 10 }), { status: 200 });
+  if (mode === "budget") return new Response(JSON.stringify({ code: 3000, message: "The query exceeded the data point budget." }), { status: 429 });
+  if (init?.method === "POST") return new Response(JSON.stringify({ path: "v1/universes/10/operations/metrics/abc", done: false }), { status: 202 });
+  return new Response(JSON.stringify({
+   path: "v1/universes/10/operations/metrics/abc",
+   done: true,
+   response: { values: [
+    { breakdowns: [{ dimension: "Platform", value: "Phone" }], dataPoints: [{ time: "2026-09-01T00:00:00Z", value: 100 }, { time: "2026-09-02T00:00:00Z", value: 140.5 }] },
+    { breakdowns: [{ dimension: "Platform", value: "Computer" }], dataPoints: [{ time: "2026-09-01T00:00:00Z", value: 40 }] },
+   ] },
+  }), { status: 200 });
+ };
+ const run = (args) => universe.handler(z.object(universe.spec.inputSchema).parse(args));
+ try {
+  const out = (await run({ op: "analytics", metric: "DailyActiveUsers", days: 2, breakdown: ["Platform"], filter: "Platform=Phone,Computer;Country=US", limit: 5 })).content[0].text;
+  const post = sent.find((entry) => entry.method === "POST");
+  assert.ok(post.href.endsWith("/analytics-query-api/v1/universes/10/metrics"));
+  const body = JSON.parse(post.body);
+  assert.equal(body.metric, "DailyActiveUsers");
+  assert.equal(body.granularity, "OneDay");
+  assert.deepEqual(body.breakdown, ["Platform"]);
+  assert.equal(body.limit, 5);
+  assert.deepEqual(body.filter, [{ dimension: "Platform", values: ["Phone", "Computer"], operation: "In" }, { dimension: "Country", values: ["US"], operation: "In" }]);
+  assert.match(body.startTime, /^\d{4}-\d{2}-\d{2}T00:00:00Z$/);
+  assert.equal(new Date(body.endTime) - new Date(body.startTime), 2 * 86_400_000);
+  assert.ok(sent.some((entry) => entry.method === "GET" && entry.href.endsWith("/analytics-query-api/v1/universes/10/operations/metrics/abc")), "the 202 was polled");
+  assert.match(out, /\[Platform=Phone\] 2 point\(s\): latest 140\.5, min 100, max 140\.5, mean 120\.25/);
+  assert.match(out, /\[Platform=Computer\] 1 point\(s\)/);
+  assert.match(out, /2026-09-02 {2}140\.5/);
+
+  assert.match((await run({ op: "analytics" })).content[0].text, /needs a `metric`/);
+  assert.match((await run({ op: "analytics", metric: "Visits", startTime: "2026-09-01T00:00:00Z" })).content[0].text, /both `startTime` and `endTime`/);
+  assert.match((await run({ op: "analytics", metric: "Visits", filter: "Platform" })).content[0].text, /not a filter/);
+
+  mode = "budget";
+  sent.length = 0;
+  const budget = await run({ op: "analytics", metric: "DailyActiveUsers", days: 400 });
+  assert.match(budget.content[0].text, /TOO_MUCH_DATA/);
+  assert.equal(sent.filter((entry) => entry.method === "POST").length, 1, "a budget refusal is not retried");
+ } finally {
+  globalThis.fetch = saved.fetch;
+  for (const key of ["ROBLOX_API_KEY", "ROBLOX_USER_ID", "ROBLOX_UNIVERSE_ID", "ROBLOX_PLACE_ID"]) {
+   if (saved.env[key] === undefined) delete process.env[key]; else process.env[key] = saved.env[key];
+  }
+ }
+ process.stdout.write("universe analytics: ok\n");
+}
+
+// universe events: listed, read, created, rescheduled and cancelled; the public ones need confirm.
+{
+ const universe = registered.get("universe");
+ const saved = { fetch: globalThis.fetch, env: { ...process.env } };
+ Object.assign(process.env, { ROBLOX_API_KEY: "test-key", ROBLOX_USER_ID: "1", ROBLOX_UNIVERSE_ID: "10", ROBLOX_PLACE_ID: "20" });
+ context.bridge.call = async () => ({ placeId: 20 });
+ const sent = [];
+ globalThis.fetch = async (url, init) => {
+  const href = String(url);
+  const method = init?.method ?? "GET";
+  sent.push({ href, method, body: init?.body });
+  if (href.includes("/universes/v1/places/")) return new Response(JSON.stringify({ universeId: 10 }), { status: 200 });
+  if (method === "DELETE") return new Response(null, { status: 204 });
+  if (method === "POST" || method === "PATCH") return new Response(JSON.stringify({ id: "77", title: JSON.parse(init.body).title ?? "Old title", startTime: "2026-11-07T18:00:00Z", endTime: "2026-11-07T20:00:00Z", visibility: "public" }), { status: 200 });
+  if (href.includes("/game-events/77")) return new Response(JSON.stringify({ id: "77", title: "Launch", description: "Big day" }), { status: 200 });
+  return new Response(JSON.stringify({ gameEvents: [{ id: "77", title: "Launch", startTime: "2026-11-07T18:00:00Z", endTime: "2026-11-07T20:00:00Z", visibility: "public" }] }), { status: 200 });
+ };
+ const run = (args) => universe.handler(z.object(universe.spec.inputSchema).parse(args));
+ try {
+  const list = (await run({ op: "events" })).content[0].text;
+  assert.match(list, /77 \| Launch \| 2026-11-07T18:00:00Z \| 2026-11-07T20:00:00Z \| public/);
+  assert.match(sent.find((entry) => entry.href.includes("/game-events") && entry.method === "GET").href, /\/virtual-events\/v3\/universes\/10\/game-events\?/);
+  assert.match((await run({ op: "events", eventId: "77" })).content[0].text, /"description": ?"Big day"/);
+
+  assert.match((await run({ op: "schedule", title: "Launch", startTime: "a", endTime: "b" })).content[0].text, /NEEDS_CONFIRM/);
+  assert.match((await run({ op: "cancel", eventId: "77" })).content[0].text, /NEEDS_CONFIRM/);
+  assert.match((await run({ op: "schedule", title: "Launch", confirm: true })).content[0].text, /needs `startTime`, `endTime`/);
+
+  const created = await run({ op: "schedule", title: "Launch", startTime: "2026-11-07T18:00:00Z", endTime: "2026-11-07T20:00:00Z", visibility: "public", confirm: true });
+  assert.match(created.content[0].text, /"action": ?"created"/);
+  const post = sent.find((entry) => entry.method === "POST");
+  assert.ok(post.href.endsWith("/virtual-events/v3/universes/10/game-events"));
+  assert.deepEqual(JSON.parse(post.body), { title: "Launch", startTime: "2026-11-07T18:00:00Z", endTime: "2026-11-07T20:00:00Z", visibility: "public" });
+
+  const moved = await run({ op: "schedule", eventId: "77", startTime: "2026-11-08T18:00:00Z", confirm: true });
+  assert.match(moved.content[0].text, /"action": ?"updated"/);
+  const patch = sent.find((entry) => entry.method === "PATCH");
+  assert.ok(patch.href.endsWith("/virtual-events/v3/game-events/77"));
+  assert.deepEqual(JSON.parse(patch.body), { startTime: "2026-11-08T18:00:00Z" }, "only what was given is sent");
+
+  const gone = await run({ op: "cancel", eventId: "77", confirm: true });
+  assert.match(gone.content[0].text, /"action": ?"cancelled"/);
+  assert.ok(sent.some((entry) => entry.method === "DELETE" && entry.href.endsWith("/virtual-events/v3/game-events/77")));
+ } finally {
+  globalThis.fetch = saved.fetch;
+  for (const key of ["ROBLOX_API_KEY", "ROBLOX_USER_ID", "ROBLOX_UNIVERSE_ID", "ROBLOX_PLACE_ID"]) {
+   if (saved.env[key] === undefined) delete process.env[key]; else process.env[key] = saved.env[key];
+  }
+ }
+ process.stdout.write("universe events: ok\n");
+}
+
+// live script write: a revision that no longer matches the published script is refused before the write.
+{
+ const { liveRevision, liveScriptWrite } = await import("../dist/lib/liveops.js");
+ const saved = globalThis.fetch;
+ const credentials = { apiKey: "test-key" };
+ let published = "old";
+ const sent = [];
+ globalThis.fetch = async (url, init) => {
+  const method = init?.method ?? "GET";
+  sent.push(method);
+  if (method === "PATCH") published = JSON.parse(init.body).engineInstance.Details.ModuleScript.Source;
+  const instance = { done: true, response: { engineInstance: { Id: "x", Name: "M", Details: { ModuleScript: { Source: published } } } } };
+  return new Response(JSON.stringify(instance), { status: 200 });
+ };
+ const write = (revision) => liveScriptWrite(credentials, { universeId: "1", placeId: "2", instanceId: "x", className: "ModuleScript", source: "new", revision });
+ try {
+  published = "a newer version somebody published";
+  await assert.rejects(write(liveRevision("old")), /changed since it was read/);
+  assert.ok(!sent.includes("PATCH"), "nothing was written");
+  published = "old";
+  const done = await write(liveRevision("old"));
+  assert.equal(done.rev, liveRevision("new"), "the result names the new revision");
+  assert.equal(published, "new");
+  sent.length = 0;
+  await write(undefined);
+  assert.deepEqual(sent, ["PATCH"], "without a revision it writes as before, with no extra read");
+ } finally {
+  globalThis.fetch = saved;
+ }
+ process.stdout.write("live script write: revision check: ok\n");
+}
+
+// progress: a call that outlasts the first interval sends heartbeats naming what it waits on, only
+// when the client asked, and stops when the call ends.
+{
+ const { defineTool } = await import("../dist/lib/tool.js");
+ const { progressTiming, reportProgress } = await import("../dist/lib/progress.js");
+ const slow = {};
+ const fake = { server: { registerTool(name, spec, handler) { slow[name] = handler; } }, bridge: {} };
+ defineTool(fake, { name: "slow", title: "Slow", description: "x", inputSchema: {}, readOnly: true }, async (args) => {
+  reportProgress("waiting on Roblox");
+  await new Promise((done) => setTimeout(done, args.ms ?? 0));
+  return { content: [{ type: "text", text: "done" }] };
+ });
+ const saved = { ...progressTiming };
+ Object.assign(progressTiming, { firstMs: 40, everyMs: 40 });
+ try {
+  const heard = [];
+  const extra = { _meta: { progressToken: "tok" }, sendNotification: async (note) => { heard.push(note); } };
+  const result = await slow.slow({ ms: 230 }, extra);
+  assert.equal(result.content[0].text, "done");
+  assert.ok(heard.length >= 3, `expected heartbeats, got ${heard.length}`);
+  assert.ok(heard.every((note) => note.method === "notifications/progress" && note.params.progressToken === "tok"));
+  assert.deepEqual(heard.map((note) => note.params.progress), heard.map((_, index) => index + 1), "progress only rises");
+  assert.match(heard[0].params.message, /^slow: waiting on Roblox \(\d+s\)$/);
+  const count = heard.length;
+  await new Promise((done) => setTimeout(done, 120));
+  assert.equal(heard.length, count, "nothing is sent after the call ends");
+
+  heard.length = 0;
+  // Nothing owed when the call ends: a slow runner must not be able to make this one late.
+  progressTiming.firstMs = 400;
+  await slow.slow({ ms: 0 }, extra);
+  progressTiming.firstMs = 40;
+  await slow.slow({ ms: 120 }, { sendNotification: extra.sendNotification });
+  await slow.slow({ ms: 120 });
+  assert.equal(heard.length, 0, "a quick call, or a client that sent no token, hears nothing");
+
+  const failing = { _meta: { progressToken: 1 }, sendNotification: async () => { throw new Error("client went away"); } };
+  assert.equal((await slow.slow({ ms: 120 }, failing)).content[0].text, "done", "a lost notification does not fail the call");
+ } finally {
+  Object.assign(progressTiming, saved);
+ }
+ process.stdout.write("progress heartbeats: ok\n");
+}

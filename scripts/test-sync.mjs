@@ -6,7 +6,7 @@
  * Usage: node scripts/test-sync.mjs   (after `npm run build`)
  */
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -136,6 +136,20 @@ try {
   assert.equal(read("StarterGui/Shop/Client.client.luau"), "-- client\n");
   assert.ok(existsSync(file(".rbx-sync/manifest.json")) && read(".rbx-sync/.gitignore") === "*\n");
   assert.equal((await sync()).lines.length, 0, "a second run is a no-op");
+
+  // A Rojo-style sourcemap for luau-lsp, paths relative to the folder above.
+  const sourcemap = JSON.parse(read("sourcemap.json"));
+  const service = sourcemap.children.find((child) => child.name === "ServerScriptService");
+  const main = service.children.find((child) => child.name === "Main");
+  const folder = path.basename(dir);
+  assert.equal(sourcemap.className, "DataModel");
+  assert.equal(service.className, "ServerScriptService");
+  assert.deepEqual(main.filePaths, [`${folder}/ServerScriptService/Main/init.server.luau`]);
+  assert.equal(main.className, "Script");
+  assert.deepEqual(main.children.map((child) => [child.name, child.className]), [["Helper", "ModuleScript"]]);
+  const stamp = statSync(file("sourcemap.json")).mtimeMs;
+  await sync();
+  assert.equal(statSync(file("sourcemap.json")).mtimeMs, stamp, "unchanged sourcemap is not rewritten");
 
   // Edit a file (with CRLF, as some editors save): it reaches Studio as LF.
   writeFileSync(file("ServerScriptService/Main/Helper.luau"), "return { answer = 42 }\r\n");

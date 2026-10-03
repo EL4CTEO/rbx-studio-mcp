@@ -3,6 +3,8 @@ import { basename, extname, resolve } from "node:path";
 import type { Credentials } from "./credentials.js";
 import { ToolError } from "./errors.js";
 import { call } from "./opencloud.js";
+import { reportProgress } from "./progress.js";
+import { pollDelayMs } from "./timeout.js";
 
 /**
  * Putting local files into Roblox: upload, grant, publish.
@@ -31,7 +33,7 @@ const MAX_BYTES = 20 * 1024 * 1024;
  * failure for something that is merely slow.
  */
 const POLL_TIMEOUT_MS = 90_000;
-const POLL_INTERVAL_MS = 2_000;
+const POLL_CEILING_MS = 2_000;
 
 /**
  * Extension to (assetType, content type).
@@ -185,7 +187,7 @@ async function poll(credentials: Credentials, operationPath: string): Promise<Op
   const id = operationPath.replace(/^operations\//, "");
   const deadline = Date.now() + POLL_TIMEOUT_MS;
 
-  for (;;) {
+  for (let attempt = 0; ; attempt += 1) {
     const operation = await call<Operation>(credentials, {
       path: `${OPERATIONS_ENDPOINT}/${id}`,
       scope: "assets:write",
@@ -199,7 +201,8 @@ async function poll(credentials: Credentials, operationPath: string): Promise<Op
         "Check the Development Items tab on the Creator Dashboard in a minute.",
       );
     }
-    await new Promise((done) => setTimeout(done, POLL_INTERVAL_MS));
+    reportProgress("waiting for Roblox to finish processing the asset");
+    await new Promise((done) => setTimeout(done, pollDelayMs(attempt, POLL_CEILING_MS, 600)));
   }
 }
 

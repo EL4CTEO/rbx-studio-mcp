@@ -1,7 +1,7 @@
 import { z } from "zod";
-import { errorText, body, CHARACTER_LIMIT, cursorSchema, decodeCursor, encodeCursor, json, limitSchema, table, text, type ToolResult } from "../lib/format.js";
+import { errorText, body, CHARACTER_LIMIT, cursorSchema, decodeCursor, encodeCursor, json, limitSchema, table, text, textOf, type ToolResult } from "../lib/format.js";
 import { ToolError } from "../lib/errors.js";
-import { liveChildren, liveInstance, liveScriptWrite, resolveLivePath } from "../lib/liveops.js";
+import { liveChildren, liveInstance, liveRevision, liveScriptWrite, resolveLivePath } from "../lib/liveops.js";
 import {
   assertTargetsOpenPlace,
   requireCredentials,
@@ -333,7 +333,15 @@ export function registerScriptTools(context: ToolContext): void {
                 "It only reports Folders and scripts.",
             );
           }
-          return table(["name", "className", "hasChildren"], items);
+          const listed = table(["name", "className", "hasChildren"], items);
+          return children["nextPageToken"] === undefined
+            ? listed
+            : text(
+                `${textOf(listed)}
+
+Only the first ${items.length} are shown; there are more. ` +
+                  "Name a deeper path to reach the rest, or read one by its full path.",
+              );
         }
 
         if (wanted === undefined) return errorText('live read needs a path in `paths`.');
@@ -350,7 +358,7 @@ export function registerScriptTools(context: ToolContext): void {
               "Use `list: true` to see what is inside it.",
           );
         }
-        return body(source, `${wanted} (${read["className"]}, published place)`);
+        return body(source, `${wanted} (${read["className"]}, published place, rev ${liveRevision(source)})`);
       }
 
       if (args.op === "open") {
@@ -483,7 +491,8 @@ export function registerScriptTools(context: ToolContext): void {
         "edit, it replaces the whole `source` rather than finding and " +
         "replacing, and there is no undo of any kind — so read the script " +
         "with `script_read target=\"live\"` first and send back the whole " +
-        "thing. Needs `confirm: true`.\n\n" +
+        "thing, with its `rev` as `revision` so the write is refused if someone " +
+        "published in between. Needs `confirm: true`.\n\n" +
         "It changes the SAVED place, not running servers: people already " +
         "playing keep the old code until their server empties. Follow it " +
         "with `universe op=\"restart\"` to roll them over.",
@@ -498,6 +507,12 @@ export function registerScriptTools(context: ToolContext): void {
           ),
         path: z.string().optional().describe('live only: the script, e.g. "ServerScriptService.Main".'),
         source: z.string().optional().describe("live only: the complete new source."),
+        revision: z
+          .string()
+          .optional()
+          .describe(
+            'live only: the `rev` `script_read target="live"` printed. The write is refused if the published script changed since. Always pass it.',
+          ),
         universeId: z.string().optional().describe("live only: omit to use `cloud universe`."),
         placeId: z.string().optional().describe("live only: omit to use `cloud place`."),
         confirm: z.boolean().optional().describe('Required for target="live".'),
@@ -578,7 +593,7 @@ export function registerScriptTools(context: ToolContext): void {
             "NEEDS_CONFIRM",
             "This rewrites a script in the published place.",
             "There is no undo. Read it with `script_read target=\"live\"` first " +
-              "and send back the whole file, then pass confirm: true.",
+              "and send back the whole file with its `rev` as `revision`, then pass confirm: true.",
           );
         }
         const credentials = await requireCredentials();
@@ -604,6 +619,7 @@ export function registerScriptTools(context: ToolContext): void {
             instanceId: at.id,
             className: at.className,
             source: args.source,
+            revision: args.revision,
           }),
         );
       }
