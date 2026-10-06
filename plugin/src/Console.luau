@@ -194,6 +194,18 @@ type Record = {
 	message: string,
 	detail: string?,
 	stamp: string,
+	-- Memo of `renderRecord`, valid only while `renderedWith` is the live
+	-- palette. Records never change after they are logged, so the palette is
+	-- the one thing that can make this stale.
+	rendered: { string }?,
+	renderedWith: Themes.Palette?,
+	-- Its row in the log, while it has one. Rows are built when a record is
+	-- first painted and destroyed when it is evicted, so an append costs one
+	-- instance rather than a relayout of the whole log.
+	widget: Frame?,
+	-- Monotonic, never reused: the row's LayoutOrder, so a row built late (after
+	-- a filter change) still lands where it belongs.
+	order: number,
 }
 
 --[[
@@ -229,8 +241,16 @@ type State = {
 		means by a log line.
 	]]
 	entries: number,
-	label: TextLabel?,
+	-- Holds one row per visible record. See `paint`.
+	list: Frame?,
 	scroller: ScrollingFrame?,
+	-- Set when every row must be rebuilt: a theme or filter change, a clear.
+	rebuild: boolean,
+	nextOrder: number,
+	-- Rows that arrived while the user was reading history, and the pill that
+	-- offers the way back to the tail.
+	unread: number,
+	jumpPill: TextButton?,
 	statusDot: TextLabel?,
 	statusText: TextLabel?,
 	metaText: TextLabel?,
@@ -319,8 +339,12 @@ local state: State = {
 	status = "disconnected",
 	statusMeta = "",
 	entries = 0,
-	label = nil,
+	list = nil,
 	scroller = nil,
+	rebuild = false,
+	nextOrder = 0,
+	unread = 0,
+	jumpPill = nil,
 	statusDot = nil,
 	statusText = nil,
 	metaText = nil,
@@ -520,23 +544,141 @@ local function renderRecord(record: Record): { string }
 	return lines
 end
 
-local function paint()
-	state.dirty = false
-	local label = state.label
-	if not label then
-		return
-	end
+--[[
+	The rows a record occupies, coloured for the live palette.
 
-	local lines: { string } = {}
+	Memoised: records never change after they are logged, so the palette is the
+	one thing that can make a render stale.
+]]
+local function renderedLines(record: Record): { string }
+	local rendered = record.rendered
+	if rendered == nil or record.renderedWith ~= PALETTE then
+		rendered = renderRecord(record)
+		record.rendered = rendered
+		record.renderedWith = PALETTE
+	end
+	return rendered :: { string }
+end
+
+local function visible(record: Record): boolean
 	local filter = state.filter
+	return filter == nil or filter[record.level] == true
+end
+
+-- The same text the old single label held. The clear wipe copies it.
+local function allText(): string
+	local lines: { string } = {}
 	for _, record in state.records do
-		if filter == nil or filter[record.level] then
-			for _, line in renderRecord(record) do
+		if visible(record) then
+			for _, line in renderedLines(record) do
 				table.insert(lines, line)
 			end
 		end
 	end
-	label.Text = table.concat(lines, "\n")
+	return table.concat(lines, "\n")
+end
+
+-- Levels that earn a coloured bar down the left edge: the two a reader is
+-- scanning for. A bar on every row would be a column of noise.
+local BAR_LEVELS: { [string]: string } = { error = "red", warn = "amber" }
+
+local function buildRow(record: Record, list: Frame): Frame
+	local row = Instance.new("TextButton")
+	row.Name = "Row"
+	row.Text = ""
+	row.AutoButtonColor = false
+	row.BorderSizePixel = 0
+	row.BackgroundColor3 = PALETTE.violet
+	row.BackgroundTransparency = 1
+	row.Size = UDim2.new(1, 0, 0, 0)
+	row.AutomaticSize = Enum.AutomaticSize.Y
+	row.LayoutOrder = record.order
+
+	local body = Instance.new("TextLabel")
+	body.Name = "Body"
+	body.Size = UDim2.new(1, 0, 0, 0)
+	body.AutomaticSize = Enum.AutomaticSize.Y
+	body.BackgroundTransparency = 1
+	body.Font = Enum.Font.Code
+	body.TextSize = 12
+	body.LineHeight = 1.25
+	body.TextColor3 = PALETTE.text
+	body.RichText = true
+	body.TextWrapped = true
+	body.TextXAlignment = Enum.TextXAlignment.Left
+	body.TextYAlignment = Enum.TextYAlignment.Top
+	body.Text = table.concat(renderedLines(record), "\n")
+	body.Parent = row
+
+	local barKey = BAR_LEVELS[record.level]
+	if barKey ~= nil then
+		local bar = Instance.new("Frame")
+		bar.Name = "Bar"
+		bar.BorderSizePixel = 0
+		bar.BackgroundColor3 = PALETTE[barKey]
+		bar.Position = UDim2.new(0, -8, 0, 1)
+		bar.Size = UDim2.new(0, 2, 1, -2)
+		bar.Parent = row
+	end
+
+	-- A faint wash under the pointer, so a long log can be read down a column.
+	row.MouseEnter:Connect(function()
+		row.BackgroundTransparency = 0.92
+	end)
+	row.MouseLeave:Connect(function()
+		row.BackgroundTransparency = 1
+	end)
+
+	row.Parent = list
+	return row
+end
+
+local function updateJumpPill()
+	local pill = state.jumpPill
+	if pill == nil then
+		return
+	end
+	pill.Visible = not state.pinned
+	pill.Text = if state.unread > 0
+		then string.format("\u{25BC} %d new", state.unread)
+		else "\u{25BC} latest"
+end
+
+--[[
+	Brings the log up to date with the records, building only what is missing.
+
+	One TextButton per record instead of one label holding all of them: the label
+	re-laid-out every line of RichText on each append, a cost that grows with the
+	log, where a row is a constant. A theme switch, a filter change and a clear
+	are the only things that touch existing rows, and they say so with
+	`state.rebuild`.
+]]
+local function paint()
+	state.dirty = false
+	local list = state.list
+	if not list then
+		return
+	end
+
+	if state.rebuild then
+		state.rebuild = false
+		for _, child in list:GetChildren() do
+			if child:IsA("GuiObject") then
+				child:Destroy()
+			end
+		end
+		for _, record in state.records do
+			record.widget = nil
+		end
+	end
+
+	local built = 0
+	for _, record in state.records do
+		if record.widget == nil and visible(record) then
+			record.widget = buildRow(record, list)
+			built += 1
+		end
+	end
 
 	-- Only follow the tail when the user has not scrolled up to read history.
 	local scroller = state.scroller
@@ -546,6 +688,9 @@ local function paint()
 				scroller.CanvasPosition = Vector2.new(0, math.max(0, scroller.AbsoluteCanvasSize.Y))
 			end
 		end)
+	elseif built > 0 then
+		state.unread += built
+		updateJumpPill()
 	end
 end
 
@@ -656,7 +801,9 @@ end
 	ragged offset.
 ]]
 function Console.log(level: Level, message: string, detail: string?)
+	state.nextOrder += 1
 	table.insert(state.records, {
+		order = state.nextOrder,
 		level = level,
 		message = Format.flatten(message),
 		detail = if detail ~= nil then Format.flatten(detail) else nil,
@@ -667,7 +814,10 @@ function Console.log(level: Level, message: string, detail: string?)
 	})
 	state.entries += 1
 	while #state.records > MAX_RECORDS do
-		table.remove(state.records, 1)
+		local evicted = table.remove(state.records, 1) :: Record
+		if evicted.widget ~= nil then
+			evicted.widget:Destroy()
+		end
 	end
 	redraw()
 	notify("log", { level, message, detail })
@@ -720,7 +870,9 @@ function Console.restore(rows: { Row })
 		-- A level from disk names a colour and a sigil; an unknown one would
 		-- render as `info` silently, so it is normalised here instead.
 		local level: Level = if LEVELS[row.level] ~= nil then (row.level :: any) else "dim"
+		state.nextOrder += 1
 		table.insert(state.records, {
+			order = state.nextOrder,
 			level = level,
 			message = row.message,
 			detail = row.detail,
@@ -1102,7 +1254,7 @@ local function crtWipe()
 	local ghost = state.crtGhost
 	local line = state.crtLine
 	local scroller = state.scroller
-	local label = state.label
+	local list = state.list
 	if
 		shell == nil
 		or screen == nil
@@ -1110,7 +1262,7 @@ local function crtWipe()
 		or ghost == nil
 		or line == nil
 		or scroller == nil
-		or label == nil
+		or list == nil
 	then
 		return
 	end
@@ -1140,7 +1292,7 @@ local function crtWipe()
 	ghost.Position = UDim2.new(0, 12, 0, 8 - scroller.CanvasPosition.Y)
 	ghost.Size = UDim2.new(1, -24, 0, 0)
 	ghost.TextColor3 = PALETTE.text
-	ghost.Text = label.Text
+	ghost.Text = allText()
 
 	screen.BackgroundColor3 = PALETTE.background
 	screen.Size = UDim2.new(1, 0, 1, 0)
@@ -1209,6 +1361,8 @@ function Console.clear()
 	]]
 	local cleared = state.entries
 	table.clear(state.records)
+	state.rebuild = true
+	state.unread = 0
 	state.entries = 0
 	state.calls = 0
 	state.errors = 0
@@ -1550,21 +1704,20 @@ function Console.mount(parent: Instance, handlers: Handlers)
 	logPadding.PaddingRight = UDim.new(0, 12)
 	logPadding.Parent = scroller
 
-	local label = Instance.new("TextLabel")
-	label.Size = UDim2.new(1, 0, 0, 0)
-	label.AutomaticSize = Enum.AutomaticSize.Y
-	label.BackgroundTransparency = 1
-	label.Font = Enum.Font.Code
-	label.TextSize = 12
-	label.LineHeight = 1.25
-	themed(label, "TextColor3", "text")
-	label.RichText = true
-	label.TextWrapped = true
-	label.TextXAlignment = Enum.TextXAlignment.Left
-	label.TextYAlignment = Enum.TextYAlignment.Top
-	label.Text = ""
-	label.Parent = scroller
-	state.label = label
+	-- One row per record lives in here; see `paint`.
+	local list = Instance.new("Frame")
+	list.Name = "Log"
+	list.Size = UDim2.new(1, 0, 0, 0)
+	list.AutomaticSize = Enum.AutomaticSize.Y
+	list.BackgroundTransparency = 1
+	list.BorderSizePixel = 0
+	list.Parent = scroller
+	state.list = list
+
+	local listLayout = Instance.new("UIListLayout")
+	listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	listLayout.Padding = UDim.new(0, 0)
+	listLayout.Parent = list
 
 	--[[
 		The clear wipe's overlay, built once and hidden.
@@ -1767,7 +1920,55 @@ function Console.mount(parent: Instance, handlers: Handlers)
 	scroller:GetPropertyChangedSignal("CanvasPosition"):Connect(function()
 		local maxScroll = math.max(0, scroller.AbsoluteCanvasSize.Y - scroller.AbsoluteWindowSize.Y)
 		state.pinned = maxScroll - scroller.CanvasPosition.Y < 24
+		if state.pinned then
+			state.unread = 0
+		end
+		updateJumpPill()
 	end)
+
+	-- Rows size themselves a frame after they are added, so following the tail
+	-- from `paint` alone lands one row short. Following the canvas itself does
+	-- not.
+	scroller:GetPropertyChangedSignal("AbsoluteCanvasSize"):Connect(function()
+		if state.pinned then
+			local maxScroll = math.max(0, scroller.AbsoluteCanvasSize.Y - scroller.AbsoluteWindowSize.Y)
+			scroller.CanvasPosition = Vector2.new(0, maxScroll)
+		end
+	end)
+
+	-- Offers the way back to the tail once the user has scrolled away from it.
+	local pill = Instance.new("TextButton")
+	pill.Name = "JumpToLatest"
+	pill.AnchorPoint = Vector2.new(1, 1)
+	pill.Position = UDim2.new(1, -16, 1, -(FOOTER_HEIGHT + Prompt.HEIGHT + 8))
+	pill.Size = UDim2.new(0, 92, 0, 20)
+	pill.Font = Enum.Font.Code
+	pill.TextSize = 11
+	pill.AutoButtonColor = false
+	pill.BorderSizePixel = 0
+	pill.ZIndex = 10
+	pill.Visible = false
+	themed(pill, "BackgroundColor3", "surface")
+	themed(pill, "TextColor3", "violet")
+	pill.Parent = root
+	state.jumpPill = pill
+
+	local pillCorner = Instance.new("UICorner")
+	pillCorner.CornerRadius = UDim.new(0, 10)
+	pillCorner.Parent = pill
+
+	local pillStroke = Instance.new("UIStroke")
+	themed(pillStroke, "Color", "violet")
+	pillStroke.Transparency = 0.5
+	pillStroke.Parent = pill
+
+	pill.Activated:Connect(function()
+		state.pinned = true
+		state.unread = 0
+		scroller.CanvasPosition = Vector2.new(0, math.max(0, scroller.AbsoluteCanvasSize.Y))
+		updateJumpPill()
+	end)
+	updateJumpPill()
 end
 
 --[[
@@ -1813,6 +2014,7 @@ function Console.setFilter(levels: { string }?)
 		end
 		state.filter = wanted
 	end
+	state.rebuild = true
 	redraw()
 end
 
@@ -1906,6 +2108,7 @@ function Console.applyTheme()
 	-- Replayed rather than recoloured: the status light's colour is a fact about
 	-- the connection, and the only thing that knows it is `setStatus`.
 	Console.setStatus(state.status, state.statusMeta)
+	state.rebuild = true
 	redraw()
 	Prompt.applyTheme()
 	Visuals.applyTheme()

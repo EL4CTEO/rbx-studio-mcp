@@ -1,6 +1,6 @@
 {
   "name": "@el4cteo/rbx-studio-mcp",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "MCP server for Roblox Studio. 35 tools, push-based SSE bridge, two-way script sync with files, editor-safe script edits, one-step undo.",
   "type": "module",
   "license": "MIT",
@@ -11,7 +11,6 @@
     "dist",
     "plugin",
     "scripts",
-    "docs/*.md",
     "config/dsh.cordis.yml",
     "README.md",
     "CHANGELOG.md",
@@ -56,7 +55,7 @@
     "ai-agent"
   ],
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.32.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "zod": "^4.6.5"
   },
   "devDependencies": {

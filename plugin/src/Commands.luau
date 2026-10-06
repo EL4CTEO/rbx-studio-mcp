@@ -68,6 +68,9 @@ type Entry = {
 	-- Answered by the bridge rather than here. Listed all the same: a user
 	-- should not have to know which side of the wire a command lives on.
 	remote: boolean?,
+	-- Still runs when typed, but is left out of `help` and the menu: the panel
+	-- offers a button for it instead.
+	hidden: boolean?,
 	run: ((args: { string }) -> ())?,
 }
 
@@ -138,7 +141,9 @@ define({
 	run = function()
 		Console.log("info", "commands")
 		for _, entry in entries do
-			Console.log("dim", "   " .. entry.usage, entry.summary)
+			if not entry.hidden then
+				Console.log("dim", "   " .. entry.usage, entry.summary)
+			end
 		end
 		local current = hooks
 		if current ~= nil and current.chat() then
@@ -551,7 +556,8 @@ define({
 	summary = "which coding agent runs your prompts",
 	remote = true,
 })
-define({ name = "stop", usage = "stop", summary = "cancel the running agent", remote = true })
+-- Cancelled from the stop button beside the prompt; typing it still works.
+define({ name = "stop", usage = "stop", summary = "cancel the running agent", remote = true, hidden = true })
 --[[
 	Remote on purpose, and not only because the server does the HTTP.
 
@@ -598,7 +604,7 @@ export type Suggestion = {
 function Commands.suggest(prefix: string): { Suggestion }
 	local matches: { Suggestion } = {}
 	for _, entry in entries do
-		if string.sub(entry.name, 1, #prefix) == prefix then
+		if not entry.hidden and string.sub(entry.name, 1, #prefix) == prefix then
 			table.insert(matches, {
 				name = entry.name,
 				usage = entry.usage,

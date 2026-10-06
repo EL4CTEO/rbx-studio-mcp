@@ -20,6 +20,17 @@ local Dispatch = require(script.Parent.Dispatch)
 
 local ScriptEdit = {}
 
+--[[
+	How a script is named in a message.
+
+	Replaced by the handler with `Paths.of`, which tells same-named siblings
+	apart (`Twin[2]`) where `GetFullName` prints `Twin` for both -- and an error
+	that names the wrong sibling sends the next edit to the wrong script.
+]]
+ScriptEdit.describe = function(target: Instance): string
+	return target:GetFullName()
+end
+
 export type SourceContainer = LuaSourceContainer & { Source: string }
 
 --[[
@@ -173,7 +184,7 @@ local function confirm(target: LuaSourceContainer, produced: string?, original: 
 	if ScriptEdit.read(target) ~= produced then
 		Dispatch.fail(
 			"VERIFY_FAILED",
-			string.format("%s changed while the write was being confirmed.", target:GetFullName()),
+			string.format("%s changed while the write was being confirmed.", ScriptEdit.describe(target)),
 			"The newer text was kept, not overwritten. Read the script again before retrying."
 		)
 	end
@@ -225,7 +236,7 @@ function ScriptEdit.write(target: LuaSourceContainer, transform: (string) -> str
 	if string.find(string.lower(message), "lock") or string.find(string.lower(message), "permission") then
 		Dispatch.fail(
 			"SCRIPT_LOCKED",
-			string.format("Studio refused to edit %s: %s", target:GetFullName(), message),
+			string.format("Studio refused to edit %s: %s", ScriptEdit.describe(target), message),
 			"The script is usually locked because it belongs to a package or is "
 				.. "checked out by another Team Create user. Ask the user to unlock it, "
 				.. "or edit a different script."
@@ -233,7 +244,7 @@ function ScriptEdit.write(target: LuaSourceContainer, transform: (string) -> str
 	end
 	Dispatch.fail(
 		"EDIT_FAILED",
-		string.format("Could not edit %s: %s", target:GetFullName(), message)
+		string.format("Could not edit %s: %s", ScriptEdit.describe(target), message)
 	)
 end
 

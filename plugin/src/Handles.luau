@@ -15,6 +15,8 @@ local CAPACITY = 5000
 local ring: { [number]: number } = {}
 local slot = 0
 
+-- A stable number for ordering same-named siblings. Allocating one takes no
+-- handle slot: sorting a large folder must not evict handles already issued.
 function Handles.id(instance: Instance): number
 	local id = ids[instance]
 	if not id then
@@ -22,6 +24,13 @@ function Handles.id(instance: Instance): number
 		id = nextId
 		ids[instance] = id
 	end
+	return id
+end
+
+-- Only handed-out handles occupy the bounded cache. Old handles fail rather
+-- than point at a replacement with the same name.
+function Handles.of(instance: Instance): string
+	local id = Handles.id(instance)
 	if values[id] == nil then
 		slot = slot % CAPACITY + 1
 		local previous = ring[slot]
@@ -29,14 +38,6 @@ function Handles.id(instance: Instance): number
 		ring[slot] = id
 		values[id] = instance
 	end
-	return id
-end
-
-function Handles.of(instance: Instance): string
-	local id = Handles.id(instance)
-	-- Identity used for sorting may have allocated many ids. Bound the number
-	-- of addressable entries independently; old handles fail rather than point
-	-- at a replacement with the same name.
 	return prefix .. tostring(id)
 end
 

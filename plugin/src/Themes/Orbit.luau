@@ -60,7 +60,7 @@ Orbit.palette = {
 	surface = Color3.fromRGB(17, 22, 36),
 	rule = Color3.fromRGB(240, 186, 108),
 	text = Color3.fromRGB(226, 222, 210),
-	dim = Color3.fromRGB(96, 100, 116),
+	dim = Color3.fromRGB(120, 125, 143),
 	green = Color3.fromRGB(134, 214, 158),
 	red = Color3.fromRGB(240, 130, 116),
 	amber = Color3.fromRGB(246, 190, 106),
@@ -221,7 +221,11 @@ function Orbit.paint(ctx: Theme.Context, _delta: number)
 			frame,
 			point,
 			math.max(2, math.floor(2.5 + near * 2.5 + ctx.flare * 1.5)),
-			ctx.palette.amber:Lerp(Color3.new(1, 1, 1), near * 0.4 + ctx.flare * 0.3),
+			-- Outer moons drift toward cyan, so the system is gold at the heart
+			-- and cooler at its edge instead of one flat colour.
+			ctx.palette.amber
+				:Lerp(ctx.palette.cyan, (index - 1) / (MOONS - 1) * 0.45)
+				:Lerp(Color3.new(1, 1, 1), near * 0.4 + ctx.flare * 0.3),
 			math.clamp(0.35 - near * 0.32 - ctx.flare * 0.3, 0, 1)
 		)
 	end

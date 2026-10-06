@@ -38,7 +38,7 @@ Phosphor.palette = {
 	surface = Color3.fromRGB(9, 16, 11),
 	rule = Color3.fromRGB(86, 232, 122),
 	text = Color3.fromRGB(178, 236, 190),
-	dim = Color3.fromRGB(70, 112, 82),
+	dim = Color3.fromRGB(84, 134, 98),
 	green = Color3.fromRGB(86, 240, 128),
 	red = Color3.fromRGB(248, 118, 96),
 	amber = Color3.fromRGB(240, 208, 106),
@@ -48,6 +48,7 @@ Phosphor.palette = {
 
 local dots: { Frame } = {}
 local scanlines: { Frame } = {}
+local roll: Frame? = nil
 local samples: { Vector2 } = {}
 local head = 0
 local accumulator = 0
@@ -59,6 +60,21 @@ function Phosphor.mount(cell: Frame)
 	samples = {}
 	head = 0
 	accumulator = 0
+
+	--[[
+		The refresh band: a soft bar that rolls down the tube, as a CRT's
+		does when its field rate and the camera's do not match. Under the
+		scanlines and over the beam, so it brightens the glass without hiding
+		the trace.
+	]]
+	local band = Instance.new("Frame")
+	band.Name = "Roll"
+	band.BorderSizePixel = 0
+	band.Size = UDim2.new(1, 0, 0, 7)
+	band.Position = UDim2.fromOffset(0, -8)
+	band.ZIndex = 3
+	band.Parent = cell
+	roll = band
 
 	--[[
 		Scanlines last, so they lie OVER the beam.
@@ -86,10 +102,20 @@ function Phosphor.unmount()
 	dots = {}
 	scanlines = {}
 	samples = {}
+	roll = nil
 end
 
 function Phosphor.paint(ctx: Theme.Context, delta: number)
 	local radius = ctx.size * 0.33 * ctx.scale
+
+	-- Down the tube and off the bottom, then a beat of dark before it returns.
+	local band = roll
+	if band ~= nil then
+		local travel = (ctx.clock * 10) % (ctx.size + 24)
+		band.Position = UDim2.fromOffset(0, math.floor(travel - 10))
+		band.BackgroundColor3 = ctx.palette.green
+		band.BackgroundTransparency = math.clamp(0.9 - ctx.flare * 0.12, 0, 1)
+	end
 
 	--[[
 		The figure's ratio, from activity.
@@ -145,8 +171,11 @@ function Phosphor.paint(ctx: Theme.Context, delta: number)
 		Draw.dot(
 			frame,
 			ctx.centre + point,
-			math.max(1, math.floor(1 + glow * 2 + ctx.flare * 1.5)),
-			ctx.palette.green:Lerp(Color3.new(1, 1, 1), glow * 0.85),
+			math.max(1, math.floor(1 + glow * 3 + ctx.flare * 1.5)),
+			-- Old trace cools toward teal rather than just thinning out.
+			ctx.palette.green
+				:Lerp(ctx.palette.cyan, age * 0.4)
+				:Lerp(Color3.new(1, 1, 1), glow * 0.85),
 			math.clamp(0.94 - glow * 0.9 - ctx.flare * 0.2, 0, 1)
 		)
 	end

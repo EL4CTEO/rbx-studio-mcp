@@ -2,6 +2,29 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.9.1
+
+### Added
+
+- Stop button beside the prompt while an agent runs. The `stop` command still works but is hidden from the menu.
+- Three new themes: Sonar, Ember and Pendulum, replacing Void, Nebula and Blueprint.
+- The console log is one row per entry: errors and warnings get a coloured bar, rows light up under the pointer, and a "latest" button appears when you scroll up.
+
+### Changed
+
+- Theme picker redone: larger previews, a clear marker for the active theme, hover highlight.
+- Dim text is brighter in every theme, and the Aurora, Phosphor, Observatory and Orbit animations are refreshed.
+- The log no longer re-renders every row on each new line.
+- Dependencies updated (MCP SDK 1.32.1).
+
+### Fixed
+
+- The server stays up after a stray error, and always releases the port on shutdown.
+- A plugin that disconnects during connection no longer leaves a dead session behind.
+- Sorting same-named siblings on a client no longer evicts handles you already hold.
+- Error messages name same-named siblings by index (`Twin[2]`), not just `Twin`.
+- Internal review notes are no longer shipped in the npm package.
+
 ## 0.9.0
 
 ### Added

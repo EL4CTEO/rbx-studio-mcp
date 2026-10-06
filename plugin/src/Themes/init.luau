@@ -28,19 +28,20 @@ export type Slot = Theme.Slot
 	Presentation order in the picker, which is not alphabetical.
 
 	Lattice first because it is the default and the one people return to. Then
-	the two dark presets closest to it, then the colourful ones, then the two
-	that abandon the aesthetic entirely. A user scanning the drawer should be
+	the dark presets closest to it, then the ones with a scene of their own --
+	each a physical system whose state you can read: orbiting moons, a sonar
+	sweep, rising sparks, a swinging wave. A user scanning the drawer should be
 	able to stop as soon as the list stops looking like what they came for.
 ]]
 local ORDER: { Theme.Theme } = {
 	require(script.Lattice),
 	require(script.Observatory),
 	require(script.Orbit),
-	require(script.Void),
-	require(script.Nebula),
+	require(script.Sonar),
+	require(script.Ember),
 	require(script.Aurora),
 	require(script.Phosphor),
-	require(script.Blueprint),
+	require(script.Pendulum),
 }
 
 local byId: { [string]: Theme.Theme } = {}

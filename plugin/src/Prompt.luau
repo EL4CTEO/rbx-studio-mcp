@@ -56,6 +56,10 @@ Prompt.HEIGHT = 30
 local INSET = 12
 local CARET_WIDTH = 14
 
+-- The stop button, shown at the right of the row only while an agent runs.
+local STOP_WIDTH = 64
+local STOP_GAP = 8
+
 --[[
 	How many past lines are kept.
 
@@ -162,6 +166,10 @@ type Runtime = {
 	-- back returns it rather than an empty line.
 	draft: string,
 	busy: boolean,
+	-- The cancel button, and whether it has been pressed and is waiting for the
+	-- agent to actually go.
+	stop: TextButton?,
+	stopping: boolean,
 	-- Whether a line that is not a command goes to an agent. Off until the user
 	-- runs `chat on`; only used to word the placeholder, since `Commands` is what
 	-- actually refuses the line.
@@ -199,6 +207,8 @@ local runtime: Runtime = {
 	offset = 0,
 	draft = "",
 	busy = false,
+	stop = nil,
+	stopping = false,
 	chat = false,
 	selection = "",
 	complete = nil,
@@ -224,11 +234,32 @@ end
 
 local function placeholder(): string
 	if runtime.busy then
-		return "running -- type stop to cancel"
+		return "running -- press stop to cancel"
 	end
 	return if runtime.chat
 		then "type a command, or ask for something"
 		else "type a command -- `chat on` lets an agent answer"
+end
+
+--[[
+	Makes room for the stop button while it is showing.
+
+	The field and the hint share the row's right end with it, so both give up
+	exactly its width rather than sitting underneath.
+]]
+local function layoutRow()
+	local field = runtime.field
+	local hint = runtime.hint
+	if field == nil or hint == nil then
+		return
+	end
+	local reserved = if runtime.busy then STOP_WIDTH + STOP_GAP else 0
+	field.Size = UDim2.new(1, -(INSET + CARET_WIDTH + INSET + reserved), 1, 0)
+	hint.Position = UDim2.new(1, -(INSET + reserved), 0, 0)
+	local stop = runtime.stop
+	if stop ~= nil then
+		stop.Visible = runtime.busy
+	end
 end
 
 --[[
@@ -680,6 +711,69 @@ function Prompt.mount(
 	runtime.rule = rule
 
 	--[[
+		The cancel button. A command that cancels the one thing running is a
+		control, not a thing to remember the name of, so it lives where the
+		agent's state is already shown: at the end of the row whose caret is
+		amber. It sends the same `stop` line the command would, so there is one
+		code path to cancel.
+	]]
+	local stop = Instance.new("TextButton")
+	stop.Name = "Stop"
+	stop.Text = "\u{25A0} stop"
+	stop.Font = Enum.Font.Code
+	stop.TextSize = 11
+	stop.AutoButtonColor = false
+	stop.BorderSizePixel = 0
+	stop.AnchorPoint = Vector2.new(1, 0.5)
+	stop.Position = UDim2.new(1, -INSET, 0.5, 0)
+	stop.Size = UDim2.fromOffset(STOP_WIDTH, 20)
+	stop.BackgroundColor3 = palette.background
+	stop.TextColor3 = palette.red
+	stop.Visible = false
+	stop.Parent = row
+	runtime.stop = stop
+
+	local stopCorner = Instance.new("UICorner")
+	stopCorner.CornerRadius = UDim.new(0, 4)
+	stopCorner.Parent = stop
+
+	local stopStroke = Instance.new("UIStroke")
+	stopStroke.Color = palette.red
+	stopStroke.Transparency = 0.5
+	stopStroke.Parent = stop
+
+	stop.MouseEnter:Connect(function()
+		if not runtime.stopping then
+			local now = Themes.palette()
+			stopStroke.Transparency = 0.1
+			stop.BackgroundColor3 = now.background:Lerp(now.red, 0.18)
+		end
+	end)
+	stop.MouseLeave:Connect(function()
+		stopStroke.Transparency = 0.5
+		stop.BackgroundColor3 = Themes.palette().background
+	end)
+	stop.MouseButton1Click:Connect(function()
+		if runtime.stopping or not runtime.busy then
+			return
+		end
+		runtime.stopping = true
+		stop.Text = "stopping"
+		local run = runtime.submit
+		if run ~= nil then
+			task.spawn(run, "stop")
+		end
+		-- If the agent is still listed as running a while later, the cancel did
+		-- not land; give the button back rather than leave it dead.
+		task.delay(6, function()
+			if runtime.stopping and runtime.busy then
+				runtime.stopping = false
+				stop.Text = "\u{25A0} stop"
+			end
+		end)
+	end)
+
+	--[[
 		The menu, parented to the row rather than to the panel.
 
 		Anchored to its own bottom edge with a negative Y offset, so it grows
@@ -904,6 +998,14 @@ end
 ]]
 function Prompt.setBusy(busy: boolean)
 	runtime.busy = busy
+	local stop = runtime.stop
+	if not busy then
+		runtime.stopping = false
+		if stop ~= nil then
+			stop.Text = "\u{25A0} stop"
+		end
+	end
+	layoutRow()
 	paintCaret()
 	local field = runtime.field
 	if field ~= nil then
@@ -980,6 +1082,15 @@ function Prompt.applyTheme()
 		renderMenu()
 	end
 	paintCaret()
+	local stop = runtime.stop
+	if stop then
+		stop.BackgroundColor3 = palette.background
+		stop.TextColor3 = palette.red
+		local stroke = stop:FindFirstChildOfClass("UIStroke")
+		if stroke then
+			stroke.Color = palette.red
+		end
+	end
 end
 
 return Prompt

@@ -43,16 +43,21 @@ Observatory.palette = {
 	surface = Color3.fromRGB(8, 9, 12),
 	rule = Color3.fromRGB(148, 178, 214),
 	text = Color3.fromRGB(214, 224, 238),
-	dim = Color3.fromRGB(78, 88, 106),
+	dim = Color3.fromRGB(106, 120, 144),
 	green = Color3.fromRGB(126, 226, 176),
 	red = Color3.fromRGB(248, 122, 122),
 	amber = Color3.fromRGB(240, 196, 118),
 	cyan = Color3.fromRGB(150, 214, 240),
-	violet = Color3.fromRGB(176, 172, 236),
+	violet = Color3.fromRGB(172, 206, 255),
 }
 
 local stars: { Frame } = {}
 local meridian: { Frame } = {}
+local meteor: Frame? = nil
+
+-- Seconds between shooting stars, and how long each one takes to cross.
+local METEOR_PERIOD = 9
+local METEOR_LIFE = 0.9
 
 --[[
 	A fixed point on the shell for star `index`.
@@ -76,11 +81,13 @@ function Observatory.mount(cell: Frame)
 	-- line it happens to cross.
 	meridian = Draw.pool(cell, 24, "Meridian", true)
 	stars = Draw.pool(cell, STARS, "Star", true)
+	meteor = Draw.pool(cell, 1, "Meteor", false)[1]
 end
 
 function Observatory.unmount()
 	stars = {}
 	meridian = {}
+	meteor = nil
 end
 
 function Observatory.paint(ctx: Theme.Context, _delta: number)
@@ -143,6 +150,39 @@ function Observatory.paint(ctx: Theme.Context, _delta: number)
 		)
 		local near = math.clamp((depth + 1) / 2, 0, 1)
 		Draw.dot(frame, point, 1, ctx.tint, math.clamp(0.94 - near * 0.35, 0, 1))
+	end
+
+	--[[
+		A shooting star, now and then.
+
+		Position is derived from the clock and a per-period seed rather than
+		stored, so there is nothing to reset and every period is a different
+		streak. It is the one thing in the sky that moves quickly, which is why
+		it is rare: constant, it would read as a glitch.
+	]]
+	local streak = meteor
+	if streak ~= nil then
+		local period = math.floor(ctx.clock / METEOR_PERIOD)
+		local life = (ctx.clock % METEOR_PERIOD) / METEOR_LIFE
+		if life >= 1 then
+			streak.Visible = false
+		else
+			local from = Vector2.new(
+				Draw.hash(period, 51) * ctx.size * 0.5,
+				Draw.hash(period, 52) * ctx.size * 0.3
+			)
+			local direction = Vector2.new(0.82, 0.57)
+			local head = from + direction * (life * ctx.size * 0.7)
+			local tail = head - direction * (7 * (1 - life * 0.4))
+			Draw.edge(
+				streak,
+				tail,
+				head,
+				1,
+				ctx.tint:Lerp(Color3.new(1, 1, 1), 0.7),
+				math.clamp(0.2 + life * 0.75, 0, 1)
+			)
+		end
 	end
 end
 

@@ -183,7 +183,7 @@ try {
       return { caption: text(screenshot) };
     });
     await check("viewport pick uses the actual client camera and returns a handle", async () => {
-      await content("execute_luau", { ...clientArgs, source: `local camera=workspace.CurrentCamera; local size=camera.ViewportSize; local ray=camera:ViewportPointToRay(size.X/2,size.Y/2); local part=Instance.new("Part"); part.Name="ScreenCentre"; part.Anchored=true; part.CanCollide=false; part.Size=Vector3.new(24,24,2); part.CFrame=CFrame.lookAt(ray.Origin+ray.Direction*20,ray.Origin); part.Parent=workspace.__mcp_v090_test; return true` });
+      await content("execute_luau", { ...clientArgs, source: `local camera=workspace.CurrentCamera; local size=camera.ViewportSize; local ray=camera:ViewportPointToRay(size.X/2,size.Y/2); local part=Instance.new("Part"); part.Name="ScreenCentre"; part.Anchored=true; part.CanCollide=false; part.Size=Vector3.new(24,24,2); part.CFrame=CFrame.lookAt(ray.Origin+ray.Direction*4,ray.Origin); part.Parent=workspace.__mcp_v090_test; return true` });
       const picked = JSON.parse((await content("viewport", { ...clientArgs, op: "pick", x: 0.5, y: 0.5 })).split("\n\n")[0]);
       assert(picked.hit && picked.handle && picked.path.includes("__mcp_v090_test.ScreenCentre"), JSON.stringify(picked));
       await call("inspect", { ...clientArgs, paths: [picked.handle], properties: ["Position"] });

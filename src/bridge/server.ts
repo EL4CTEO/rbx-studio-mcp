@@ -429,6 +429,11 @@ async function handleEvents(
 ): Promise<void> {
   const identity = parseIdentity(await readBody(req), "sse");
 
+  // The plugin may hang up while the body is still being read (a reload mid
+  // handshake). The close listener below would then never fire, leaving a dead
+  // session attached and a heartbeat timer running for nothing.
+  if (res.destroyed || req.socket.destroyed) return;
+
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
     "Cache-Control": "no-cache, no-transform",

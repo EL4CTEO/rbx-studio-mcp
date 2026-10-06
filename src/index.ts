@@ -167,9 +167,12 @@ async function main(): Promise<void> {
     // to another one, the owner is still there to hear it -- and telling it is
     // what makes the Studio console report the agent as finished at the moment
     // it finished, rather than when the staleness reaper notices.
-    await bridgeServer.bridge.goodbye();
-    await bridgeServer.close();
-    await server.close();
+    //
+    // Each step is isolated: one that throws must not leave the port bound or
+    // the next step unrun, which would strand the bridge for every other agent.
+    await Promise.resolve(bridgeServer.bridge.goodbye()).catch(() => undefined);
+    await bridgeServer.close().catch(() => undefined);
+    await server.close().catch(() => undefined);
 
     /*
      * Set rather than called, so the process ends by running out of work.
@@ -187,6 +190,17 @@ async function main(): Promise<void> {
   };
   process.on("SIGINT", () => void shutdown());
   process.on("SIGTERM", () => void shutdown());
+
+  // This process may own the bridge every other agent is proxying through, so
+  // one stray rejection or socket error must not take them all down with it.
+  // Reported on stderr (stdout belongs to the MCP transport) and carried on.
+  const survive = (kind: string) => (cause: unknown): void => {
+    process.stderr.write(
+      `roblox-studio-mcp: ${kind}: ${cause instanceof Error ? (cause.stack ?? cause.message) : String(cause)}\n`,
+    );
+  };
+  process.on("unhandledRejection", survive("unhandled rejection"));
+  process.on("uncaughtException", survive("uncaught exception"));
 
   /*
    * The client hanging up is the one unambiguous "this agent is done".

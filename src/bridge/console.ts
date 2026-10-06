@@ -300,7 +300,7 @@ function startAgent(
   prompt: string,
 ): ConsoleLine[] {
   if (state.active !== null) {
-    return [{ level: "warn", message: "an agent is already running", detail: "type stop to cancel it" }];
+    return [{ level: "warn", message: "an agent is already running", detail: "press stop to cancel it" }];
   }
 
   const available = installed();

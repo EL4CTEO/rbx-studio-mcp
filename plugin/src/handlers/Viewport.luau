@@ -123,7 +123,7 @@ local function extentsOf(instance: Instance): (Vector3, Vector3)
 	if minimum == nil or maximum == nil then
 		Dispatch.fail(
 			"NOT_POSITIONED",
-			string.format("%s is a %s and occupies no space in the world.", instance:GetFullName(), instance.ClassName),
+			string.format("%s is a %s and occupies no space in the world.", Paths.of(instance), instance.ClassName),
 			"Frame something with geometry -- a part, a model, or a folder containing them."
 		)
 	end

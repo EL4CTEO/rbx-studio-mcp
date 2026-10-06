@@ -42,7 +42,7 @@ local function boundsOf(target: Instance): (Vector2, Vector2)
 		if counted == 0 then
 			Dispatch.fail(
 				"NOT_VISUAL",
-				string.format("%s has no GUI or parts to zoom to.", target:GetFullName()),
+				string.format("%s has no GUI or parts to zoom to.", Paths.of(target)),
 				"Zoom to a GuiObject, a BasePart, a Model, or a folder containing parts."
 			)
 		end
@@ -58,7 +58,7 @@ local function boundsOf(target: Instance): (Vector2, Vector2)
 				if point.Z <= 0 then
 					Dispatch.fail(
 						"REGION_OFFSCREEN",
-						string.format("%s is partly behind the camera.", target:GetFullName()),
+						string.format("%s is partly behind the camera.", Paths.of(target)),
 						"Aim the camera at it first with `viewport op=\"focus\"`, then take the screenshot."
 					)
 				end

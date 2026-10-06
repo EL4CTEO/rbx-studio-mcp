@@ -347,7 +347,7 @@ function Instances.modify(params: { [string]: any }): { [string]: any }
 					string.format(
 						"Could not set %d value(s) on %s.",
 						#failures,
-						target.instance:GetFullName()
+						Paths.of(target.instance)
 					),
 					table.concat(failures, "; ")
 						.. "\nNothing was changed: the whole batch was rolled back."
@@ -454,7 +454,7 @@ function Instances.move(params: { [string]: any }): { [string]: any }
 				if typeof(copy) ~= "Instance" then
 					Dispatch.fail(
 						"NOT_COPYABLE",
-						string.format('"%s" cannot be cloned.', target:GetFullName()),
+						string.format('"%s" cannot be cloned.', Paths.of(target)),
 						"Archivable is false on this instance, which excludes it from copies."
 					)
 				end

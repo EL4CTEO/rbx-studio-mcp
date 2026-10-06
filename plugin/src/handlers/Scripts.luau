@@ -22,6 +22,7 @@ local Dispatch = require(script.Parent.Parent.Dispatch)
 local Paths = require(script.Parent.Parent.Paths)
 local Scope = require(script.Parent.Parent.Scope)
 local ScriptEdit = require(script.Parent.Parent.ScriptEdit)
+ScriptEdit.describe = Paths.of
 local TextEdit = require(script.Parent.Parent.TextEdit)
 local Undo = require(script.Parent.Parent.Undo)
 
@@ -248,7 +249,7 @@ local function editBatch(params: { [string]: any }): { [string]: any }
 					"STALE_SCRIPT",
 					string.format(
 						"%s changed since it was read (expected %s, found %s).",
-						target:GetFullName(),
+						Paths.of(target),
 						stated,
 						live :: string
 					),
@@ -259,7 +260,7 @@ local function editBatch(params: { [string]: any }): { [string]: any }
 			end
 		end
 
-		local after = TextEdit.apply(target:GetFullName(), before, grouped[target] :: { TextEdit.Edit })
+		local after = TextEdit.apply(Paths.of(target), before, grouped[target] :: { TextEdit.Edit })
 		table.insert(pending, { target = target, before = before, after = after })
 	end
 
@@ -279,7 +280,7 @@ local function editBatch(params: { [string]: any }): { [string]: any }
 				if current ~= entry.before then
 					Dispatch.fail(
 						"STALE_SCRIPT",
-						string.format("%s changed while this batch was being written.", entry.target:GetFullName()),
+						string.format("%s changed while this batch was being written.", Paths.of(entry.target)),
 						"Somebody typed into it after it was read. Read it again with "
 							.. "script_read and rebuild the edit against what is there now."
 					)
@@ -314,7 +315,7 @@ local function editBatch(params: { [string]: any }): { [string]: any }
 				end)
 				if not restored then
 					local reason = if typeof(restoreError) == "table" then restoreError.message else tostring(restoreError)
-					table.insert(kept, string.format("%s (%s)", done.target:GetFullName(), tostring(reason)))
+					table.insert(kept, string.format("%s (%s)", Paths.of(done.target), tostring(reason)))
 				end
 			end
 			--[[
@@ -868,7 +869,7 @@ function Scripts.open(params: { [string]: any }): { [string]: any }
 	if not ok then
 		Dispatch.fail(
 			"OPEN_FAILED",
-			string.format("Could not open %s: %s", target:GetFullName(), tostring(err))
+			string.format("Could not open %s: %s", Paths.of(target), tostring(err))
 		)
 	end
 

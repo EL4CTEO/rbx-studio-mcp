@@ -34,15 +34,29 @@ Aurora.palette = {
 	surface = Color3.fromRGB(16, 23, 44),
 	rule = Color3.fromRGB(108, 226, 178),
 	text = Color3.fromRGB(206, 220, 238),
-	dim = Color3.fromRGB(86, 100, 130),
+	dim = Color3.fromRGB(110, 126, 159),
 	green = Color3.fromRGB(108, 232, 172),
 	red = Color3.fromRGB(246, 126, 146),
 	amber = Color3.fromRGB(244, 196, 128),
 	cyan = Color3.fromRGB(114, 214, 236),
-	violet = Color3.fromRGB(162, 146, 240),
+	violet = Color3.fromRGB(176, 140, 252),
 }
 
 local rays: { Frame } = {}
+
+--[[
+	Green at the base, teal through the middle, violet at the tips.
+
+	Two stops made the middle of every ray a muddy blend of green and violet;
+	a real curtain passes through blue-green on the way up, and the third stop
+	is what gives the ramp that shape.
+]]
+local function ramp(palette: Theme.Palette, reach: number): Color3
+	if reach < 0.5 then
+		return palette.green:Lerp(palette.cyan, reach * 2)
+	end
+	return palette.cyan:Lerp(palette.violet, (reach - 0.5) * 2)
+end
 
 --[[
 	Accumulated wave phase, rather than wall time times a rate.
@@ -106,7 +120,10 @@ function Aurora.paint(ctx: Theme.Context, delta: number)
 		-- repeating on a cycle the eye can learn.
 		local wave = math.sin(across * 5.2 - phase * 1.6)
 			+ 0.6 * math.sin(across * 2.7 + phase * 0.9)
-		local normalised = (wave + 1.6) / 3.2
+			-- A faster, shallower third wave: the ripple that runs along the
+			-- curtain's edge and keeps it from reading as two sines added.
+			+ 0.35 * math.sin(across * 9.1 - phase * 2.7)
+		local normalised = (wave + 1.95) / 3.9
 
 		local height = math.max(2, math.floor(width * (0.12 + normalised * amplitude) * ctx.scale))
 		local reach = math.clamp(height / width, 0, 1)
@@ -115,10 +132,11 @@ function Aurora.paint(ctx: Theme.Context, delta: number)
 		ray.Position = UDim2.fromOffset(spacing * index, width - 2)
 		-- Green low, violet high: the ray's own height is readable from its
 		-- colour, which a three-pixel column badly needs.
-		ray.BackgroundColor3 = ctx.palette.green
-			:Lerp(ctx.palette.violet, reach)
-			:Lerp(Color3.new(1, 1, 1), ctx.flare * 0.45)
-		ray.BackgroundTransparency = math.clamp(0.74 - reach * 0.45 - ctx.flare * 0.3, 0, 1)
+		ray.BackgroundColor3 = ramp(ctx.palette, reach):Lerp(Color3.new(1, 1, 1), ctx.flare * 0.45)
+		-- Each ray glints on its own phase, so the curtain shimmers rather than
+		-- changing brightness as one.
+		local shimmer = 0.07 * math.sin(phase * 3.1 + index * 1.7)
+		ray.BackgroundTransparency = math.clamp(0.74 - reach * 0.45 - ctx.flare * 0.3 + shimmer, 0, 1)
 	end
 end
 
@@ -135,7 +153,7 @@ function Aurora.paintSlot(slot: Theme.Slot, ctx: Theme.Context)
 	frame.Size = UDim2.fromOffset(3, height)
 	frame.Position = UDim2.new(frame.Position.X.Scale, frame.Position.X.Offset, 1, 0)
 	frame.BackgroundColor3 = if slot.ok
-		then ctx.palette.green:Lerp(ctx.palette.violet, slot.weight)
+		then ramp(ctx.palette, slot.weight)
 		else ctx.palette.red
 	frame.BackgroundTransparency = math.clamp(0.66 - recency * 0.56, 0, 1)
 	frame.Rotation = 0
@@ -152,7 +170,7 @@ function Aurora.swatch(frame: Frame, palette: Theme.Palette)
 		local height = math.max(2, math.floor(4 + reach * 17))
 		ray.Size = UDim2.fromOffset(2, height)
 		ray.Position = UDim2.fromOffset(3 + index * 3, 23)
-		ray.BackgroundColor3 = palette.green:Lerp(palette.violet, reach)
+		ray.BackgroundColor3 = ramp(palette, reach)
 		ray.BackgroundTransparency = 0.35
 		ray.Parent = frame
 	end
