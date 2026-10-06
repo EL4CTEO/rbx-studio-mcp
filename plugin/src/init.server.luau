@@ -180,6 +180,7 @@ end
 local themeNeedsApplying = typeof(storedTheme) == "string" and Themes.activeId() == storedTheme
 
 Session.register()
+ClientRelay.register()
 Discover.register()
 Debug.register()
 Instances.register()
@@ -944,6 +945,7 @@ end)
 
 plugin.Unloading:Connect(function()
 	ClientRelay.stopDiagnostics()
+	ClientRelay.stopReads()
 	Transport.stop()
 end)
 

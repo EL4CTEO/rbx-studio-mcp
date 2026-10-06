@@ -294,6 +294,18 @@ end
 ]]
 function Serialize.parse(text: any, valueType: string): (boolean, any, string?)
 	local kind = typeof(text)
+	-- The API has both Enum.Font and a Font datatype. Preserve the category
+	-- instead of sending enum properties through FontFace's constructor.
+	if string.sub(valueType, 1, 5) == "Enum." then
+		local enumName = string.sub(valueType, 6)
+		local ok, enumType = pcall(function() return (Enum :: any)[enumName] end)
+		if not ok or not enumType then return false, nil, "Unknown enum " .. enumName end
+		local wanted = string.match(tostring(text), "([^%.]+)$") or tostring(text)
+		for _, item in enumType:GetEnumItems() do
+			if string.lower(item.Name) == string.lower(wanted) then return true, item, nil end
+		end
+		return false, nil, string.format('%q is not a member of Enum.%s', tostring(text), enumName)
+	end
 
 	-- Values already of the right primitive shape pass straight through. The
 	-- number case is matched against the target type rather than excluded from

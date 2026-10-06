@@ -327,6 +327,9 @@ local DESCRIBERS: { [string]: Describer } = {
 	["debug.remotes"] = function()
 		return "Observe playtest RemoteEvent traffic"
 	end,
+	["debug.watch"] = function(params)
+		return "Watch changes to " .. (leaf(params.path) or "an instance")
+	end,
 	["debug.snapshots"] = function()
 		return "Read what the breakpoints caught"
 	end,
@@ -437,6 +440,15 @@ local DESCRIBERS: { [string]: Describer } = {
 	end,
 	["viewport.raycast"] = function()
 		return "Cast a ray"
+	end,
+	["viewport.pick"] = function()
+		return "Identify the instance at a viewport point"
+	end,
+	["exec.result"] = function()
+		return "Retrieve a retained execution result"
+	end,
+	["client.read"] = function(params)
+		return "Read the playtest client: " .. tostring(params.op)
 	end,
 
 	["capture.screenshot"] = function()
@@ -760,6 +772,7 @@ local DESCRIBERS: { [string]: Describer } = {
 ]]
 local KINDS: { [string]: string } = {
 	discover = "read",
+	client = "read",
 	studio = "read",
 	viewport = "read",
 	capture = "read",

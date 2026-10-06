@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { ToolError } from "../lib/errors.js";
+import { readCall, readContext, readTargetSchema } from "../lib/readtarget.js";
 import { json, limitSchema, table, text, textOf, type ToolResult } from "../lib/format.js";
 import { defineTool, type ToolContext } from "../lib/tool.js";
 
@@ -359,6 +361,7 @@ export function registerPerfTools(context: ToolContext): void {
         "Frame and network figures are only meaningful while something is " +
         "running. Instance counts and memory are useful in edit mode too.",
       inputSchema: {
+        ...readTargetSchema,
         op: z
           .enum(["snapshot", "profile", "coverage", "scene", "audit"])
           .default("snapshot")
@@ -417,6 +420,7 @@ export function registerPerfTools(context: ToolContext): void {
       readOnly: true,
     },
     async (args): Promise<ToolResult> => {
+      if (args.target === "client" && args.op !== "snapshot") throw new ToolError("BAD_TARGET", "Only performance snapshot supports the actual client.");
       if (args.op === "coverage") {
         const response = await bridge.call<CoverageResponse>(
           "perf.coverage",
@@ -773,10 +777,10 @@ export function registerPerfTools(context: ToolContext): void {
         });
       }
 
-      const snapshot = await bridge.call<SnapshotResponse>(
+      const snapshot = await readCall<SnapshotResponse>(bridge,
         "perf.snapshot",
         {},
-        { studioId: args.studioId },
+        args,
       );
 
       // Memory is the one part that is a genuine list, and the part most often
@@ -820,6 +824,7 @@ export function registerPerfTools(context: ToolContext): void {
             "editor session instead.]",
         );
       }
+      if (readContext(args)) parts.unshift(readContext(args)!);
       return text(parts.join("\n"));
     },
   );

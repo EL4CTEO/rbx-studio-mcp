@@ -31,9 +31,10 @@ local isNoisy = Scope.isNoisy
 
 -- One memo per request keeps path formatting linear when many siblings share a
 -- name; see Paths.of.
-local function summarise(instance: Instance, memo: Paths.NameIndex): { [string]: any }
+local function summarise(instance: Instance, memo: Paths.NameIndex, handles: boolean?): { [string]: any }
 	return {
 		path = Paths.of(instance, memo),
+		handle = if handles then Paths.handle(instance) else nil,
 		className = instance.ClassName,
 		childCount = #instance:GetChildren(),
 	}
@@ -65,7 +66,7 @@ local function stableOrder(list: { Instance })
 		local ok, id = pcall(function()
 			return instance:GetDebugId()
 		end)
-		ids[instance] = if ok then id else tostring(instance)
+		ids[instance] = if ok then id else string.format("%012d", Paths.stableId(instance))
 	end
 	table.sort(list, function(a: Instance, b: Instance): boolean
 		if a.Name ~= b.Name then
@@ -172,7 +173,7 @@ function Discover.tree(params: { [string]: any }): { [string]: any }
 	local items: { { [string]: any } } = {}
 	local memo: Paths.NameIndex = {}
 	for index = offset + 1, math.min(offset + limit, #matched) do
-		table.insert(items, summarise(matched[index] :: Instance, memo))
+		table.insert(items, summarise(matched[index] :: Instance, memo, params.handles))
 	end
 
 	return {
@@ -367,6 +368,7 @@ function Discover.inspect(params: { [string]: any }): { [string]: any }
 
 		local entry: { [string]: any } = {
 			path = Paths.of(target, memo),
+			handle = if params.handles then Paths.handle(target) else nil,
 			-- Echoed back so a caller can correlate the answer with what it asked
 			-- for. `path` is the canonical form and often differs: ask about
 			-- "Workspace.Wall" and the answer comes back as "Workspace.Wall[1]".
@@ -678,7 +680,7 @@ function Discover.find(params: { [string]: any }): { [string]: any }
 	local memo: Paths.NameIndex = {}
 	for index = offset + 1, math.min(offset + limit, #matched) do
 		local instance = matched[index] :: Instance
-		local entry = summarise(instance, memo)
+		local entry = summarise(instance, memo, params.handles)
 		if projected ~= nil then
 			local values: { [string]: any } = {}
 			local unreadable: { string } = {}

@@ -71,6 +71,11 @@ end
 	hidden service is always honoured.
 ]]
 function Scope.isNoisy(instance: Instance): boolean
+	local node: Instance? = instance
+	while node and node ~= game do
+		if node:GetAttribute("MCPClientRelay") == true then return true end
+		node = node.Parent
+	end
 	local service = Scope.topService(instance)
 	return service ~= nil and not Scope.isVisibleService(service)
 end

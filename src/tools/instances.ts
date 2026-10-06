@@ -161,7 +161,7 @@ async function resolveProperties(
             "its properties.",
       );
     }
-    resolved[name] = { value, type: info.valueType };
+    resolved[name] = { value, type: info.category === "Enum" && info.valueType === "Font" ? "Enum.Font" : info.valueType };
   }
   return resolved;
 }

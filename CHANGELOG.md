@@ -2,6 +2,29 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.9.0
+
+### Added
+
+- `tree`, `inspect`, `find`, `viewport ui/raycast` and `performance snapshot` take `target="client"` and optional `player`, so they read the running player's view, UI and render counters.
+- `viewport op="pick"`: a point on the screen (normalized `x` / `y`) to the instance under it, using the editor or actual-client camera.
+- `handles=true` on discovery returns references usable in place of paths. They survive renames and moves, distinguish same-named instances, and refuse stale or wrong-context use.
+- Clipped successful `execute_luau` results return a `resultId`: page tables or strings, read nested values and select row fields without running the code again.
+- `debug op="watch"`: property, attribute and direct-child changes over a short window, in Studio or the actual client, with initial values, old/new values, times and explicit drop counts.
+
+### Changed
+
+- Playtest `screenshot path=` crops to the selected client's instance, including UI that exists only on that client.
+- Studio and client Luau replies say which context, VM and permission identity ran the code.
+
+### Fixed
+
+- `Font="Code"` is converted as `Enum.Font` instead of being mistaken for a `FontFace` value.
+- Same-named client siblings keep a stable path order when Roblox refuses `GetDebugId`.
+- A failed `viewport raycast` reports the error instead of saying nothing was hit.
+- ScreenGui crops and UI bounds account for the GUI inset with either `IgnoreGuiInset` setting.
+- Clipped Luau previews keep Unicode characters intact, and oversized printed lines say how much output was omitted.
+
 ## 0.8.7
 
 ### Added

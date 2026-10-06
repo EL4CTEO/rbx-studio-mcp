@@ -560,7 +560,7 @@ if destruction then destruction:Disconnect() end
 if stop then stop() end
 report:FireServer(if ok then {ok = true, capture = result} else {ok = false, reason = tostring(result)})
 ]==], { Seconds = seconds, Path = path }, seconds + 10, function(relay)
-			for _, name in { "RemoteTrace", "Paths", "Dispatch" } do
+			for _, name in { "RemoteTrace", "Paths", "Handles", "Dispatch" } do
 				local copy = script.Parent.Parent[name]:Clone()
 				copy.Parent = relay
 			end
@@ -608,6 +608,7 @@ function Debug.register()
 	install()
 
 	Dispatch.registerAll("debug", {
+		watch = require(script.Parent.Parent.Watch).capture,
 		set = Debug.set,
 		clear = Debug.clear,
 		snapshots = Debug.snapshots,

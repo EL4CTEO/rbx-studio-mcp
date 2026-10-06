@@ -9,8 +9,11 @@
 ]]
 
 local Dispatch = require(script.Parent.Dispatch)
+local Handles = require(script.Parent.Handles)
 
 local Paths = {}
+Paths.handle = Handles.of
+Paths.stableId = Handles.id
 
 --[[
 	Splits a path into segments. A leading "game." is optional and stripped, so
@@ -76,28 +79,21 @@ local function childrenByName(parent: Instance, memo: NameIndex?): { [string]: {
 		id is fixed for an instance's lifetime, which makes it the tiebreak.
 
 		Guarded, because this module also runs in the client relay, where
-		`GetDebugId` is not callable -- there the order is simply the engine's,
-		as it always was, rather than an error on every path.
+		`GetDebugId` is not callable. That VM assigns stable in-memory ids instead,
+		so repeated reads retain their order without changing the place.
 	]]
 	for _, list in byName do
 		if #list > 1 then
 			local ids: { [Instance]: string } = {}
-			local stable = true
 			for _, child in list do
 				local ok, id = pcall(function()
 					return child:GetDebugId()
 				end)
-				if not ok then
-					stable = false
-					break
-				end
-				ids[child] = id
+				ids[child] = if ok then id else string.format("%012d", Handles.id(child))
 			end
-			if stable then
-				table.sort(list, function(a: Instance, b: Instance): boolean
-					return ids[a] < ids[b]
-				end)
-			end
+			table.sort(list, function(a: Instance, b: Instance): boolean
+				return ids[a] < ids[b]
+			end)
 		end
 	end
 
@@ -237,6 +233,9 @@ end
 	whole remaining path, it still wins over a longer join.
 ]]
 function Paths.resolve(path: string): Instance
+	if typeof(path) == "string" and string.sub(path, 1, 5) == "@mcp:" then
+		return Handles.resolve(path)
+	end
 	if typeof(path) ~= "string" or path == "" then
 		Dispatch.fail(
 			"BAD_PATH",

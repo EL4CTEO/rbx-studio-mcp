@@ -35,4 +35,8 @@ local function cost(value)
 end
 assert(cost(bounded.returned) < 10000, "one budget across nested tables and multiple returns")
 assert(result.outputDropped == 5 and result.returnsDropped == 1)
+assert(utf8.len(runtime.describe(string.rep("é", 1500))), "return preview splits a UTF-8 character")
+local hugeLog = runtime.run(function() listener(string.rep("x", 140000), "warning") end)
+assert(hugeLog.ok and hugeLog.resultId and hugeLog.outputNotRetained == 1,
+ "an oversized first log line must report retention loss even without outputDropped")
 print("execution: global result budget and omission metadata pass")

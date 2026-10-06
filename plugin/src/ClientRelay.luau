@@ -230,4 +230,85 @@ function ClientRelay.run(player: Player, name: string, source: string, attribute
 	end
 	return answer
 end
+-- Read modules stay in this player's runtime only. Their Lua tables hold
+-- session handles and bounded result snapshots across calls, with no place
+-- attributes or editor writes. Respawning/replacing PlayerGui starts a new
+-- scope; old handles then fail explicitly.
+local readRoots: { [Player]: Folder } = setmetatable({}, { __mode = "k" }) :: any
+
+function ClientRelay.readRoot(player: Player): Folder
+	local gui = player:FindFirstChildOfClass("PlayerGui")
+	if not gui then Dispatch.fail("NO_PLAYER", player.Name .. " has no PlayerGui yet.") end
+	local current = readRoots[player]
+	if current and current.Parent == gui then return current end
+	if current then current:Destroy() end
+	local root = Instance.new("Folder")
+	root.Name = "__rbxStudioMcpRead"
+	root.Archivable = false
+	root:SetAttribute("MCPClientRelay", true)
+	for _, name in { "ClientRead", "Dispatch", "Handles", "Paths", "Scope", "Serialize", "LogBuffer", "ExecRuntime", "Results", "ViewRead", "ScreenRegion", "PerfSnapshot", "Watch" } do
+		local copy = script.Parent[name]:Clone()
+		copy.Parent = root
+	end
+	local handlers = Instance.new("Folder")
+	handlers.Name = "Handlers"
+	handlers.Parent = root
+	script.Parent.handlers.Discover:Clone().Parent = handlers
+	root.Parent = gui
+	readRoots[player] = root
+	return root
+end
+
+function ClientRelay.attachRuntime(relay: LocalScript, player: Player)
+	local reference = Instance.new("ObjectValue")
+	reference.Name = "Runtime"
+	reference.Value = ClientRelay.readRoot(player).ClientRead
+	reference.Parent = relay
+end
+
+function ClientRelay.read(params: { [string]: any }): { [string]: any }
+	local player = ClientRelay.playerFor(params.player)
+	local arguments = params.params or {}
+	local seconds = if params.op == "debug.watch" then math.clamp(tonumber(arguments.seconds) or 5, 1, 15) else 0
+	local result = ClientRelay.run(player, "MCPReadRelay", [==[
+local report = script:WaitForChild("Report", 10)
+if not report then return end
+local ok, data = pcall(function()
+	local reference = script:WaitForChild("Runtime", 10)
+	assert(reference, "Runtime reference did not replicate")
+	local deadline = os.clock() + 10
+	while not reference.Value and os.clock() < deadline do task.wait() end
+	assert(reference.Value, "Runtime module did not replicate")
+	local Reader = require(reference.Value)
+	local arguments = game:GetService("HttpService"):JSONDecode(script:GetAttribute("Arguments"))
+	return Reader.call(script:GetAttribute("Operation"), arguments)
+end)
+report:FireServer(if ok then {ok = true, data = data} else {ok = false, failure = if typeof(data) == "table" then data else nil, reason = tostring(data)})
+]==], { Operation = params.op, Arguments = game:GetService("HttpService"):JSONEncode(arguments) }, seconds + 25,
+		function(relay) ClientRelay.attachRuntime(relay, player) end)
+	if not result.ok then
+		local failure = result.failure
+		if typeof(failure) == "table" and typeof(failure.code) == "string" then
+			Dispatch.fail(failure.code, tostring(failure.message), failure.hint)
+		end
+		Dispatch.fail("CLIENT_READ_FAILED", tostring(result.reason))
+	end
+	local data = result.data
+	if typeof(data) ~= "table" then Dispatch.fail("CLIENT_READ_FAILED", "The client returned an invalid read response.") end
+	data.context = "client"
+	data.player = player.Name
+	return data
+end
+
+function ClientRelay.register()
+	Dispatch.register("client.read", ClientRelay.read)
+end
+
+function ClientRelay.stopReads()
+	for player, root in readRoots do
+		root:Destroy()
+		readRoots[player] = nil
+	end
+end
+
 return ClientRelay

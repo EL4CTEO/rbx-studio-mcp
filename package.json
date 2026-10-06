@@ -1,6 +1,6 @@
 {
   "name": "@el4cteo/rbx-studio-mcp",
-  "version": "0.8.7",
+  "version": "0.9.0",
   "description": "MCP server for Roblox Studio. 35 tools, push-based SSE bridge, two-way script sync with files, editor-safe script edits, one-step undo.",
   "type": "module",
   "license": "MIT",
@@ -11,8 +11,10 @@
     "dist",
     "plugin",
     "scripts",
+    "docs/*.md",
     "config/dsh.cordis.yml",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "dsh": {
@@ -31,7 +33,8 @@
     "build:plugin": "node scripts/check-plugin.mjs && node scripts/build-plugin.mjs",
     "sourcemap": "node scripts/sourcemap.mjs",
     "test:live": "node scripts/test-live.mjs",
-    "test": "node scripts/test-plugin.mjs && node scripts/test-transport.mjs && node scripts/test-server.mjs && node scripts/test-bridge.mjs && node scripts/test-console.mjs && node scripts/test-failover.mjs && node scripts/test-tools.mjs && node scripts/test-results.mjs && node scripts/test-sync.mjs && node scripts/test-sync-more.mjs && node scripts/test-apidump.mjs",
+    "test:live:v090": "node scripts/test-live-v090.mjs",
+    "test": "node scripts/test-plugin.mjs && node scripts/test-transport.mjs && node scripts/test-server.mjs && node scripts/test-bridge.mjs && node scripts/test-console.mjs && node scripts/test-failover.mjs && node scripts/test-tools.mjs && node scripts/test-results.mjs && node scripts/test-v090-tools.mjs && node scripts/test-sync.mjs && node scripts/test-sync-more.mjs && node scripts/test-apidump.mjs",
     "build:all": "npm run build && npm run build:plugin",
     "install:plugin": "node scripts/install-plugin.mjs",
     "check:plugin": "node scripts/check-plugin.mjs",

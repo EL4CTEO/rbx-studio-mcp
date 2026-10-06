@@ -93,6 +93,16 @@ const TYPE_PATTERNS = [/Key '[^']+' not found in table/, /Cannot add property '[
 const analyser = locateLuau("LUAU_ANALYZE", ["luau-analyze.exe", "luau-analyze"]);
 const shadowed = [];
 const mistyped = [];
+// Without Roblox definitions, allow the engine globals explicitly. Everything
+// else is still a real missing local (e.g. a constant lost during extraction).
+const ENGINE_GLOBALS = new Set([
+  "game", "workspace", "script", "plugin", "task", "Enum", "Instance", "settings", "version", "warn",
+  "Vector2", "Vector3", "CFrame", "UDim", "UDim2", "Color3", "BrickColor", "Font", "Content",
+  "ColorSequence", "ColorSequenceKeypoint", "NumberSequence", "NumberSequenceKeypoint", "NumberRange",
+  "Rect", "Region3", "Ray", "RaycastParams", "OverlapParams", "PhysicalProperties", "TweenInfo",
+  "DateTime", "DockWidgetPluginGuiInfo", "Random", "Axes", "Faces", "Vector3int16", "Region3int16",
+]);
+const unknownGlobals = [];
 if (analyser !== null) {
   for (const file of files) {
     const result = spawnSync(analyser, [file], { encoding: "utf8" });
@@ -100,6 +110,8 @@ if (analyser !== null) {
     for (const line of output.split("\n")) {
       if (line.includes("LocalShadow:")) shadowed.push(line.trim());
       else if (TYPE_PATTERNS.some((pattern) => pattern.test(line))) mistyped.push(line.trim());
+      const unknown = /Unknown global '([^']+)'/.exec(line);
+      if (unknown && !ENGINE_GLOBALS.has(unknown[1])) unknownGlobals.push(line.trim());
     }
   }
 }
@@ -157,13 +169,15 @@ const missingClones = [];
     ]),
   );
   const requiresOf = (name) =>
-    [...(modules.get(name) ?? "").matchAll(/require\(script\.Parent\.(\w+)\)/g)].map((m) => m[1]);
+    [...(modules.get(name) ?? "").matchAll(/require\(script(?:\.Parent){1,2}\.([\w.]+)\)/g)]
+      .map((m) => m[1].replace(/^Handlers\./, "handlers.").replaceAll(".", "/"));
 
   for (const [where, source] of modules) {
     for (const list of source.matchAll(
-      /for _, name in \{([^}]*)\} do\s*local copy = script\.Parent\.Parent\[name\]:Clone\(\)/g,
+      /for _, name in \{([^}]*)\} do\s*local copy = script(?:\.Parent){1,2}\[name\]:Clone\(\)/g,
     )) {
       const cloned = new Set([...list[1].matchAll(/"(\w+)"/g)].map((m) => m[1]));
+      if (source.includes("script.Parent.handlers.Discover:Clone()")) cloned.add("handlers/Discover");
       const needed = new Set();
       const pending = [...cloned];
       while (pending.length > 0) {
@@ -223,4 +237,7 @@ if (mistyped.length > 0) {
 `,
   );
 }
-process.exit(failures.length > 0 || shadowed.length > 0 || mistyped.length > 0 ? 1 : 0);
+if (unknownGlobals.length > 0) {
+  process.stderr.write(`\nUnknown globals outside Roblox's engine globals:\n${unknownGlobals.join("\n")}\n`);
+}
+process.exit(failures.length > 0 || shadowed.length > 0 || mistyped.length > 0 || unknownGlobals.length > 0 ? 1 : 0);

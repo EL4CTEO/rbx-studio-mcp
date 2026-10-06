@@ -101,6 +101,7 @@ async function playtestShot(
   width: number,
   rect?: string,
   player?: string,
+  path?: string,
 ): Promise<ScreenshotResponse> {
   const editor = sessions.find(
     (session) => session.placeId === playtest.placeId && !isPlaytest(session),
@@ -115,9 +116,9 @@ async function playtestShot(
     );
   }
 
-  const { contentId } = await bridge.call<{ contentId: string }>(
+  const { contentId, region } = await bridge.call<{ contentId: string; region?: Record<string, number> }>(
     "capture.playtestId",
-    { player },
+    { player, path, rect },
     { studioId: playtest.studioId, timeoutMs: 40_000 },
   );
 
@@ -125,7 +126,7 @@ async function playtestShot(
   // is no promise about how long Studio keeps one nobody has opened yet.
   return bridge.call<ScreenshotResponse>(
     "capture.decode",
-    { contentId, width, rect, context: "playtest client" },
+    { contentId, width, rect, region, context: "playtest client" },
     { studioId: editor.studioId, timeoutMs: 60_000 },
   );
 }
@@ -174,7 +175,7 @@ export function registerScreenshotTools(context: ToolContext): void {
           .optional()
           .describe(
             "Zoom to this instance at full resolution: a GUI element, a part, a " +
-              "model, or a folder of parts. Edit session only; it must be on screen.",
+              "model, or a folder of parts. Also resolves client-only instances in playtests; it must be on screen.",
           ),
         rect: z
           .string()
@@ -197,7 +198,7 @@ export function registerScreenshotTools(context: ToolContext): void {
 
       const response =
         target !== undefined && isPlaytest(target)
-          ? await playtestShot(bridge, target, list, args.width, args.rect, args.player)
+          ? await playtestShot(bridge, target, list, args.width, args.rect, args.player, args.path)
           : await bridge.call<ScreenshotResponse>(
               "capture.screenshot",
               { width: args.width, path: args.path, rect: args.rect },

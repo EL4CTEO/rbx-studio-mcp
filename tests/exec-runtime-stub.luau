@@ -1,6 +1,6 @@
 local listener
 local disconnected = false
-local game = { GetService = function() return { MessageOut = { Connect = function(_, fn)
+local game = { GetService = function(_, name) if name == "HttpService" then return HttpService end; return { MessageOut = { Connect = function(_, fn)
  listener = fn
  return { Disconnect = function() disconnected = true end }
 end } } end }

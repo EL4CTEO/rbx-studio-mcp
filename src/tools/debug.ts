@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { readCall, readTargetSchema } from "../lib/readtarget.js";
+import { ToolError } from "../lib/errors.js";
 import { errorText, json, text, type ToolResult } from "../lib/format.js";
 import { defineTool, type ToolContext } from "../lib/tool.js";
 
@@ -187,14 +189,18 @@ export function registerDebugTools(context: ToolContext): void {
         "server studioId. Captures 5 seconds by default (max 15), at most 2000 events " +
         "and 40 rows within 12 KB; reports truncation when a limit is reached.",
       inputSchema: {
+        ...readTargetSchema,
+        properties: z.array(z.string().min(1)).max(16).optional().describe("watch: properties to observe."),
+        attributes: z.array(z.string().min(1)).max(16).optional().describe("watch: attribute names; omit for all, [] for none."),
+        children: z.boolean().default(true).describe("watch: include direct child additions/removals."),
         op: z
-          .enum(["set", "clear", "snapshots", "exceptions", "remotes"])
+          .enum(["set", "clear", "snapshots", "exceptions", "remotes", "watch"])
           .describe(
             "'set' adds breakpoints, 'clear' removes one or all, 'snapshots' " +
               "reads what has been captured, 'exceptions' controls breaking on errors, 'remotes' traces RemoteEvents.",
           ),
-        seconds: z.number().min(1).max(15).optional().describe("remotes only: capture seconds, default 5."),
-        player: z.string().optional().describe("remotes only: player name; required with multiple players. Both directions are scoped to this player."),
+        seconds: z.number().min(1).max(15).optional().describe("watch/remotes: bounded capture seconds, default 5. Pair watch with concurrent input to observe a reaction."),
+        player: z.string().optional().describe("watch client/remotes: player name; required with multiple players."),
         breakpoints: z
           .array(
             z.object({
@@ -244,6 +250,13 @@ export function registerDebugTools(context: ToolContext): void {
       destructive: false,
     },
     async (args): Promise<ToolResult> => {
+      if (args.op === "watch") {
+        if (!args.path) throw new ToolError("BAD_PARAMS", "watch requires an instance path or handle.");
+        return json(await readCall<Record<string, unknown>>(bridge, "debug.watch",
+          { path: args.path, properties: args.properties, attributes: args.attributes, children: args.children, seconds: args.seconds ?? 5 },
+          args, ((args.seconds ?? 5) + 30) * 1000));
+      }
+      if (args.target === "client") throw new ToolError("BAD_TARGET", "Only debug watch supports target=client; remotes already observes both directions.");
       if (args.op === "remotes") {
         const response = await bridge.call<Record<string, unknown>>(
           "debug.remotes",

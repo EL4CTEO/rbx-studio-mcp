@@ -17,6 +17,8 @@ local RunService = game:GetService("RunService")
 local Dispatch = require(script.Parent.Parent.Dispatch)
 local Runtime = require(script.Parent.Parent.ExecRuntime)
 local ClientRelay = require(script.Parent.Parent.ClientRelay)
+local Results = require(script.Parent.Parent.Results)
+local Context = require(script.Parent.Parent.Context)
 
 local CHUNK_NAME = "StudioMCP.execute_luau"
 
@@ -150,7 +152,12 @@ local report = script:WaitForChild("Report", 10)
 if not report then return end
 local ok, result = pcall(function()
 	assert(game:GetService("RunService"):IsClient(), "Client VM required")
-	local runtime = require(script:WaitForChild("ExecRuntime"))
+	local reference = script:WaitForChild("Runtime", 10)
+	assert(reference, "Runtime reference did not replicate")
+	local deadline = os.clock() + 10
+	while not reference.Value and os.clock() < deadline do task.wait() end
+	assert(reference.Value, "Runtime module did not replicate")
+	local runtime = require(reference.Value.Parent:WaitForChild("ExecRuntime", 10))
 	local compiled, chunk = pcall(require, script:WaitForChild("Chunk"))
 	if not compiled then
 		return { ok = false, error = tostring(chunk), output = {}, milliseconds = 0 }
@@ -164,15 +171,14 @@ report:FireServer(if ok then result else { ok = false, error = tostring(result),
 			-- tree does not exist in the client, so `script.Parent.LogBuffer` finds only
 			-- what is cloned beside it. Leaving LogBuffer out made every client run fail
 			-- with "Requested module experienced an error while loading".
-			for _, name in { "ExecRuntime", "LogBuffer", "Serialize", "Paths", "Dispatch" } do
-				local copy = script.Parent.Parent[name]:Clone()
-				copy.Parent = relay
-			end
+			ClientRelay.attachRuntime(relay, player)
 			local chunk = Instance.new("ModuleScript")
 			chunk.Name = "Chunk"
 			chunk.Parent = relay
 			chunk.Source = "return function(...) " .. source .. "\nend"
 		end)
+		result.context = "client"
+		result.player = player.Name
 		return result
 	end
 
@@ -197,12 +203,26 @@ report:FireServer(if ok then result else { ok = false, error = tostring(result),
 	local result = Runtime.run(chunk :: any)
 	if module then module:Destroy() end
 	result.note = notes(route, source)
+	result.context = Context.of()
+	result.vm = "plugin"
+	result.identity = if route == "loadstring" then "plugin" else "script"
+	return result
+end
+
+function Exec.result(params: { [string]: any }): { [string]: any }
+	if params.target == "client" then
+		return ClientRelay.read({ op = "exec.result", player = params.player, params = params })
+	end
+	local result = Results.read(params)
+	result.context = Context.of()
+	result.vm = "plugin"
 	return result
 end
 
 function Exec.register()
 	Dispatch.registerAll("exec", {
 		run = Exec.run,
+		result = Exec.result,
 	})
 end
 

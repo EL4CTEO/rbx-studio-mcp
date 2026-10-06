@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { handlesSchema, readCall, readContext, readTargetSchema } from "../lib/readtarget.js";
 import {
   describeRestriction,
   propertiesOf,
@@ -19,7 +20,7 @@ interface TagsResponse {
 }
 
 interface ListResponse {
-  items: Array<{ path: string; className: string; childCount: number }>;
+  items: Array<{ path: string; className: string; childCount: number; handle?: string }>;
   total: number;
   offset: number;
   root?: string;
@@ -31,6 +32,7 @@ interface InspectResponse {
   items: Array<{
     path: string;
     className: string;
+    handle?: string;
     properties: Record<string, unknown>;
     attributes: Record<string, unknown>;
     tags: string[];
@@ -46,6 +48,7 @@ interface InspectResponse {
  */
 function pageOf(response: ListResponse, detail: Detail, more?: string): ToolResult {
   const columns = detail === "concise" ? ["path", "className"] : ["path", "className", "childCount"];
+  if (response.items.some(item => item.handle)) columns.splice(1, 0, "handle");
   const nextOffset = response.offset + response.items.length;
   return table(columns, response.items as unknown as Array<Record<string, unknown>>, {
     offset: response.offset,
@@ -243,12 +246,14 @@ export function registerDiscoverTools(context: ToolContext): void {
         detail: detailSchema,
         limit: limitSchema,
         cursor: cursorSchema,
+        ...readTargetSchema,
+        handles: handlesSchema,
         studioId: z.string().optional().describe("Target Studio; omit for the active one."),
       },
       readOnly: true,
     },
     async (args): Promise<ToolResult> => {
-      const response = await bridge.call<ListResponse>(
+      const response = await readCall<ListResponse>(bridge,
         "discover.tree",
         {
           path: args.path,
@@ -257,8 +262,9 @@ export function registerDiscoverTools(context: ToolContext): void {
           nameContains: args.nameContains,
           limit: args.limit,
           offset: decodeCursor(args.cursor),
+          handles: args.handles,
         },
-        { studioId: args.studioId },
+        args,
       );
       // Say what was withheld at the root, so an agent that genuinely needs an
       // engine service knows it can ask for one by path.
@@ -272,6 +278,7 @@ export function registerDiscoverTools(context: ToolContext): void {
             ? `${hidden} engine services hidden — pass an explicit \`path\` to inspect one`
             : undefined,
           notAClass,
+          readContext(args),
         ]
           .filter((part): part is string => part !== undefined)
           .join("; ") || undefined,
@@ -325,6 +332,8 @@ export function registerDiscoverTools(context: ToolContext): void {
           .boolean()
           .default(true)
           .describe("Include a name/class listing of direct children."),
+        ...readTargetSchema,
+        handles: handlesSchema,
         studioId: z.string().optional().describe("Target Studio; omit for the active one."),
       },
       readOnly: true,
@@ -339,7 +348,7 @@ export function registerDiscoverTools(context: ToolContext): void {
       const probedClasses = new Set<string>();
 
       if (!requested && args.detail !== "concise") {
-        const probe = await bridge.call<InspectResponse>(
+        const probe = await readCall<InspectResponse>(bridge,
           "discover.inspect",
           // probeOnly is inert on the plugin side; it only tells the console
           // this is the class-probe half of one `inspect` call, not a second
@@ -347,7 +356,7 @@ export function registerDiscoverTools(context: ToolContext): void {
           // labelled "Inspect X", read as a duplicate rather than as the
           // two-pass shape this genuinely is.
           { paths: args.paths, includeChildren: false, probeOnly: true },
-          { studioId: args.studioId },
+          args,
         );
         const names = new Set<string>();
         for (const item of probe.items) {
@@ -365,18 +374,19 @@ export function registerDiscoverTools(context: ToolContext): void {
         requested = [...names];
       }
 
-      const response = await bridge.call<InspectResponse>(
+      const response = await readCall<InspectResponse>(bridge,
         "discover.inspect",
         {
           paths: args.paths,
           properties: requested,
           includeChildren: args.includeChildren,
           physics: args.physics,
+          handles: args.handles,
         },
-        { studioId: args.studioId },
+        args,
       );
 
-      const notes: string[] = [];
+      const notes: string[] = readContext(args) ? [readContext(args)!] : [];
       if (response.failures.length > 0) {
         notes.push(
           `Could not resolve ${response.failures.length} path(s):\n` +
@@ -467,16 +477,18 @@ export function registerDiscoverTools(context: ToolContext): void {
         detail: detailSchema,
         limit: limitSchema,
         cursor: cursorSchema,
+        ...readTargetSchema,
+        handles: handlesSchema,
         studioId: z.string().optional().describe("Target Studio; omit for the active one."),
       },
       readOnly: true,
     },
     async (args): Promise<ToolResult> => {
       if (args.op === "tags") {
-        const found = await bridge.call<TagsResponse>(
+        const found = await readCall<TagsResponse>(bridge,
           "discover.tags",
           { path: args.path },
-          { studioId: args.studioId, timeoutMs: 30_000 },
+          args, 30_000,
         );
         if (found.tags.length === 0) {
           return text(
@@ -536,7 +548,7 @@ export function registerDiscoverTools(context: ToolContext): void {
         );
       }
 
-      const response = await bridge.call<ListResponse>(
+      const response = await readCall<ListResponse>(bridge,
         "discover.find",
         {
           path: args.path,
@@ -549,8 +561,9 @@ export function registerDiscoverTools(context: ToolContext): void {
           properties: args.properties,
           limit: args.limit,
           offset: decodeCursor(args.cursor),
+          handles: args.handles,
         },
-        { studioId: args.studioId, timeoutMs: 30_000 },
+        args, 30_000,
       );
 
       if (response.total === 0) {
@@ -567,8 +580,8 @@ export function registerDiscoverTools(context: ToolContext): void {
             "Try a shorter `nameContains`, or drop a filter to widen the search.",
         );
       }
-      if (args.properties) return page(response.items, {offset: response.offset, total: response.total, more: `searched ${response.searched ?? 0} instances`});
-      return pageOf(response, args.detail, `searched ${response.searched ?? 0} instances`);
+      if (args.properties) return page(response.items, {offset: response.offset, total: response.total, more: [`searched ${response.searched ?? 0} instances`, readContext(args)].filter(Boolean).join("; ")});
+      return pageOf(response, args.detail, [`searched ${response.searched ?? 0} instances`, readContext(args)].filter(Boolean).join("; "));
     },
   );
 }

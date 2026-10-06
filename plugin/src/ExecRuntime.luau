@@ -3,6 +3,7 @@
 local LogService = game:GetService("LogService")
 local LogBuffer = require(script.Parent.LogBuffer)
 local Serialize = require(script.Parent.Serialize)
+local Results = require(script.Parent.Results)
 -- A chunk that prints in a loop would otherwise return a response no context
 -- window can hold.
 local MAX_OUTPUT_LINES = 200
@@ -13,13 +14,23 @@ local MAX_RETURN_VALUES = 10
 -- able to produce a response nothing can read.
 local MAX_TABLE_ENTRIES = 50
 local MAX_TABLE_DEPTH = 4
-type Budget = { nodes: number, chars: number }
+type Budget = { nodes: number, chars: number, omitted: boolean? }
+
+local function clipped(text: string, cap: number): string
+	local last = cap
+	while last > 0 do
+		local byte = string.byte(text, last + 1)
+		if byte < 128 or byte >= 192 then break end
+		last -= 1
+	end
+	return string.sub(text, 1, last) .. "<truncated>"
+end
 
 local function describe(value: any, depth: number?, seen: { [any]: boolean }?, shared: Budget?): any
 	local budget = shared or {nodes = 300, chars = 10000}
 	budget.nodes -= 1
 	budget.chars -= 30
-	if budget.nodes < 0 or budget.chars < 100 then return "<budget exceeded>" end
+	if budget.nodes < 0 or budget.chars < 100 then budget.omitted = true; return "<budget exceeded>" end
 	local level = depth or 0
 	local visited = seen or {}
 	local kind = typeof(value)
@@ -32,7 +43,8 @@ local function describe(value: any, depth: number?, seen: { [any]: boolean }?, s
 		if typeof(result) == "string" then
 			local cap = math.min(2000, math.floor(budget.chars / 6))
 			budget.chars -= math.min(#result, cap) * 6
-			return if #result > cap then string.sub(result, 1, cap) .. "<truncated>" else result
+			if #result > cap then budget.omitted = true end
+			return if #result > cap then clipped(result, cap) else result
 		end
 		return result
 	end
@@ -47,6 +59,7 @@ local function describe(value: any, depth: number?, seen: { [any]: boolean }?, s
 		return "<circular reference>"
 	end
 	if level >= MAX_TABLE_DEPTH then
+		budget.omitted = true
 		return "<nested table>"
 	end
 	visited[source] = true
@@ -65,6 +78,7 @@ local function describe(value: any, depth: number?, seen: { [any]: boolean }?, s
 		local list: { any } = {}
 		for index, item in ipairs(source) do
 			if index > MAX_TABLE_ENTRIES or budget.nodes <= 0 or budget.chars < 100 then
+				budget.omitted = true
 				table.insert(list, "<more entries>")
 				break
 			end
@@ -81,6 +95,7 @@ local function describe(value: any, depth: number?, seen: { [any]: boolean }?, s
 	for key, item in source do
 		shown += 1
 		if shown > MAX_TABLE_ENTRIES or budget.nodes <= 0 or budget.chars < 100 then
+			budget.omitted = true
 			map["..."] = "<more entries>"
 			break
 		end
@@ -99,15 +114,25 @@ function Runtime.run(chunk: () -> ...any, timeout: number?): { [string]: any }
 	-- reading them back from the log afterwards would also pick up whatever else
 	-- the place logged in the meantime.
 	local output: { { [string]: any } } = {}
+	local fullOutput: { { [string]: any } } = {}
+	local fullOutputBytes = 0
+	local outputTruncated = false
 	local outputChars, outputDropped = 0, 0
 	local connection = LogService.MessageOut:Connect(function(message, messageType, context)
+		if #fullOutput < MAX_OUTPUT_LINES and fullOutputBytes + #message <= 131072 then
+			fullOutputBytes += #message
+			table.insert(fullOutput, { message = message, level = tostring(messageType) })
+		end
 		if #output < MAX_OUTPUT_LINES and outputChars < 8000 then
 			-- A structured log's context rides on the line, as it does in `console`.
 			local encoded = LogBuffer.encodeContext(context)
 			if encoded then
 				message ..= "  " .. encoded
 			end
-			if #message > math.min(2000, 8000 - outputChars) then message = string.sub(message, 1, math.min(2000, 8000 - outputChars)) .. "<truncated>" end
+			if #message > math.min(2000, 8000 - outputChars) then
+				outputTruncated = true
+				message = clipped(message, math.min(2000, 8000 - outputChars))
+			end
 			outputChars += #message
 			table.insert(output, {
 				message = message,
@@ -178,7 +203,7 @@ function Runtime.run(chunk: () -> ...any, timeout: number?): { [string]: any }
 		table.insert(returned, if value == nil then "nil" else describe(value, nil, nil, budget))
 	end
 
-	return {
+	local response: { [string]: any } = {
 		ok = true,
 		returned = returned,
 		outputDropped = if outputDropped > 0 then outputDropped else nil,
@@ -186,5 +211,18 @@ function Runtime.run(chunk: () -> ...any, timeout: number?): { [string]: any }
 		output = output,
 		milliseconds = math.floor(elapsed * 1000 + 0.5),
 	}
+	if budget.omitted or outputTruncated or outputDropped > 0 or response.returnsDropped then
+		local fullReturned: { any } = {}
+		for index = 2, results.n do
+			table.insert(fullReturned, if results[index] == nil then "nil" else results[index])
+		end
+		local notRetained = #output + outputDropped - #fullOutput
+		local retained = Results.capture({ returned = fullReturned, output = fullOutput,
+			outputNotRetained = if notRetained > 0 then notRetained else nil })
+		for key, value in retained do response[key] = value end
+		response.truncated = true
+		response.outputNotRetained = if notRetained > 0 then notRetained else nil
+	end
+	return response
 end
 return Runtime

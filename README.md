@@ -80,6 +80,43 @@ Port is **44755**, loopback only. Change it with `--port` and match it in the pl
 
 Write tools take arrays — ten script edits is one call, one **Ctrl+Z**, and all-or-nothing.
 
+## Inspect the running client
+
+Use the playtest server's `studioId` returned by `playtest`. The existing readers can now run in the actual player's VM:
+
+```
+tree target="client" path="Players.Alice.PlayerGui" handles=true
+inspect target="client" paths=["<handle>"] properties=["Text","AbsoluteSize"]
+find target="client" className="TextButton" properties=["Text"]
+viewport op="ui" target="client"
+performance op="snapshot" target="client"
+```
+
+Add `player="Alice"` when several players are present. `target="studio"` keeps the selected Studio session's existing behavior. Client handles belong to that player and runtime; use the same target, player and session in later calls.
+
+`handles=true` adds an in-memory reference alongside an instance's path. It survives rename/reparent and can replace a path in existing tools. Deleted, expired or wrong-context handles fail instead of resolving to a different object. Each VM keeps at most 5,000 references; query again after eviction or a new playtest. No handle attributes are written into the place.
+
+`screenshot path=` also resolves client-only GUI and world instances during a playtest. `viewport op="pick" x=0.5 y=0.5 target="client"` returns the world geometry under the actual camera's center, with a handle. Coordinates are normalized over the **full uncropped viewport**, not a cropped screenshot; use the screenshot caption's crop and scale to map pixels back.
+
+`debug op="watch" path=... target="client" properties=["Text"] attributes=["State"] seconds=5` records initial values and timestamped property, attribute and direct-child changes. Omit `attributes` to watch all, or pass `[]` for none. It waits for a bounded 1–15-second window, so send input or another execution concurrently. Connections are removed afterwards. Replies retain at most 100 events and 10 KB of initial/event data, with explicit drop counts. Signals can coalesce rapid writes; this is not writer attribution or continuous physics sampling.
+
+## Recover an execution result
+
+When a successful `execute_luau` preview is clipped, it returns a `resultId`. Retrieve pages with the **source omitted**; the original script is never rerun:
+
+```
+execute_luau resultId="<id>" resultOffset=0 resultLimit=25 resultFields=["name","value"]
+execute_luau resultId="<id>" resultPath=["returned",1,"nested"]
+```
+
+Keep the original `target`, `player` and `studioId`. The default path is `["returned",1]`; `[]` selects the snapshot root. Table entries include keys, and `nextOffset` continues the page. Oversized nested values provide their own `resultPath`. String pages use UTF-8 byte offsets and join into the original string, including a returned JSON string.
+
+Retention is bounded: 8 snapshots per VM, 120 seconds, 128 KiB per snapshot, depth 16 and 10,000 nodes. `retainedTruncated` and `omittedPaths` say when retention itself lost data; a continuation cannot recover data beyond those caps.
+
+Printed output separately keeps at most 200 lines/128 KiB before snapshot copying. `outputNotRetained` reports lines that could not be kept, including an oversized first line. Very long result addresses can exceed the page budget and produce an explicit error rather than a repeating cursor.
+
+See the [v0.9.0 scope review](docs/v0.9.0-review.md) for the tradeoffs.
+
 ## Work on files
 
 `sync` mirrors your scripts into a folder, so an agent can edit code with its own file tools and use Studio to test.

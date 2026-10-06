@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { errorText, json, stringify, table, text, type ToolResult } from "../lib/format.js";
+import { readCall, readContext, readTargetSchema } from "../lib/readtarget.js";
 import { ToolError } from "../lib/errors.js";
 import { runLiveLuau } from "../lib/liveluau.js";
 import {
@@ -12,6 +13,14 @@ import { defineTool, type ToolContext } from "../lib/tool.js";
 
 interface ExecResponse {
   ok: boolean;
+  resultId?: string;
+  retainedTruncated?: boolean;
+  omittedPaths?: string[];
+  context?: string;
+  vm?: string;
+  identity?: string;
+  player?: string;
+  outputNotRetained?: number;
   error?: string;
   returned?: unknown[];
   output: Array<{ level: string; message: string }>;
@@ -33,6 +42,7 @@ interface UiAuditResponse {
   findings: Array<{ path: string; name: string; className: string; issue: string; detail: string }>;
   findingCount: number;
   overlapStopped: boolean;
+  omitted?: number;
 }
 
 interface TextBoundsResponse {
@@ -119,9 +129,15 @@ export function registerExecTools(context: ToolContext): void {
         "so expect seconds, not milliseconds, and a `state` of COMPLETE or " +
         "FAILED rather than a bare value.",
       inputSchema: {
+        resultId: z.string().optional().describe("Retrieve a retained result without rerunning source. Keep its original target/player/studioId."),
+        resultPath: z.array(z.union([z.string(), z.number().int()])).max(20).optional().describe("Retained result path, default [returned,1]. Use [] for its root; [output,1,message] for a log string."),
+        resultOffset: z.number().int().min(0).default(0).describe("Result page offset; use nextOffset from the previous page. String offsets are UTF-8 bytes."),
+        resultLimit: z.number().int().min(1).max(100).default(25).describe("Retained table entries per page."),
+        resultFields: z.array(z.string()).max(16).optional().describe("Project these fields on retained table rows."),
         source: z
           .string()
           .min(1)
+          .optional()
           .describe(
             "Luau to run. In an editor session this has plugin permissions, so " +
               "`game`, `workspace` and plugin-only APIs are all reachable.",
@@ -156,6 +172,11 @@ export function registerExecTools(context: ToolContext): void {
       destructive: true,
     },
     async (args): Promise<ToolResult> => {
+      if (args.resultId) {
+        if (args.source || args.target === "live") throw new ToolError("BAD_PARAMS", "Result retrieval requires source to be omitted and target studio or client.");
+        return json(await bridge.call<Record<string, unknown>>("exec.result", { resultId: args.resultId, resultPath: args.resultPath, resultOffset: args.resultOffset, resultLimit: args.resultLimit, resultFields: args.resultFields, target: args.target, player: args.player }, { studioId: args.studioId }));
+      }
+      if (!args.source) throw new ToolError("BAD_PARAMS", "Provide source to execute, or resultId to retrieve retained output.");
       if (args.target === "live") {
         if (args.confirm !== true) {
           throw new ToolError(
@@ -215,6 +236,15 @@ export function registerExecTools(context: ToolContext): void {
         parts.push(`Error: ${response.error ?? "unknown"}`);
       }
 
+      if (response.context) {
+        const vm = response.vm ?? (response.context === "client" ? "client" : undefined);
+        const identity = response.identity ?? (vm === "client" ? "script" : vm);
+        parts.push(
+          `Context: ${response.context}${response.player ? ` (${response.player})` : ""}` +
+            (vm ? `; VM=${vm}, identity=${identity}.` : "."),
+        );
+      }
+      if (response.resultId) parts.push(`Preview truncated. Retained resultId="${response.resultId}" for 120s. Retrieve with source omitted; resultPath defaults to ["returned",1].${response.retainedTruncated ? ` Retention limit reached at: ${JSON.stringify(response.omittedPaths)}.` : ""}${response.outputNotRetained ? ` ${response.outputNotRetained} printed lines were not retained.` : ""}`);
       if (response.note) parts.push(`Note: ${response.note}`);
       // Said, so a short output is not read as everything the code printed.
       if (response.outputDropped) parts.push(`[${response.outputDropped} more printed lines left out; print less, or return a summary]`);
@@ -268,7 +298,7 @@ export function registerExecTools(context: ToolContext): void {
         "character counts ignore the font, and font size is not a width.",
       inputSchema: {
         op: z
-          .enum(["select", "raycast", "focus", "camera", "textbounds", "ui"])
+          .enum(["select", "raycast", "focus", "camera", "textbounds", "ui", "pick"])
           .describe(
             "'focus' points the camera at something and frames it, 'camera' sets " +
               "it explicitly, 'select' changes the Studio selection, 'textbounds' "
@@ -348,6 +378,9 @@ export function registerExecTools(context: ToolContext): void {
           .min(0)
           .optional()
           .describe("textbounds only: wrap at this width. 0 means do not wrap. Defaults to the label's width."),
+        ...readTargetSchema,
+        x: z.number().min(0).max(1).optional().describe("pick: normalized X in the full uncropped viewport."),
+        y: z.number().min(0).max(1).optional().describe("pick: normalized Y in the full uncropped viewport."),
         richText: z
           .boolean()
           .optional()
@@ -358,6 +391,11 @@ export function registerExecTools(context: ToolContext): void {
       idempotent: true,
     },
     async (args): Promise<ToolResult> => {
+      if (args.target === "client" && !["ui", "raycast", "pick"].includes(args.op)) throw new ToolError("BAD_TARGET", "Client viewport reads support ui, raycast and pick.");
+      if (args.op === "pick") {
+        if (args.x === undefined || args.y === undefined) throw new ToolError("BAD_PARAMS", "pick requires normalized x and y.");
+        return json(await readCall<Record<string, unknown>>(bridge, "viewport.pick", { x: args.x, y: args.y, maxDistance: args.maxDistance, ignore: args.ignore }, args), readContext(args));
+      }
       if (args.op === "focus") {
         if (!args.path && !args.at) {
           return errorText("focus needs a `path` to look at, or an `at` position.");
@@ -380,13 +418,13 @@ export function registerExecTools(context: ToolContext): void {
       }
 
       if (args.op === "ui") {
-        const audit = await bridge.call<UiAuditResponse>(
+        const audit = await readCall<UiAuditResponse>(bridge,
           "viewport.ui",
           { path: args.path },
-          { studioId: args.studioId, timeoutMs: 45_000 },
+          args, 45_000,
         );
 
-        const where = `${audit.root} on a ${audit.screen} screen` +
+        const where = `${args.target === "client" ? "actual client: " : ""}${audit.root} on a ${audit.screen} screen` +
           (audit.device !== undefined ? ` (emulating ${audit.device})` : "");
 
         if (audit.findings.length === 0) {
@@ -425,6 +463,7 @@ export function registerExecTools(context: ToolContext): void {
             'Run again after `device op="set"` with a phone — this is the desktop layout.',
           );
         }
+        if (audit.omitted) notes.push(`${audit.omitted} additional findings omitted; narrow path.`);
         if (audit.overlapStopped) {
           notes.push("Overlap checking stopped early; there were too many sibling pairs.");
         }
@@ -467,7 +506,7 @@ export function registerExecTools(context: ToolContext): void {
               "ground below a point.",
           );
         }
-        const response = await bridge.call<RaycastResponse>(
+        const response = await readCall<RaycastResponse>(bridge,
           "viewport.raycast",
           {
             origin: args.origin,
@@ -475,7 +514,7 @@ export function registerExecTools(context: ToolContext): void {
             maxDistance: args.maxDistance,
             ignore: args.ignore,
           },
-          { studioId: args.studioId },
+          args,
         );
         if (!response.hit) {
           return text(
