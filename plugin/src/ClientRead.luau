@@ -19,6 +19,8 @@ function ClientRead.call(op: string, params: { [string]: any }): any
 		return { region = require(script.Parent.ScreenRegion).of(params) }
 	elseif op == "debug.watch" then
 		return require(script.Parent.Watch).capture(params, script.Parent)
+	elseif op == "debug.collisions" then
+		return require(script.Parent.Collisions).capture(params)
 	elseif op == "exec.result" then
 		return require(script.Parent.Results).read(params)
 	end

@@ -330,6 +330,9 @@ local DESCRIBERS: { [string]: Describer } = {
 	["debug.watch"] = function(params)
 		return "Watch changes to " .. (leaf(params.path) or "an instance")
 	end,
+	["debug.collisions"] = function(params)
+		return "Watch collisions on " .. (leaf(params.path) or "an instance")
+	end,
 	["debug.snapshots"] = function()
 		return "Read what the breakpoints caught"
 	end,

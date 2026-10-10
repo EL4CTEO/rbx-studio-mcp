@@ -246,7 +246,7 @@ function ClientRelay.readRoot(player: Player): Folder
 	root.Name = "__rbxStudioMcpRead"
 	root.Archivable = false
 	root:SetAttribute("MCPClientRelay", true)
-	for _, name in { "ClientRead", "Dispatch", "Handles", "Paths", "Scope", "Serialize", "LogBuffer", "ExecRuntime", "Results", "ViewRead", "ScreenRegion", "PerfSnapshot", "Watch" } do
+	for _, name in { "ClientRead", "Dispatch", "Handles", "Paths", "Scope", "Serialize", "LogBuffer", "ExecRuntime", "Results", "ViewRead", "ScreenRegion", "PerfSnapshot", "Watch", "Collisions" } do
 		local copy = script.Parent[name]:Clone()
 		copy.Parent = root
 	end
@@ -269,7 +269,7 @@ end
 function ClientRelay.read(params: { [string]: any }): { [string]: any }
 	local player = ClientRelay.playerFor(params.player)
 	local arguments = params.params or {}
-	local seconds = if params.op == "debug.watch" then math.clamp(tonumber(arguments.seconds) or 5, 1, 15) else 0
+	local seconds = if params.op == "debug.watch" or params.op == "debug.collisions" then math.clamp(tonumber(arguments.seconds) or 5, 1, 15) else 0
 	local result = ClientRelay.run(player, "MCPReadRelay", [==[
 local report = script:WaitForChild("Report", 10)
 if not report then return end

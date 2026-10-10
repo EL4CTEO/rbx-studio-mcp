@@ -187,19 +187,26 @@ export function registerDebugTools(context: ToolContext): void {
         "directions. Returns counts, calls/sec and two short argument-shape samples per " +
         "remote; no raw payload dumps or RemoteFunction interception. Requires the playtest " +
         "server studioId. Captures 5 seconds by default (max 15), at most 2000 events " +
-        "and 40 rows within 12 KB; reports truncation when a limit is reached.",
+        "and 40 rows within 12 KB; reports truncation when a limit is reached.\n\n" +
+        "`collisions` watches a part, or every part under a model, with the engine's collision " +
+        "summaries and returns one row per colliding pair, hardest impact first: contact point, " +
+        "surface normal, relative velocity and area. Use it to tune impact FX, sound and damage " +
+        "from real numbers, or to find what a part keeps hitting. Needs physics running (a playtest); " +
+        "`target=client` reads the client's own simulation. Resting contact reports every frame, so " +
+        "set `minSpeed` to keep impacts only.",
       inputSchema: {
         ...readTargetSchema,
         properties: z.array(z.string().min(1)).max(16).optional().describe("watch: properties to observe."),
         attributes: z.array(z.string().min(1)).max(16).optional().describe("watch: attribute names; omit for all, [] for none."),
         children: z.boolean().default(true).describe("watch: include direct child additions/removals."),
         op: z
-          .enum(["set", "clear", "snapshots", "exceptions", "remotes", "watch"])
+          .enum(["set", "clear", "snapshots", "exceptions", "remotes", "watch", "collisions"])
           .describe(
             "'set' adds breakpoints, 'clear' removes one or all, 'snapshots' " +
               "reads what has been captured, 'exceptions' controls breaking on errors, 'remotes' traces RemoteEvents.",
           ),
-        seconds: z.number().min(1).max(15).optional().describe("watch/remotes: bounded capture seconds, default 5. Pair watch with concurrent input to observe a reaction."),
+        minSpeed: z.number().min(0).optional().describe("collisions: ignore contacts slower than this relative speed (studs/s)."),
+        seconds: z.number().min(1).max(15).optional().describe("watch/remotes/collisions: bounded capture seconds, default 5. Pair watch with concurrent input to observe a reaction."),
         player: z.string().optional().describe("watch client/remotes: player name; required with multiple players."),
         breakpoints: z
           .array(
@@ -225,7 +232,7 @@ export function registerDebugTools(context: ToolContext): void {
         path: z
           .string()
           .optional()
-          .describe("clear: script to clear. remotes: remote or subtree path, default game. Narrow this if discovery is truncated."),
+          .describe("clear: script to clear. remotes: remote or subtree path, default game. Narrow this if discovery is truncated. watch: instance. collisions: part, model or folder."),
         line: z.number().int().min(1).optional().describe("clear only: which line to remove."),
         mode: z
           .enum(["Never", "Always", "Unhandled"])
@@ -256,7 +263,13 @@ export function registerDebugTools(context: ToolContext): void {
           { path: args.path, properties: args.properties, attributes: args.attributes, children: args.children, seconds: args.seconds ?? 5 },
           args, ((args.seconds ?? 5) + 30) * 1000));
       }
-      if (args.target === "client") throw new ToolError("BAD_TARGET", "Only debug watch supports target=client; remotes already observes both directions.");
+      if (args.op === "collisions") {
+        if (!args.path) throw new ToolError("BAD_PARAMS", "collisions requires a part, model or folder path.");
+        return json(await readCall<Record<string, unknown>>(bridge, "debug.collisions",
+          { path: args.path, minSpeed: args.minSpeed, seconds: args.seconds ?? 5 },
+          args, ((args.seconds ?? 5) + 30) * 1000));
+      }
+      if (args.target === "client") throw new ToolError("BAD_TARGET", "Only debug watch and collisions support target=client; remotes already observes both directions.");
       if (args.op === "remotes") {
         const response = await bridge.call<Record<string, unknown>>(
           "debug.remotes",

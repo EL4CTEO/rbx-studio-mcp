@@ -2,6 +2,16 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.9.2
+
+### Added
+
+- `debug op="collisions"`: what a part (or every part in a model) hit during a playtest, with contact point, normal, impact speed and area, hardest first. Reads the server, or the player's own simulation with `target="client"`.
+
+### Changed
+
+- Dependencies updated.
+
 ## 0.9.1
 
 ### Added

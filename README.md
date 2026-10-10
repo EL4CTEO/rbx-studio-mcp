@@ -92,11 +92,13 @@ viewport op="ui" target="client"
 viewport op="pick" x=0.5 y=0.5 target="client"
 performance op="snapshot" target="client"
 debug op="watch" path=... target="client" properties=["Text"] seconds=5
+debug op="collisions" path="Workspace.Ball" minSpeed=5 seconds=5
 ```
 
 - **Handles** (`handles=true`) are session references that replace paths. They survive renames and moves, and fail instead of pointing at the wrong object once deleted or expired.
 - **`pick`** returns the object under a screen point (normalized over the full viewport).
 - **`watch`** records property, attribute and child changes for 1-15 seconds. Send input in parallel to see a reaction.
+- **`collisions`** reports what a part, or every part in a model, hit: contact point, normal, impact speed and area, hardest first. Needs a running playtest.
 - **Clipped `execute_luau` results** return a `resultId`. Page through it with `source` omitted; nothing reruns. Results are kept for 120 seconds.
 
 ## Work on files

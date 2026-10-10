@@ -44,6 +44,7 @@ const suites = [
   { module: "plugin/src/ExecRuntime.luau", test: "tests/exec-runtime.luau", preludes: ["tests/json-stub.luau", "tests/exec-runtime-stub.luau"], dependencies: [{ name: "Results", path: "plugin/src/Results.luau" }] },
   { module: "plugin/src/Results.luau", test: "tests/results.luau", preludes: ["tests/json-stub.luau", "tests/results-stub.luau"] },
   { module: "plugin/src/Paths.luau", test: "tests/paths.luau", preludes: ["tests/json-stub.luau", "tests/paths-stub.luau"], dependencies: [{ name: "Handles", path: "plugin/src/Handles.luau" }] },
+  { module: "plugin/src/Collisions.luau", test: "tests/collisions.luau", prelude: "tests/collisions-stub.luau" },
   { module: "plugin/src/Watch.luau", test: "tests/watch.luau", preludes: ["tests/json-stub.luau", "tests/watch-stub.luau"] },
   { module: "plugin/src/ClientRelay.luau", test: "tests/client-relay.luau", prelude: "tests/client-relay-stub.luau" },
   { module: "plugin/src/LogBuffer.luau", test: "tests/log-buffer.luau", prelude: "tests/log-buffer-stub.luau" },

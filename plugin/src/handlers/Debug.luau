@@ -614,6 +614,7 @@ function Debug.register()
 		snapshots = Debug.snapshots,
 		exceptions = Debug.exceptions,
 		remotes = Debug.remotes,
+		collisions = require(script.Parent.Parent.Collisions).capture,
 	})
 end
 
