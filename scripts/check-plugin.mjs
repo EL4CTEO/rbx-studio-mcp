@@ -100,7 +100,7 @@ const ENGINE_GLOBALS = new Set([
   "Vector2", "Vector3", "CFrame", "UDim", "UDim2", "Color3", "BrickColor", "Font", "Content",
   "ColorSequence", "ColorSequenceKeypoint", "NumberSequence", "NumberSequenceKeypoint", "NumberRange",
   "Rect", "Region3", "Ray", "RaycastParams", "OverlapParams", "PhysicalProperties", "TweenInfo",
-  "DateTime", "DockWidgetPluginGuiInfo", "Random", "Axes", "Faces", "Vector3int16", "Region3int16",
+  "DateTime", "DockWidgetPluginGuiInfo", "Random", "Axes", "Faces", "Vector3int16", "Region3int16", "loadstring",
 ]);
 const unknownGlobals = [];
 if (analyser !== null) {
