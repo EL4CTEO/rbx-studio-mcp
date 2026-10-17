@@ -15,12 +15,21 @@ assert(result.observed == 2 and result.summaries >= 60)
 assert(#result.pairs == 3, "one row per pair")
 assert(result.pairs[1].other == "Workspace.Floor" and result.pairs[1].part == "Workspace.Ball" and result.pairs[1].maxSpeed == 80)
 assert(result.pairs[1].frames >= 20 and result.pairs[1].point == "1.00, 2.00, 3.00" and result.pairs[1].normal == "0.00, 1.00, 0.00")
-assert(result.pairs[3].maxSpeed == 5)
+assert(result.pairs[3].maxSpeed == 5 and result.pairs[3].maxImpact == 5)
 for _, connection in all do assert(not connection.active, "collision connections leak after completion") end
 
 -- minSpeed drops resting contact.
 result = collisions.capture({path = "Workspace.Ball", seconds = 1, minSpeed = 20})
 assert(#result.pairs == 1 and result.pairs[1].maxSpeed == 80)
+
+-- Sliding is not an impact: fast along the surface, nothing along the normal.
+tick = function()
+	ball:fire({summary(ball, floor, 0, {RelativeVelocity = vec(100, 0, 0)}), summary(ball, wall, 30)})
+end
+result = collisions.capture({path = "Workspace.Ball", seconds = 1})
+assert(result.pairs[1].other == "Workspace.Wall" and result.pairs[2].maxImpact == 0 and result.pairs[2].maxSpeed == 100, "sliding ranks below a real hit")
+result = collisions.capture({path = "Workspace.Ball", seconds = 1, minSpeed = 20})
+assert(#result.pairs == 1 and result.pairs[1].other == "Workspace.Wall", "minSpeed filters on impact speed")
 
 -- Both observed parts report the same contact; only one side is kept.
 local both = ball.children[1]

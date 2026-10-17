@@ -198,10 +198,12 @@ try {
 
   const revision = /rev ([0-9a-f-]+)/.exec(await call("script_read", { paths: [`${FIXTURE}.Mod`] }).then((reply) => reply.text))?.[1];
   await ok("script_edit: find and replace with a revision", "script_edit", { edits: [{ path: `${FIXTURE}.Mod`, find: "return a + b", replace: "return a + b + 0", revision }] });
-  await ok("script_edit: a line range", "script_edit", { edits: [{ path: `${FIXTURE}.Mod`, startLine: 2, endLine: 2, replacement: "function M.add(a, b) -- edited" }] });
+  const fresh = async () => /rev ([0-9a-f-]+)/.exec(await call("script_read", { paths: [`${FIXTURE}.Mod`] }).then((reply) => reply.text))?.[1];
+  await refuses("script_edit: a line range without a revision", "script_edit", { edits: [{ path: `${FIXTURE}.Mod`, startLine: 2, endLine: 2, replacement: "x" }] }, /NEEDS_REVISION/);
+  await ok("script_edit: a line range", "script_edit", { edits: [{ path: `${FIXTURE}.Mod`, startLine: 2, endLine: 2, replacement: "function M.add(a, b) -- edited", revision: await fresh() }] });
   await refuses("script_edit: a stale revision", "script_edit", { edits: [{ path: `${FIXTURE}.Mod`, source: "return {}", revision }] }, /STALE_SCRIPT/);
   await refuses("script_edit: text that is not there", "script_edit", { edits: [{ path: `${FIXTURE}.Mod`, find: "zzz-absent", replace: "x" }] }, /NO_MATCH/);
-  await refuses("script_edit: a line past the end", "script_edit", { edits: [{ path: `${FIXTURE}.Mod`, startLine: 99, endLine: 99, replacement: "x" }] }, /BAD_RANGE/);
+  await refuses("script_edit: a line past the end", "script_edit", { edits: [{ path: `${FIXTURE}.Mod`, startLine: 99, endLine: 99, replacement: "x", revision: await fresh() }] }, /BAD_RANGE/);
   await ok("script_read: sees the edit", "script_read", { paths: [`${FIXTURE}.Mod`] }, /edited/);
 
   await ok("geometry: union", "geometry", { op: "union", path: `${FIXTURE}.U1`, with: [`${FIXTURE}.U2`], name: "Unioned" }, /Unioned/);

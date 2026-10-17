@@ -59,6 +59,69 @@ local function service(): any
 	return StudioTestService :: any
 end
 
+--[[
+	Workspaces at least this big make Stop freeze Studio from build 743 on.
+
+	Measured on the DevForum (topic 4933776): ~220k instances, almost all rig
+	`AnimSaves` keyframe trees, took 3-4s to stop on 742 and 65-75s on 743, all
+	of it in the playtest server's "Clearing Workspace". The whole UI hangs, so
+	without a warning the agent sees a stop that timed out and the user sees a
+	crashed Studio. Set well below the reported case: the cost grows with the
+	count, and a 50k place already stalls noticeably.
+]]
+local LARGE_WORKSPACE = 50_000
+local SLOW_STOP_BUILD = 743
+local HEAVIEST_SHOWN = 3
+
+-- 0 when the build cannot be read, which turns the check off rather than
+-- failing the playtest call it rides on.
+local function studioBuild(): number
+	local ok, text = pcall(version)
+	return if ok and typeof(text) == "string" then tonumber(string.match(text, "^%d+%.(%d+)")) or 0 else 0
+end
+
+--[[
+	How many instances Workspace holds and which of its children hold most.
+
+	nil when the place is small or the build predates the regression, so the
+	common case costs one descendant count and adds nothing to the reply.
+]]
+local function heavyWorkspace(): { [string]: any }?
+	if studioBuild() < SLOW_STOP_BUILD then
+		return nil
+	end
+	local descendants = workspace:GetDescendants()
+	local total = #descendants
+	if total < LARGE_WORKSPACE then
+		return nil
+	end
+	local heaviest = {}
+	for _, child in workspace:GetChildren() do
+		table.insert(heaviest, { path = child:GetFullName(), instances = #child:GetDescendants() + 1 })
+	end
+	table.sort(heaviest, function(a, b)
+		return a.instances > b.instances
+	end)
+	for index = #heaviest, HEAVIEST_SHOWN + 1, -1 do
+		heaviest[index] = nil
+	end
+	-- AnimSaves is named because it is the cause in every report so far, and
+	-- it can sit inside a rig that is not itself one of the heaviest children.
+	-- Nested AnimSaves are not double counted: only the outermost is measured.
+	local animSaves = 0
+	for _, instance in descendants do
+		if instance.Name == "AnimSaves" and instance:FindFirstAncestor("AnimSaves") == nil then
+			animSaves += #instance:GetDescendants() + 1
+		end
+	end
+	return {
+		instances = total,
+		heaviest = heaviest,
+		animSavesInstances = if animSaves > 0 then animSaves else nil,
+		build = studioBuild(),
+	}
+end
+
 local function editModeActive(): boolean?
 	local ok, value = pcall(function()
 		return service().EditModeActive
@@ -189,12 +252,15 @@ function Playtest.control(params: { [string]: any }): { [string]: any }
 			actually ended is not taken on trust either way: the caller confirms
 			against the editor session, which survives.
 		]]
+		-- Measured before the teardown is scheduled: the size is what decides
+		-- how long the caller should wait for it.
+		local heavy = heavyWorkspace()
 		task.delay(0.25, function()
 			pcall(function()
 				service():EndTest(params.value or "stopped by studio-mcp")
 			end)
 		end)
-		return { changed = true, deferred = true, state = before }
+		return { changed = true, deferred = true, state = before, heavyWorkspace = heavy }
 	end
 
 	if op == "stop" then
@@ -263,6 +329,10 @@ function Playtest.control(params: { [string]: any }): { [string]: any }
 			elseif not moved and not after.testPending then "Studio accepted the call but the mode did not change"
 			else nil,
 		state = after,
+		-- Said at the start too, so the agent can warn the user before the
+		-- stop that freezes Studio rather than after it. Not for Run, which
+		-- has no separate DataModel to tear down.
+		heavyWorkspace = if op ~= "run" then heavyWorkspace() else nil,
 	}
 end
 

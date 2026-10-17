@@ -31,6 +31,10 @@ interface ScreenshotResponse {
   region?: { x: number; y: number; width: number; height: number };
   /** Set here, not by the plugin: how many times a small crop was enlarged. */
   enlarged?: number;
+  /** Playtest only: BillboardGuis redrawn onto the capture, which the engine leaves out. */
+  billboards?: number;
+  /** Why redrawing them failed, when it did. */
+  billboardError?: string;
 }
 
 /**
@@ -116,19 +120,21 @@ async function playtestShot(
     );
   }
 
-  const { contentId, region } = await bridge.call<{ contentId: string; region?: Record<string, number> }>(
-    "capture.playtestId",
-    { player, path, rect },
-    { studioId: playtest.studioId, timeoutMs: 40_000 },
-  );
+  const { contentId, region, billboards, billboardError } = await bridge.call<{
+    contentId: string;
+    region?: Record<string, number>;
+    billboards?: number;
+    billboardError?: string;
+  }>("capture.playtestId", { player, path, rect }, { studioId: playtest.studioId, timeoutMs: 40_000 });
 
   // Straight on, with no await in between: the texture is temporary and there
   // is no promise about how long Studio keeps one nobody has opened yet.
-  return bridge.call<ScreenshotResponse>(
+  const decoded = await bridge.call<ScreenshotResponse>(
     "capture.decode",
     { contentId, width, rect, region, context: "playtest client" },
     { studioId: editor.studioId, timeoutMs: 60_000 },
   );
+  return { ...decoded, billboards, billboardError };
 }
 
 export function registerScreenshotTools(context: ToolContext): void {
@@ -250,9 +256,20 @@ export function registerScreenshotTools(context: ToolContext): void {
           : factor > 1.001
             ? ` (1 image px = ${factor.toFixed(2)} viewport px)`
             : " (full resolution)";
+      // Roblox's capture leaves out BillboardGuis (ProximityPrompts included)
+      // and the top bar; the plugin redraws the billboards, the top bar is lost.
+      const billboards =
+        response.billboards !== undefined
+          ? ` ${response.billboards} BillboardGui/ProximityPrompt${response.billboards === 1 ? "" : "s"} redrawn onto the capture,` +
+            " which the engine leaves out; depth is not reproduced, so one hidden behind a wall still shows."
+          : "";
+      const redrawFailed = response.billboardError
+        ? ` BillboardGuis could not be redrawn (${response.billboardError}), so any on screen are missing from this image.`
+        : "";
+      const coreGui = response.context === "playtest client" ? " Roblox's top bar is never captured." : "";
       return image(
         png,
-        `Studio viewport (${response.context}), ${response.width}x${response.height}${shown}${scale}.${emulating}${blank}`,
+        `Studio viewport (${response.context}), ${response.width}x${response.height}${shown}${scale}.${billboards}${redrawFailed}${coreGui}${emulating}${blank}`,
       );
     },
   );

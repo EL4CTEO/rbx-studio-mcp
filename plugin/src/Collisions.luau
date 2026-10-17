@@ -61,8 +61,13 @@ function Collisions.capture(params: { [string]: any }): { [string]: any }
 		local part0, part1 = summary.Part0, summary.Part1
 		if typeof(part0) ~= "Instance" or typeof(part1) ~= "Instance" then return end
 		local velocity: Vector3 = summary.RelativeVelocity
+		local normal: Vector3 = summary.Normal
 		local speed = velocity.Magnitude
-		if speed < minSpeed then return end
+		-- How hard it hit is the part of the velocity along the normal. The
+		-- whole magnitude also counts sliding, so a car driving on a road ranked
+		-- the road as its hardest impact and passed every minSpeed filter.
+		local impact = math.abs(velocity.X * normal.X + velocity.Y * normal.Y + velocity.Z * normal.Z)
+		if impact < minSpeed then return end
 		local a, b = nameOf(part0, names), nameOf(part1, names)
 		-- Two observed parts each report the same contact; keep one side.
 		if bound[part1] and a > b then return end
@@ -72,15 +77,16 @@ function Collisions.capture(params: { [string]: any }): { [string]: any }
 		if not row then
 			if rowCount >= MAX_ROWS then overflow += 1; return end
 			rowCount += 1
-			row = { part = a, other = b, frames = 0, firstMs = math.round((os.clock() - started) * 1000), maxSpeed = -1 }
+			row = { part = a, other = b, frames = 0, firstMs = math.round((os.clock() - started) * 1000), maxImpact = -1, maxSpeed = -1 }
 			rows[key] = row
 		end
 		row.frames += 1
 		row.lastMs = math.round((os.clock() - started) * 1000)
-		if speed > row.maxSpeed then
-			row.maxSpeed = speed
+		row.maxSpeed = math.max(row.maxSpeed, speed)
+		if impact > row.maxImpact then
+			row.maxImpact = impact
 			row.point = vector(summary.Point)
-			row.normal = vector(summary.Normal)
+			row.normal = vector(normal)
 			row.velocity = vector(velocity)
 			row.area = summary.Area
 		end
@@ -113,10 +119,11 @@ function Collisions.capture(params: { [string]: any }): { [string]: any }
 	local list = {}
 	for _, row in rows do
 		row.maxSpeed = math.round(row.maxSpeed * 100) / 100
+		row.maxImpact = math.round(row.maxImpact * 100) / 100
 		table.insert(list, row)
 	end
 	table.sort(list, function(x, y)
-		if x.maxSpeed ~= y.maxSpeed then return x.maxSpeed > y.maxSpeed end
+		if x.maxImpact ~= y.maxImpact then return x.maxImpact > y.maxImpact end
 		return x.part .. x.other < y.part .. y.other
 	end)
 
@@ -130,8 +137,9 @@ function Collisions.capture(params: { [string]: any }): { [string]: any }
 		seconds = math.round((os.clock() - started) * 1000) / 1000,
 		simulating = RunService:IsRunning() or nil,
 		note = (if RunService:IsRunning() then "" else "Physics is not simulating in this session (edit mode), so nothing can collide; start a playtest. ")
-			.. "One row per part/other pair, strongest impact first. `part` is the observed part; speeds are relative studs/s; "
-			.. "point, normal, velocity and area are from the strongest frame. Resting contact reports every frame, so use minSpeed to keep only impacts. "
+			.. "One row per part/other pair, strongest impact first. `part` is the observed part; speeds are relative studs/s: "
+			.. "maxImpact along the contact normal (how hard it hit), maxSpeed in total (sliding included). "
+			.. "Point, normal, velocity and area are from the hardest frame. Resting and sliding contact report every frame, so use minSpeed (an impact speed) to keep only impacts. "
 			.. "Parts at rest sleep and stop reporting until woken. Local simulation only; at most 64 parts and 40 pairs.",
 	}
 end

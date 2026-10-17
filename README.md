@@ -89,6 +89,7 @@ tree target="client" path="Players.Alice.PlayerGui" handles=true
 inspect target="client" paths=["<handle>"] properties=["Text","AbsoluteSize"]
 find target="client" className="TextButton"
 viewport op="ui" target="client"
+viewport op="uisnap" target="client"
 viewport op="pick" x=0.5 y=0.5 target="client"
 performance op="snapshot" target="client"
 debug op="watch" path=... target="client" properties=["Text"] seconds=5
@@ -98,7 +99,8 @@ debug op="collisions" path="Workspace.Ball" minSpeed=5 seconds=5
 - **Handles** (`handles=true`) are session references that replace paths. They survive renames and moves, and fail instead of pointing at the wrong object once deleted or expired.
 - **`pick`** returns the object under a screen point (normalized over the full viewport).
 - **`watch`** records property, attribute and child changes for 1-15 seconds. Send input in parallel to see a reaction.
-- **`collisions`** reports what a part, or every part in a model, hit: contact point, normal, impact speed and area, hardest first. Needs a running playtest.
+- **`collisions`** reports what a part, or every part in a model, hit: contact point, normal, impact speed and area, hardest first. Sliding is not counted as a hit. Needs a running playtest.
+- **`uisnap`** snapshots a UI. Call it again with `compareTo="<id>"` after an edit to see every added, removed and changed element, property by property.
 - **Clipped `execute_luau` results** return a `resultId`. Page through it with `source` omitted; nothing reruns. Results are kept for 120 seconds.
 
 ## Work on files
@@ -171,7 +173,7 @@ Eight themes behind the tab on the right edge. Your pick is remembered.
 
 - **Push, not poll** — 13.6 ms per call against 25.8 ms.
 - **Safe script edits** — writes go through the script editor, so unsaved work survives.
-- **Stale edits are refused** — pass back the `rev` from `script_read` and a write lands only if nobody else touched the file.
+- **Stale edits are refused** — line-range and whole-file edits need the `rev` from `script_read`, and land only if nobody else touched the file.
 - **Property names are checked** against the running engine, so `Anchorred` comes back as a suggestion, not a runtime error.
 
 ## DeepSeek Harness (dsh)

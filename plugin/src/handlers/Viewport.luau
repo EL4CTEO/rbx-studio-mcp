@@ -399,27 +399,14 @@ end
 	bug or a deliberate bleed.
 ]]
 
---[[
-	Text below this many pixels tall is not readable on a phone.
-
-	Roblox's own UI guidance and every accessibility standard land in the same
-	place: somewhere around 12 device-independent pixels is the floor for body
-	text. 10 is used here because it is the point past which there is no
-	argument -- a label under it is unreadable on any display, not merely small.
-]]
-local MIN_TEXT_PIXELS = 10
-
---[[
-	Pairs compared for overlap before the check gives up.
-
-	Overlap is quadratic in the number of siblings, and a scrolling list of two
-	hundred rows is both a legitimate design and forty thousand comparisons of
-	rectangles that are supposed to sit next to each other. Past this the check
-	reports that it stopped rather than continuing to spend the user's frame on
-	an answer nobody asked for.
-]]
 function Viewport.ui(params: { [string]: any }): { [string]: any }
 	local result = ViewRead.ui(params)
+	result.device = Emulation.deviceId()
+	return result
+end
+
+function Viewport.uisnap(params: { [string]: any }): { [string]: any }
+	local result = ViewRead.uisnap(params)
 	result.device = Emulation.deviceId()
 	return result
 end
@@ -431,6 +418,7 @@ end
 function Viewport.register()
 	Dispatch.registerAll("viewport", {
 		ui = Viewport.ui,
+		uisnap = Viewport.uisnap,
 		textbounds = Viewport.textbounds,
 		raycast = Viewport.raycast,
 		pick = Viewport.pick,

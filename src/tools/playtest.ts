@@ -2,9 +2,18 @@ import { z } from "zod";
 import { errorText, json, type ToolResult } from "../lib/format.js";
 import { defineTool, type ToolContext } from "../lib/tool.js";
 
+/** Set by the plugin when Workspace is big enough to make Stop freeze Studio. */
+export interface HeavyWorkspace {
+  instances: number;
+  heaviest: Array<{ path: string; instances: number }>;
+  animSavesInstances?: number;
+  build: number;
+}
+
 interface PlaytestResponse {
   changed: boolean;
   reason?: string;
+  heavyWorkspace?: HeavyWorkspace;
   state: {
     playtestsAllowed?: boolean;
     isEdit: boolean;
@@ -50,6 +59,33 @@ async function findPlaytestSession(bridge: ToolContext["bridge"], exclude: Reado
     }),
   );
   return probed.find((id): id is string => id !== null) ?? null;
+}
+
+/** How long a stop of a heavy place is waited for, against 10s for an ordinary one. */
+const HEAVY_STOP_WAIT_MS = 120_000;
+
+const count = (value: number): string => value.toLocaleString("en-US");
+
+/**
+ * Explains a stop that is about to freeze Studio, or one that just did.
+ *
+ * From build 743 the playtest server clears a large Workspace so slowly that
+ * the whole UI hangs for a minute or more (DevForum topic 4933776, ~220k
+ * instances: 3-4s on 742, 65-75s on 743). It looks like a crash to the user
+ * and a timeout to the agent, and neither is true: it ends on its own.
+ */
+export function heavyStopNote(heavy: HeavyWorkspace, stopping: boolean): string {
+  const biggest = heavy.heaviest.map((entry) => `${entry.path} (${count(entry.instances)})`).join(", ");
+  const animSaves = heavy.animSavesInstances
+    ? ` ${count(heavy.animSavesInstances)} are inside AnimSaves (saved Animation Editor clips), the usual cause;` +
+      " moving them out of Workspace, e.g. to ServerStorage, removes the freeze."
+    : "";
+  return (
+    `Workspace holds ${count(heavy.instances)} instances. Studio ${heavy.build} can freeze for a minute or more ` +
+    "while a playtest of a place this size stops (a known Roblox regression, not a crash). " +
+    `Largest: ${biggest}.${animSaves}` +
+    (stopping ? " Waited up to 2 minutes for the stop." : " Warn the user before stopping it.")
+  );
 }
 
 export function registerPlaytestTools(context: ToolContext): void {
@@ -148,12 +184,13 @@ export function registerPlaytestTools(context: ToolContext): void {
           // session, which survives — and which is also the only session that
           // holds the value EndTest passed back.
           //]]
-          await bridge
-            .call("playtest.control", { op: "endTest", value: args.args }, {
+          const ended = await bridge
+            .call<PlaytestResponse>("playtest.control", { op: "endTest", value: args.args }, {
               studioId: playtest,
               timeoutMs: 10_000,
             })
             .catch(() => null);
+          const heavy = ended?.heavyWorkspace;
 
           const survivor = (await bridge.sessions()).list.find(
             (session) => session.studioId !== playtest,
@@ -166,9 +203,11 @@ export function registerPlaytestTools(context: ToolContext): void {
             // reports a test still running that is already on its way out. That
             // is the same false report as before, just pointing the other way.
             //]]
-            const deadline = Date.now() + 10_000;
-            let after: PlaytestResponse;
+            const deadline = Date.now() + (heavy ? HEAVY_STOP_WAIT_MS : 10_000);
+            let after: PlaytestResponse | undefined;
             for (;;) {
+              // A frozen Studio answers nothing, so a failed poll is a reason
+              // to keep waiting, not a failed stop.
               after = await bridge.call<PlaytestResponse>(
                 "playtest.control",
                 // `waitingForStop` is inert on the plugin side -- Playtest.control
@@ -179,20 +218,24 @@ export function registerPlaytestTools(context: ToolContext): void {
                 // call waiting for the teardown it just started.
                 { op: "state", waitingForStop: true },
                 { studioId: survivor.studioId, timeoutMs: 10_000 },
-              );
-              const settled = after.state.editModeActive !== false && !after.state.testPending;
+              ).catch(() => after);
+              const settled = after !== undefined && after.state.editModeActive !== false && !after.state.testPending;
               if (settled || Date.now() >= deadline) break;
-              await new Promise((resolve) => setTimeout(resolve, 400));
+              await new Promise((resolve) => setTimeout(resolve, heavy ? 1_000 : 400));
             }
 
-            const stopped = after.state.editModeActive !== false && !after.state.testPending;
-            return json(
-              after.state,
-              stopped
-                ? undefined
-                : "The stop was sent but Studio is still in a test. Check whether " +
-                    "something inside it is holding the session open.",
-            );
+            const stopped = after !== undefined && after.state.editModeActive !== false && !after.state.testPending;
+            const notes: string[] = [];
+            if (heavy) notes.push(heavyStopNote(heavy, true));
+            if (!stopped) {
+              notes.push(
+                heavy
+                  ? 'Studio is still tearing the test down. Check `playtest op="state"` again in a minute.'
+                  : "The stop was sent but Studio is still in a test. Check whether " +
+                      "something inside it is holding the session open.",
+              );
+            }
+            return json(after?.state ?? { stopping: true }, notes.length > 0 ? notes.join("\n") : undefined);
           }
         }
       }
@@ -239,6 +282,7 @@ export function registerPlaytestTools(context: ToolContext): void {
       );
 
       const notes: string[] = [];
+      if (starting && response.heavyWorkspace) notes.push(heavyStopNote(response.heavyWorkspace, false));
       if (args.op !== "state" && !response.changed) {
         notes.push(response.reason ?? "Studio accepted the call but nothing changed.");
       } else if (response.reason) {

@@ -180,13 +180,89 @@ if relay:GetAttribute("Path") ~= "" then
 	region = bounds.region
 end
 
+-- CaptureScreenshot leaves out every BillboardGui -- including the default
+-- ProximityPrompt, which is one -- while drawing ScreenGuis normally (measured,
+-- and the same gap Roblox's own MCP has: DevForum topic 4736693). So for the
+-- one frame of the shot, each billboard on screen is redrawn into a ScreenGui
+-- at the rect the engine draws it at, and removed straight after. Scripts in
+-- the copies are stripped so nothing runs twice. Depth is not reproduced: a
+-- billboard behind a wall is drawn anyway, which the caption says.
+local overlay = nil
+local billboards = 0
+local billboardError = nil
+local overlayOk, overlayErr = pcall(function()
+	local camera = workspace.CurrentCamera
+	local player = game:GetService("Players").LocalPlayer
+	overlay = Instance.new("ScreenGui")
+	overlay.Name = "MCPBillboardOverlay"
+	overlay.IgnoreGuiInset = true
+	overlay.ResetOnSpawn = false
+	-- Lowest, because billboards are drawn in the 3D pass, under every ScreenGui.
+	overlay.DisplayOrder = -2147483648
+	local function anchor(gui)
+		local subject = gui.Adornee or gui.Parent
+		if subject and subject:IsA("BasePart") then return subject.CFrame, subject.Size end
+		if subject and subject:IsA("Attachment") then return subject.WorldCFrame, Vector3.zero end
+		if subject and subject:IsA("Model") then return subject:GetBoundingBox() end
+		return nil, nil
+	end
+	local function redraw(gui)
+		if not gui:IsA("BillboardGui") or not gui.Enabled then return end
+		local frame, extents = anchor(gui)
+		local size = gui.AbsoluteSize
+		if not frame or size.X <= 0 or size.Y <= 0 then return end
+		local view = camera.CFrame
+		local world = frame.Position + gui.StudsOffsetWorldSpace + view:VectorToWorldSpace(gui.StudsOffset)
+			+ view:VectorToWorldSpace(gui.ExtentsOffset * extents / 2)
+		local point, visible = camera:WorldToViewportPoint(world)
+		if not visible then return end
+		if gui.MaxDistance > 0 and (view.Position - world).Magnitude > gui.MaxDistance then return end
+		local holder = Instance.new("Frame")
+		holder.BackgroundTransparency = 1
+		holder.Position = UDim2.fromOffset(point.X - size.X / 2 + gui.SizeOffset.X * size.X, point.Y - size.Y / 2 - gui.SizeOffset.Y * size.Y)
+		holder.Size = UDim2.fromOffset(size.X, size.Y)
+		holder.ClipsDescendants = gui.ClipsDescendants
+		for _, child in gui:GetChildren() do
+			if not child:IsA("BaseScript") then
+				local copied, copy = pcall(child.Clone, child)
+				if copied and copy then
+					for _, inner in copy:GetDescendants() do
+						if inner:IsA("BaseScript") then inner:Destroy() end
+					end
+					copy.Parent = holder
+				end
+			end
+		end
+		holder.Parent = overlay
+		billboards += 1
+	end
+	for _, root in { workspace, player:FindFirstChildOfClass("PlayerGui") } do
+		if root then
+			for _, item in root:GetDescendants() do
+				local drawn, why = pcall(redraw, item)
+				if not drawn and billboardError == nil then
+					billboardError = item:GetFullName() .. ": " .. tostring(why)
+				end
+			end
+		end
+	end
+	if billboards > 0 then
+		overlay.Parent = player:FindFirstChildOfClass("PlayerGui")
+	end
+end)
+if not overlayOk then
+	billboardError = tostring(overlayErr)
+end
+
 -- One rendered frame before the shot. The RemoteEvent is already a child of
 -- this script when it lands, so `WaitForChild` returns at once and the capture
 -- would otherwise happen on the frame the relay arrived -- which is the frame
 -- least likely to have finished drawing. Roblox's own working repro for
 -- CaptureService waits on PreRender first, and it costs a sixtieth of a second.
+-- Two with an overlay, so its first frame has been laid out and drawn.
 pcall(function()
 	RunService.PreRender:Wait()
+	if billboards > 0 then RunService.PreRender:Wait() end
 end)
 
 local contentId = nil
@@ -196,6 +272,7 @@ local okShot, shotErr = pcall(function()
 	end)
 end)
 if not okShot then
+	if overlay then overlay:Destroy() end
 	report:FireServer({ ok = false, reason = tostring(shotErr) })
 	return
 end
@@ -205,12 +282,13 @@ while contentId == nil and waited < 12 do
 	task.wait(0.05)
 	waited += 0.05
 end
+if overlay then overlay:Destroy() end
 if contentId == nil then
 	report:FireServer({ ok = false, reason = "the client did not produce a screenshot within 12s" })
 	return
 end
 
-report:FireServer({ ok = true, contentId = contentId, region = region })
+report:FireServer({ ok = true, contentId = contentId, region = region, billboards = billboards, billboardError = billboardError })
 ]==]
 
 --[[
@@ -350,7 +428,14 @@ function Capture.playtestId(params: { [string]: any }): { [string]: any }
 		Dispatch.fail("CAPTURE_REFUSED", string.format("The client could not capture: %s", tostring(result.reason)))
 	end
 
-	return { contentId = tostring(result.contentId), region = result.region, device = Emulation.deviceId() }
+	return {
+		contentId = tostring(result.contentId),
+		region = result.region,
+		device = Emulation.deviceId(),
+		billboards = if typeof(result.billboards) == "number" and result.billboards > 0 then result.billboards else nil,
+		-- A redraw that failed is said, so a missing billboard is not read as absent.
+		billboardError = if typeof(result.billboardError) == "string" then result.billboardError else nil,
+	}
 end
 
 --[[

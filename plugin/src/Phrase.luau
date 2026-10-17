@@ -653,6 +653,10 @@ local DESCRIBERS: { [string]: Describer } = {
 	["viewport.ui"] = function()
 		return "Check the interface for layout faults"
 	end,
+	["viewport.uisnap"] = function(params)
+		local where = leaf(params.path)
+		return if where ~= nil then "Snapshot the interface in " .. where else "Snapshot the interface"
+	end,
 	["viewport.textbounds"] = function(params)
 		local name = leaf(params.path)
 		return if name ~= nil then "Measure the text in " .. name else "Measure some text"

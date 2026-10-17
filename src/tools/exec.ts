@@ -10,6 +10,7 @@ import {
   requireUniverse,
 } from "../lib/opencloud.js";
 import { defineTool, type ToolContext } from "../lib/tool.js";
+import { diffSnapshots, getSnapshot, renderDiff, storeSnapshot, type UiSnapshotResponse } from "../lib/uisnap.js";
 
 interface ExecResponse {
   ok: boolean;
@@ -295,20 +296,28 @@ export function registerExecTools(context: ToolContext): void {
         "label's own text, font, size and width and answers whether the text " +
         "fits inside it. Give `text` and `size` directly and it just measures. " +
         "There is no other honest way to answer 'will this label overflow' — " +
-        "character counts ignore the font, and font size is not a width.",
+        "character counts ignore the font, and font size is not a width.\n\n" +
+        "`uisnap` records every UI element under `path` (default StarterGui, or " +
+        "the PlayerGui with target=\"client\"): layout, absolute position and " +
+        "size, colours, fonts, text, images, strokes, corners and padding, and " +
+        "returns a snapshot id. Take one before restyling a UI, then call " +
+        "`uisnap` again with `compareTo` set to that id: the reply lists what " +
+        "was added, removed and changed, property by property, including what " +
+        "you did not mean to touch. Every call stores a new id, so passes chain.",
       inputSchema: {
         op: z
-          .enum(["select", "raycast", "focus", "camera", "textbounds", "ui", "pick"])
+          .enum(["select", "raycast", "focus", "camera", "textbounds", "ui", "uisnap", "pick"])
           .describe(
             "'focus' points the camera at something and frames it, 'camera' sets " +
               "it explicitly, 'select' changes the Studio selection, 'textbounds' "
               + "measures rendered text, 'raycast' " +
-              "queries the world.",
+              "queries the world, 'ui' audits an interface, 'uisnap' snapshots " +
+              "one and diffs it against an earlier snapshot.",
           ),
         path: z
           .string()
           .optional()
-          .describe("focus only: the instance to look at. A model, part, or folder containing them."),
+          .describe("focus: the instance to look at. ui/uisnap: the UI root to read. textbounds: the label."),
         at: z
           .string()
           .optional()
@@ -385,13 +394,17 @@ export function registerExecTools(context: ToolContext): void {
           .boolean()
           .optional()
           .describe("textbounds only: treat the text as rich text. Defaults to the label's setting."),
+        compareTo: z
+          .string()
+          .optional()
+          .describe("uisnap only: id of an earlier snapshot to diff the new one against."),
         studioId: z.string().optional().describe("Target Studio; omit for the active one."),
       },
       destructive: false,
       idempotent: true,
     },
     async (args): Promise<ToolResult> => {
-      if (args.target === "client" && !["ui", "raycast", "pick"].includes(args.op)) throw new ToolError("BAD_TARGET", "Client viewport reads support ui, raycast and pick.");
+      if (args.target === "client" && !["ui", "uisnap", "raycast", "pick"].includes(args.op)) throw new ToolError("BAD_TARGET", "Client viewport reads support ui, uisnap, raycast and pick.");
       if (args.op === "pick") {
         if (args.x === undefined || args.y === undefined) throw new ToolError("BAD_PARAMS", "pick requires normalized x and y.");
         return json(await readCall<Record<string, unknown>>(bridge, "viewport.pick", { x: args.x, y: args.y, maxDistance: args.maxDistance, ignore: args.ignore }, args), readContext(args));
@@ -469,6 +482,46 @@ export function registerExecTools(context: ToolContext): void {
         }
 
         return text(`${blocks.join("\n\n")}\n\n${notes.join(" ")}`);
+      }
+
+      if (args.op === "uisnap") {
+        const before = args.compareTo === undefined ? undefined : getSnapshot(args.compareTo);
+        if (args.compareTo !== undefined && before === undefined) {
+          throw new ToolError(
+            "NO_SNAPSHOT",
+            `No UI snapshot ${args.compareTo}. Snapshots last an hour and only the latest 20 are kept.`,
+            'Take a new one with `viewport op="uisnap"`.',
+          );
+        }
+        const scope = `${args.studioId ?? "active"}|${args.target}|${args.player ?? ""}`;
+        const taken = storeSnapshot(
+          await readCall<UiSnapshotResponse>(bridge, "viewport.uisnap", { path: args.path }, args, 45_000),
+          scope,
+        );
+        const where = `${taken.root} on a ${taken.screen} screen${taken.device ? ` (emulating ${taken.device})` : ""}`;
+        const omitted = taken.omitted ? ` ${taken.omitted} more elements past the limit were not recorded; narrow \`path\`.` : "";
+        if (before === undefined) {
+          return text(
+            `Snapshot ${taken.id}: ${taken.elements.length} UI elements under ${where}.${omitted}\n` +
+              `After changing the UI, call \`viewport op="uisnap" compareTo="${taken.id}"\` to see what changed.`,
+          );
+        }
+
+        const notes: string[] = [];
+        if (before.scope !== scope) notes.push(`${before.id} was taken in a different session or client; paths may not line up.`);
+        if (before.root !== taken.root) notes.push(`${before.id} covered ${before.root}, this one ${taken.root}.`);
+        if (before.screen !== taken.screen || before.device !== taken.device) {
+          notes.push(
+            `The screen changed (${before.screen}${before.device ? ` ${before.device}` : ""} -> ` +
+              `${taken.screen}${taken.device ? ` ${taken.device}` : ""}), so absolute positions and sizes move with it.`,
+          );
+        }
+        const diff = diffSnapshots(before, taken);
+        const total = diff.changed.length + diff.added.length + diff.removed.length;
+        const summary =
+          `${before.id} -> ${taken.id} (${where}): ${diff.changed.length} changed, ${diff.added.length} added, ` +
+          `${diff.removed.length} removed, ${diff.unchanged} unchanged.${omitted}`;
+        return text([summary, total === 0 ? "No differences." : renderDiff(diff), ...notes].join("\n\n"));
       }
 
       if (args.op === "textbounds") {

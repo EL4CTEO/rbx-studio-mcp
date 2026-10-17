@@ -805,6 +805,7 @@ function Scripts.create(params: { [string]: any }): { [string]: any }
 			table.insert(created, {
 				path = Paths.of(instance),
 				className = instance.ClassName,
+				target = instance,
 			})
 		end
 
@@ -837,6 +838,13 @@ function Scripts.create(params: { [string]: any }): { [string]: any }
 				"The script exists. Read it and write the source with script_edit rather than creating it again."
 			)
 		end
+	end
+
+	-- The rev of what was written, so a line edit can follow without a read.
+	-- Taken last, after any oversized source has gone through the editor.
+	for _, entry in created do
+		entry.rev = ScriptEdit.revisionOf(entry.target)
+		entry.target = nil
 	end
 
 	return {

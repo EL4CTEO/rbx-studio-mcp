@@ -10,7 +10,7 @@ function ClientRead.call(op: string, params: { [string]: any }): any
 		local method = string.sub(op, 10)
 		assert(method == "tree" or method == "inspect" or method == "find" or method == "tags", "Unknown discovery operation")
 		return Discover[method](params)
-	elseif op == "viewport.pick" or op == "viewport.ui" or op == "viewport.raycast" then
+	elseif op == "viewport.pick" or op == "viewport.ui" or op == "viewport.uisnap" or op == "viewport.raycast" then
 		local View = require(script.Parent.ViewRead)
 		return View[string.sub(op, 10)](params)
 	elseif op == "perf.snapshot" then

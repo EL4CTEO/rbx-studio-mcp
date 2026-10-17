@@ -39,6 +39,34 @@ interface EditResponse {
   }>;
 }
 
+type EditSpec = { path: string; find?: string; startLine?: number; source?: string; revision?: string };
+
+/**
+ * Refuses line-range and whole-source edits that do not say which version of
+ * the script they were written against.
+ *
+ * find/replace checks itself: the text has to be there. The other two modes
+ * cannot notice a change underneath them -- a line range lands on whatever
+ * moved into those lines, and `source` erases the other side's work -- so for
+ * them a revision is required rather than recommended. One revision per
+ * script in the batch is enough, since the plugin checks every edit to a
+ * script against the same pre-batch source.
+ */
+export function requireBlindRevisions(edits: EditSpec[]): void {
+  const pinned = new Set(edits.filter((edit) => edit.revision !== undefined).map((edit) => edit.path));
+  const blind = edits.filter(
+    (edit) => edit.find === undefined && (edit.startLine !== undefined || edit.source !== undefined) && !pinned.has(edit.path),
+  );
+  if (blind.length === 0) return;
+  const paths = [...new Set(blind.map((edit) => edit.path))];
+  throw new ToolError(
+    "NEEDS_REVISION",
+    `Line-range and whole-source edits need the script's \`rev\`: ${paths.join(", ")}.`,
+    "Pass the `rev` that `script_read` (or the previous `script_edit`) printed as `revision`, " +
+      "or use find/replace, which needs none.",
+  );
+}
+
 interface GrepMatch {
   path: string;
   /** The script's `rev`, for `script_edit`'s `revision`. */
@@ -109,7 +137,7 @@ function renderMatches(matches: GrepMatch[], tagNeedles: boolean): string {
 }
 
 interface CreateResponse {
-  items: Array<{ path: string; className: string }>;
+  items: Array<{ path: string; className: string; rev?: string }>;
   /** Absent when Studio refused to open a recording, so nothing claims an undo. */
   undoStep?: string;
   /** Problems with what was created that Studio only reports in its own Output. */
@@ -477,12 +505,12 @@ Only the first ${items.length} are shown; there are more. ` +
         "Pass `revision` on every edit. `script_read` prints it as `rev` beside " +
         "each file, and sending it back makes the write conditional: if the " +
         "script changed since you read it the batch is refused with " +
-        "STALE_SCRIPT and nothing is written. Without it the edit is applied " +
-        "blind, which matters most for the two modes that cannot notice: a line " +
-        "range still applies cleanly to source somebody else moved, it just " +
-        "lands on the wrong lines, and `source` discards their work entirely. " +
-        "Another agent editing the same place, or the user typing in the " +
-        "editor, is enough.\n\n" +
+        "STALE_SCRIPT and nothing is written. Line-range and `source` edits " +
+        "REQUIRE it (NEEDS_REVISION otherwise), because they cannot notice a " +
+        "change: a line range lands on whatever moved into those lines, and " +
+        "`source` discards the other side's work. Another agent editing the " +
+        "same place, or the user typing in the editor, is enough. find/replace " +
+        "works without it.\n\n" +
         "Writes go through `ScriptEditorService:UpdateSourceAsync`, so an open " +
         "editor tab updates in place and unsaved work is preserved. Undo for " +
         "source changes is the script editor's own, per script — Ctrl+Z in a " +
@@ -511,7 +539,7 @@ Only the first ${items.length} are shown; there are more. ` +
           .string()
           .optional()
           .describe(
-            'live only: the `rev` `script_read target="live"` printed. The write is refused if the published script changed since. Always pass it.',
+            'live only, required: the `rev` `script_read target="live"` printed. The write is refused if the published script changed since.',
           ),
         universeId: z.string().optional().describe("live only: omit to use `cloud universe`."),
         placeId: z.string().optional().describe("live only: omit to use `cloud place`."),
@@ -569,7 +597,8 @@ Only the first ${items.length} are shown; there are more. ` +
                 .describe(
                   "The `rev` value script_read printed for this file. Pass it and the " +
                     "edit is refused if the script changed since you read it, instead " +
-                    "of being applied to source you have not seen.",
+                    "of being applied to source you have not seen. Required for " +
+                    "line-range and `source` edits.",
                 ),
             }),
           )
@@ -594,6 +623,14 @@ Only the first ${items.length} are shown; there are more. ` +
             "This rewrites a script in the published place.",
             "There is no undo. Read it with `script_read target=\"live\"` first " +
               "and send back the whole file with its `rev` as `revision`, then pass confirm: true.",
+          );
+        }
+        // Without it a publish in between is overwritten with no undo at all.
+        if (args.revision === undefined) {
+          throw new ToolError(
+            "NEEDS_REVISION",
+            "A live edit replaces the whole published script, so it needs the `rev` it was written against.",
+            'Read it with `script_read target="live"` and pass the printed `rev` as `revision`.',
           );
         }
         const credentials = await requireCredentials();
@@ -627,6 +664,7 @@ Only the first ${items.length} are shown; there are more. ` +
       if (!args.edits || args.edits.length === 0) {
         throw new ToolError("BAD_PARAMS", "script_edit needs at least one entry in `edits`.");
       }
+      requireBlindRevisions(args.edits);
       const response = await bridge.call<EditResponse>(
         "script.edit",
         { edits: args.edits },
@@ -875,7 +913,7 @@ Only the first ${items.length} are shown; there are more. ` +
       );
 
       const listing = table(
-        ["path", "className"],
+        ["path", "className", "rev"],
         response.items as unknown as Array<Record<string, unknown>>,
         {
           more: response.undoStep

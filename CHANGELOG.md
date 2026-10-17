@@ -2,6 +2,25 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 0.9.5
+
+### Added
+
+- `viewport op="uisnap"`: snapshot a UI's layout, colours, fonts, text, images and modifiers, then call again with `compareTo` to see what was added, removed or changed, property by property. Works on the playtest client too.
+- `playtest` warns when Workspace is large enough to make Studio 743+ freeze for a minute or more on Stop, names the heaviest children and AnimSaves, and waits the freeze out instead of reporting a failed stop.
+
+### Changed
+
+- Playtest screenshots now show BillboardGuis and ProximityPrompts, which Roblox's capture API leaves out. They are redrawn for the one frame of the shot; the caption says how many.
+- `script_edit` requires `revision` for line-range and whole-source edits (`NEEDS_REVISION`), and for every live edit. find/replace still works without it.
+- `script_create` returns each new script's `rev`, so a line edit can follow without a read.
+- `debug op="collisions"` ranks and filters by impact speed along the contact normal (`maxImpact`). Sliding contact no longer counts as a hard hit; total speed is still `maxSpeed`.
+- Dependencies updated (zod 4.6.7).
+
+### Fixed
+
+- `viewport op="ui"` no longer walks every pair of elements in large interfaces; the overlap check compares siblings only, within its cap.
+
 ## 0.9.2
 
 ### Added

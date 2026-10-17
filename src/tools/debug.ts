@@ -190,10 +190,10 @@ export function registerDebugTools(context: ToolContext): void {
         "and 40 rows within 12 KB; reports truncation when a limit is reached.\n\n" +
         "`collisions` watches a part, or every part under a model, with the engine's collision " +
         "summaries and returns one row per colliding pair, hardest impact first: contact point, " +
-        "surface normal, relative velocity and area. Use it to tune impact FX, sound and damage " +
+        "surface normal, relative velocity, area, impact speed along the normal and total speed. Use it to tune impact FX, sound and damage " +
         "from real numbers, or to find what a part keeps hitting. Needs physics running (a playtest); " +
         "`target=client` reads the client's own simulation. Resting contact reports every frame, so " +
-        "set `minSpeed` to keep impacts only.",
+        "set `minSpeed` to keep impacts only; it filters on impact speed, so sliding does not count.",
       inputSchema: {
         ...readTargetSchema,
         properties: z.array(z.string().min(1)).max(16).optional().describe("watch: properties to observe."),
@@ -205,7 +205,7 @@ export function registerDebugTools(context: ToolContext): void {
             "'set' adds breakpoints, 'clear' removes one or all, 'snapshots' " +
               "reads what has been captured, 'exceptions' controls breaking on errors, 'remotes' traces RemoteEvents.",
           ),
-        minSpeed: z.number().min(0).optional().describe("collisions: ignore contacts slower than this relative speed (studs/s)."),
+        minSpeed: z.number().min(0).optional().describe("collisions: ignore contacts that hit softer than this, in studs/s along the contact normal."),
         seconds: z.number().min(1).max(15).optional().describe("watch/remotes/collisions: bounded capture seconds, default 5. Pair watch with concurrent input to observe a reaction."),
         player: z.string().optional().describe("watch client/remotes: player name; required with multiple players."),
         breakpoints: z

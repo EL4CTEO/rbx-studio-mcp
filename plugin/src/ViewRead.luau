@@ -9,6 +9,14 @@ local Paths = require(script.Parent.Paths)
 local Serialize = require(script.Parent.Serialize)
 local ScreenRegion = require(script.Parent.ScreenRegion)
 local DEFAULT_RAY_LENGTH = 1000
+--[[
+	Text below this many pixels tall is not readable on a phone.
+
+	Roblox's own UI guidance and every accessibility standard land in the same
+	place: somewhere around 12 device-independent pixels is the floor for body
+	text. 10 is used here because it is the point past which there is no
+	argument -- a label under it is unreadable on any display, not merely small.
+]]
 local MIN_TEXT_PIXELS = 10
 local Viewport = {}
 local function toVector(value: any, label: string): Vector3
@@ -103,6 +111,15 @@ function Viewport.pick(params: { [string]: any }): { [string]: any }
 	return cast
 end
 
+--[[
+	Pairs compared for overlap before the check gives up.
+
+	Overlap is quadratic in the number of siblings, and a scrolling list of two
+	hundred rows is both a legitimate design and forty thousand comparisons of
+	rectangles that are supposed to sit next to each other. Past this the check
+	reports that it stopped rather than continuing to spend the user's frame on
+	an answer nobody asked for.
+]]
 local MAX_OVERLAP_PAIRS = 2000
 
 local function rectOf(element: GuiObject): (number, number, number, number)
@@ -292,26 +309,43 @@ function Viewport.ui(params: { [string]: any }): { [string]: any }
 		return false
 	end
 
-	local pairs = 0
-	local stopped = false
-	for index = 1, #visible do
-		for other = index + 1, #visible do
-			if pairs >= MAX_OVERLAP_PAIRS then
-				stopped = true
-				break
+	--[[
+		Grouped by parent first. Comparing every visible element with every other
+		and skipping the non-siblings walked n^2 pairs that never counted toward
+		MAX_OVERLAP_PAIRS -- 12 million for a 5,000-element UI -- so the cap
+		never protected the frame it was there to protect. Only content-carrying
+		elements are grouped, since nothing else can be reported.
+	]]
+	local siblings: { [Instance]: { GuiObject } } = {}
+	for _, element in visible do
+		local parent = element.Parent
+		if parent and element.AbsoluteSize.X > 0 and carriesContent(element) then
+			local group = siblings[parent]
+			if group == nil then
+				group = {}
+				siblings[parent] = group
 			end
-			local a, b = visible[index], visible[other]
-			if a.Parent == b.Parent then
-				pairs += 1
-				if
-					overlaps(a, b)
-					and a.AbsoluteSize.X > 0
-					and b.AbsoluteSize.X > 0
-					and carriesContent(a)
-					and carriesContent(b)
-				then
+			table.insert(group, element)
+		end
+	end
+
+	local compared = 0
+	local stopped = false
+	for _, group in siblings do
+		for index = 1, #group do
+			for other = index + 1, #group do
+				if compared >= MAX_OVERLAP_PAIRS then
+					stopped = true
+					break
+				end
+				compared += 1
+				local a, b = group[index], group[other]
+				if overlaps(a, b) then
 					report(a, "overlaps", string.format("covers or is covered by %s", b.Name))
 				end
+			end
+			if stopped then
+				break
 			end
 		end
 		if stopped then
@@ -321,7 +355,6 @@ function Viewport.ui(params: { [string]: any }): { [string]: any }
 
 	return {
 		screen = string.format("%dx%d", screenWidth, screenHeight),
-
 		root = Paths.of(root),
 		checked = checked,
 		hidden = hidden,
@@ -329,6 +362,123 @@ function Viewport.ui(params: { [string]: any }): { [string]: any }
 		findingCount = #findings,
 		omitted = if omitted > 0 then omitted else nil,
 		overlapStopped = stopped,
+	}
+end
+
+--[[
+	What a UI snapshot records, per kind of element.
+
+	The properties a person would notice changing, and nothing else: layout,
+	colour, text and image. Read through Serialize so values come back in the
+	same words `inspect` and `modify` use. Layout modifiers (UICorner, UIStroke,
+	UIPadding...) are included because restyling a button is as often a stroke or
+	a corner radius as a colour, and a diff that missed them would call a visibly
+	different button unchanged.
+]]
+local SNAPSHOT_GUI = { "Position", "Size", "AnchorPoint", "Rotation", "ZIndex", "LayoutOrder", "BackgroundColor3", "BackgroundTransparency", "ClipsDescendants" }
+local SNAPSHOT_TEXT = { "Text", "FontFace", "TextSize", "TextScaled", "TextColor3", "TextTransparency", "TextStrokeTransparency", "TextXAlignment", "TextYAlignment", "TextWrapped", "RichText" }
+local SNAPSHOT_IMAGE = { "Image", "ImageColor3", "ImageTransparency", "ScaleType", "ImageRectOffset", "ImageRectSize" }
+local SNAPSHOT_EXTRA: { [string]: { string } } = {
+	ScreenGui = { "Enabled", "DisplayOrder", "IgnoreGuiInset", "ScreenInsets" },
+	SurfaceGui = { "Enabled", "Face", "PixelsPerStud" },
+	BillboardGui = { "Enabled", "Size", "StudsOffset", "AlwaysOnTop", "MaxDistance" },
+	ScrollingFrame = { "CanvasSize", "AutomaticCanvasSize", "ScrollBarThickness" },
+	UICorner = { "CornerRadius" },
+	UIStroke = { "Color", "Thickness", "Transparency", "ApplyStrokeMode", "Enabled" },
+	UIGradient = { "Color", "Transparency", "Rotation", "Offset", "Enabled" },
+	UIPadding = { "PaddingTop", "PaddingBottom", "PaddingLeft", "PaddingRight" },
+	UIListLayout = { "FillDirection", "Padding", "HorizontalAlignment", "VerticalAlignment", "SortOrder" },
+	UIGridLayout = { "CellSize", "CellPadding", "FillDirection", "SortOrder" },
+	UIScale = { "Scale" },
+	UIAspectRatioConstraint = { "AspectRatio", "AspectType", "DominantAxis" },
+	UISizeConstraint = { "MinSize", "MaxSize" },
+	UITextSizeConstraint = { "MinTextSize", "MaxTextSize" },
+	UIShadow = { "Enabled" },
+}
+
+-- Enough for any real HUD; past it the snapshot says how many it left out.
+local MAX_SNAPSHOT_ELEMENTS = 3000
+local MAX_SNAPSHOT_TEXT = 120
+
+local function snapshotOf(element: Instance, memo: Paths.NameIndex): { [string]: any }?
+	local names: { string } = {}
+	local extra = SNAPSHOT_EXTRA[element.ClassName]
+	local isGui = element:IsA("GuiObject")
+	if not isGui and extra == nil then
+		return nil
+	end
+	if isGui then
+		table.move(SNAPSHOT_GUI, 1, #SNAPSHOT_GUI, #names + 1, names)
+		if element:IsA("TextLabel") or element:IsA("TextButton") or element:IsA("TextBox") then
+			table.move(SNAPSHOT_TEXT, 1, #SNAPSHOT_TEXT, #names + 1, names)
+		elseif element:IsA("ImageLabel") or element:IsA("ImageButton") then
+			table.move(SNAPSHOT_IMAGE, 1, #SNAPSHOT_IMAGE, #names + 1, names)
+		end
+	end
+	if extra then
+		table.move(extra, 1, #extra, #names + 1, names)
+	end
+
+	local props: { [string]: any } = {}
+	for _, name in names do
+		local ok, value = Serialize.readProperty(element, name)
+		if ok and value ~= nil then
+			if typeof(value) == "string" and #value > MAX_SNAPSHOT_TEXT then
+				value = string.sub(value, 1, MAX_SNAPSHOT_TEXT) .. "..."
+			end
+			props[name] = value
+		end
+	end
+	if isGui then
+		local gui = element :: GuiObject
+		-- What is on screen, not what was asked for: a Size can stay the same
+		-- while a parent's layout moves or squeezes the element.
+		props.shown = shown(gui)
+		props.AbsolutePosition = Serialize.value(ScreenRegion.position(gui))
+		props.AbsoluteSize = Serialize.value(gui.AbsoluteSize)
+	end
+	return { path = Paths.of(element, memo), className = element.ClassName, props = props }
+end
+
+--[[
+	Every UI element under `path` with the properties that decide how it looks.
+
+	The MCP server keeps the snapshot and diffs a later one against it, so an
+	agent can restyle a menu and be told exactly what moved, recoloured or
+	changed font -- including what it did not mean to touch.
+]]
+function Viewport.uisnap(params: { [string]: any }): { [string]: any }
+	local root: Instance? = if typeof(params.path) == "string" and params.path ~= ""
+		then Paths.resolve(params.path)
+		else (if RunService:IsClient() and RunService:IsRunning() then Players.LocalPlayer:FindFirstChildOfClass("PlayerGui") else StarterGui)
+	if root == nil then Dispatch.fail("NO_PLAYER_GUI", "The player's GUI has not loaded yet.") end
+	local base = root :: Instance
+
+	local camera = Workspace.CurrentCamera
+	local screen = if camera then camera.ViewportSize else Vector2.zero
+	local memo: Paths.NameIndex = {}
+	local elements: { { [string]: any } } = {}
+	local omitted = 0
+
+	local function add(instance: Instance)
+		local entry = snapshotOf(instance, memo)
+		if entry == nil then return end
+		if #elements >= MAX_SNAPSHOT_ELEMENTS then
+			omitted += 1
+			return
+		end
+		table.insert(elements, entry)
+	end
+	add(base)
+	for _, descendant in base:GetDescendants() do
+		add(descendant)
+	end
+
+	return {
+		root = Paths.of(base),
+		screen = string.format("%dx%d", math.floor(screen.X), math.floor(screen.Y)),
+		elements = elements,
+		omitted = if omitted > 0 then omitted else nil,
 	}
 end
 
