@@ -755,3 +755,24 @@ process.stdout.write("client console schema and cursor forwarding: ok\n");
  }
  process.stdout.write("progress heartbeats: ok\n");
 }
+
+// Structured stack traces (Oct 2026): frames become paths script_read can open.
+{
+ const { framesOf } = await import("../dist/lib/liveops.js");
+ const frames = [
+  { line: 42, functionName: "onTouched", scriptPath: "ServerScriptService.Combat", scriptUniqueId: "a", isDynamic: false },
+  { line: 7, functionName: "", scriptPath: "Workspace.Clone.Script", isDynamic: true },
+ ];
+ assert.deepEqual(framesOf(frames), [
+  "ServerScriptService.Combat:42 in onTouched",
+  "Workspace.Clone.Script:7 (runtime clone)",
+ ]);
+ assert.deepEqual(framesOf(JSON.stringify(frames.slice(0, 1))), ["ServerScriptService.Combat:42 in onTouched"]);
+ assert.equal(framesOf(undefined), undefined);
+ assert.equal(framesOf([]), undefined);
+ assert.equal(framesOf("not json"), undefined);
+ // Partial frames fall back to the raw trace rather than printing "?:?".
+ assert.equal(framesOf([{ functionName: "x" }]), undefined);
+ assert.equal(framesOf([null]), undefined);
+ process.stdout.write("structured stack traces: ok\n");
+}

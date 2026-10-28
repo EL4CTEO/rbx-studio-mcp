@@ -33,6 +33,7 @@ import {
   installed,
   matchesClient,
   run,
+  known,
 } from "./harness.js";
 
 export type ConsoleLine = HarnessLine;
@@ -165,7 +166,8 @@ function renderAgents(state: AgentState, bridge: Bridge): ConsoleLine[] {
         level: "warn",
         message: "no coding agent found on PATH",
         detail:
-          "Install one (claude, codex, opencode, gemini, cursor-agent) and it " +
+          `Install any of ${known().length} supported agents (claude, codex, ` +
+          "opencode, gemini, cursor-agent, kimi, cline, kilo, qoder...) and it " +
           "will be picked up automatically. Commands still work without one.",
       },
     ];

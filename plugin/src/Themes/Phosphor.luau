@@ -200,30 +200,4 @@ function Phosphor.paintSlot(slot: Theme.Slot, ctx: Theme.Context)
 	frame.Rotation = 0
 end
 
-function Phosphor.swatch(frame: Frame, palette: Theme.Palette)
-	local centre = Vector2.new(20, 12)
-	local pool = Draw.pool(frame, 30, "Sample", true)
-	for index = 1, 30 do
-		local t = index / 6
-		local glow = index / 30
-		Draw.dot(
-			pool[index],
-			centre + Vector2.new(math.sin(t * 2) * 15, math.sin(t * 3) * 9),
-			1 + math.floor(glow * 2),
-			palette.green:Lerp(Color3.new(1, 1, 1), glow * 0.8),
-			0.85 - glow * 0.8
-		)
-	end
-	for index = 1, 6 do
-		local line = Instance.new("Frame")
-		line.BorderSizePixel = 0
-		line.BackgroundColor3 = Color3.new(0, 0, 0)
-		line.BackgroundTransparency = 0.75
-		line.Size = UDim2.new(1, 0, 0, 1)
-		line.Position = UDim2.fromOffset(0, index * 4)
-		line.ZIndex = 4
-		line.Parent = frame
-	end
-end
-
 return Phosphor

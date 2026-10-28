@@ -52,10 +52,16 @@ export function registerTerrainTools(context: ToolContext): void {
         "Positions are the centre of the solid, in studs, as \"x, y, z\". " +
         "Terrain snaps to a 4-stud voxel grid, so small features come out " +
         "blockier than the numbers suggest; nothing thinner than about 4 studs " +
-        "survives.",
+        "survives.\n\n" +
+        "`materials` manages the place's custom terrain materials: 64 slots, " +
+        "each a base material plus an optional MaterialVariant and a tint. " +
+        "`action` list | set | reset. Slot writes are NOT undoable, so each " +
+        "result reports the slot's `previous` value. Painting with a custom " +
+        "slot is done in the Terrain Editor; Roblox does not let plugins fill " +
+        "by slot.",
       inputSchema: {
         op: z
-          .enum(["fill", "replace", "clear", "stats"])
+          .enum(["fill", "replace", "clear", "stats", "materials"])
           .default("stats")
           .describe(
             "'fill' adds solids (use material Air to carve), 'replace' swaps a " +
@@ -111,6 +117,28 @@ export function registerTerrainTools(context: ToolContext): void {
             "clear only: required to empty ALL terrain. Omit it and give " +
               "`position`/`size` to clear one region instead.",
           ),
+        action: z
+          .enum(["list", "set", "reset"])
+          .optional()
+          .describe("materials only: list the slots in use (default), set some, or reset some."),
+        slots: z
+          .array(
+            z.object({
+              slot: z
+                .number()
+                .int()
+                .min(2)
+                .max(63)
+                .optional()
+                .describe("Slot 2-63. set: omit to take the first free slot."),
+              base: z.string().optional().describe("set: base material, e.g. Grass, Rock."),
+              variant: z.string().optional().describe("set: MaterialVariant name for custom textures."),
+              color: z.string().optional().describe('set: tint, "#7FA35B" or "r, g, b".'),
+            }),
+          )
+          .max(62)
+          .optional()
+          .describe("materials set/reset: the slots to change."),
         studioId: z.string().optional().describe("Target Studio; omit for the active one."),
       },
       readOnly: false,
@@ -162,6 +190,27 @@ export function registerTerrainTools(context: ToolContext): void {
           { studioId: args.studioId, timeoutMs },
         );
         return json(response);
+      }
+
+      if (args.op === "materials") {
+        const action = args.action ?? "list";
+        if (action !== "list" && (args.slots === undefined || args.slots.length === 0)) {
+          return errorText(`materials ${action} needs \`slots\`, e.g. [{ base: "Grass", color: "#5E8C3A" }].`);
+        }
+        if (action === "set" && args.slots?.some((slot) => slot.base === undefined)) {
+          return errorText("materials set needs a `base` material on every slot.");
+        }
+        const response = await bridge.call<Record<string, unknown>>(
+          "terrain.materials",
+          { action, slots: args.slots },
+          { studioId: args.studioId, timeoutMs },
+        );
+        return json(
+          response,
+          action === "list" || response["expandedTerrain"] === "Enabled"
+            ? undefined
+            : "Custom slots only render once Workspace.ExpandedTerrain is Enabled and the place is reopened.",
+        );
       }
 
       const response = await bridge.call<Record<string, unknown>>(

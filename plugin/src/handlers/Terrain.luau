@@ -354,12 +354,188 @@ function Terrain.stats(_params: { [string]: any }): { [string]: any }
 	}
 end
 
+--[[
+	Custom terrain materials: the 64 slots a place's terrain paints from.
+
+	Slots 0 and 1 are Air and Water and cannot be changed. 2-22 hold the stock
+	materials out of the box, and the rest are empty until someone defines one.
+	A slot is a base material, an optional MaterialVariant name and a tint.
+
+	Read off the live engine rather than documented anywhere: an empty slot
+	answers `GetMaterialSlot` with NO values, not with nil-filled ones, which is
+	why every read here goes through `readSlot`.
+
+	Not undoable. `SetMaterialSlot` is not recorded by ChangeHistoryService, so
+	every write reports what the slot held before, which is the way back.
+	Painting with a custom slot is Roblox-script-only (`FillBlockSlot` and
+	friends), so filling with one is left to the Terrain Editor.
+]]
+local SLOT_COUNT = 64
+local FIRST_EDITABLE = 2
+
+local function readSlot(field: Terrain, slot: number): { [string]: any }?
+	local values = table.pack(field:GetMaterialSlot(slot))
+	if values.n == 0 or values[1] == nil then
+		return nil
+	end
+	return {
+		slot = slot,
+		base = (values[1] :: Enum.Material).Name,
+		variant = if values[2] ~= nil and values[2] ~= "" then values[2] else nil,
+		color = Serialize.value(values[3]),
+	}
+end
+
+local function slotIndex(raw: any, what: string): number
+	local slot = tonumber(raw)
+	if slot == nil or slot % 1 ~= 0 or slot < FIRST_EDITABLE or slot >= SLOT_COUNT then
+		Dispatch.fail(
+			"BAD_PARAMS",
+			string.format("%s: `slot` must be a whole number from %d to %d.", what, FIRST_EDITABLE, SLOT_COUNT - 1),
+			"Slots 0 and 1 are Air and Water and cannot be changed."
+		)
+	end
+	return slot :: number
+end
+
+function Terrain.materials(params: { [string]: any }): { [string]: any }
+	local field = terrain()
+	local action = params.action or "list"
+
+	local expanded: string? = nil
+	pcall(function()
+		expanded = tostring((Workspace :: any).ExpandedTerrain.Name)
+	end)
+
+	if action == "list" then
+		local slots = {}
+		local free = 0
+		for slot = 0, SLOT_COUNT - 1 do
+			local entry = readSlot(field, slot)
+			if entry ~= nil then
+				table.insert(slots, entry)
+			elseif slot >= FIRST_EDITABLE then
+				free += 1
+			end
+		end
+		return { slots = slots, free = free, expandedTerrain = expanded }
+	end
+
+	local entries = params.slots
+	if typeof(entries) ~= "table" or #entries == 0 then
+		Dispatch.fail("BAD_PARAMS", string.format("%s needs `slots`.", action))
+	end
+
+	local changed = {}
+	if action == "reset" then
+		-- Every index checked before any slot is touched: a reset cannot be
+		-- undone, so a bad entry must not cost the ones before it.
+		local slots = {}
+		for _, raw in entries do
+			table.insert(slots, slotIndex(if typeof(raw) == "table" then raw.slot else raw, "reset"))
+		end
+		for _, slot in slots do
+			local previous = readSlot(field, slot)
+			field:ResetMaterialSlot(slot)
+			table.insert(changed, { slot = slot, previous = previous, now = readSlot(field, slot) })
+		end
+		return { reset = changed, undoable = false }
+	end
+
+	if action ~= "set" then
+		Dispatch.fail("BAD_PARAMS", string.format("Unknown materials action `%s`.", tostring(action)), "Use list, set or reset.")
+	end
+
+	-- Validated as a batch before anything is written, so a typo in the third
+	-- entry does not leave the first two applied with no undo to take them back.
+	local plan = {}
+	-- Slots named outright are claimed before any free one is chosen, so an
+	-- entry without a slot can never be handed one a later entry overwrites.
+	local claimed: { [number]: boolean } = {}
+	for index, raw in entries do
+		if typeof(raw) ~= "table" then
+			Dispatch.fail("BAD_PARAMS", string.format("slots[%d] must be an object.", index))
+		end
+		if raw.slot ~= nil then
+			local slot = slotIndex(raw.slot, string.format("slots[%d]", index))
+			if claimed[slot] then
+				Dispatch.fail("BAD_PARAMS", string.format("slot %d is named twice.", slot))
+			end
+			claimed[slot] = true
+		end
+	end
+	for index, raw in entries do
+		local slot: number
+		if raw.slot ~= nil then
+			slot = slotIndex(raw.slot, string.format("slots[%d]", index))
+		else
+			local found: number? = nil
+			for candidate = FIRST_EDITABLE, SLOT_COUNT - 1 do
+				if not claimed[candidate] and readSlot(field, candidate) == nil then
+					found = candidate
+					break
+				end
+			end
+			if found == nil then
+				Dispatch.fail("TERRAIN_SLOTS_FULL", "Every custom terrain slot is in use.", "Reset one, or name a `slot` to overwrite.")
+			end
+			slot = found :: number
+			claimed[slot] = true
+		end
+		local base = material(raw, "base", nil)
+		if base == Enum.Material.Air or base == Enum.Material.Water then
+			Dispatch.fail("BAD_PARAMS", string.format("slots[%d]: Air and Water cannot be a slot's base.", index))
+		end
+		local color = Color3.new(1, 1, 1)
+		if raw.color ~= nil then
+			local ok, value, why = Serialize.parse(raw.color, "Color3")
+			if not ok then
+				Dispatch.fail("BAD_PARAMS", string.format("slots[%d].color: %s", index, tostring(why)))
+			end
+			color = value
+		else
+			-- Keeps the slot's own tint when overwriting one, and starts a new
+			-- slot at the base material's colour rather than at white.
+			local current = table.pack(field:GetMaterialSlot(slot))
+			color = if current.n >= 3 and typeof(current[3]) == "Color3"
+				then current[3]
+				else field:GetMaterialColor(base)
+		end
+		table.insert(plan, { slot = slot, base = base, variant = raw.variant or "", color = color })
+	end
+
+	for _, step in plan do
+		local previous = readSlot(field, step.slot)
+		local ok, why = pcall(field.SetMaterialSlot, field, step.slot, step.base, step.variant, step.color)
+		if not ok then
+			if #changed == 0 then
+				Dispatch.fail(
+					"BAD_PARAMS",
+					string.format("slot %d: %s", step.slot, tostring(why)),
+					"Check the MaterialVariant name and that its BaseMaterial matches `base`."
+				)
+			end
+			-- Some slots are already written and cannot be undone, so the answer
+			-- carries what they held rather than an error that would drop it.
+			return {
+				set = changed,
+				failed = { slot = step.slot, error = tostring(why) },
+				undoable = false,
+				expandedTerrain = expanded,
+			}
+		end
+		table.insert(changed, { slot = step.slot, previous = previous, now = readSlot(field, step.slot) })
+	end
+	return { set = changed, undoable = false, expandedTerrain = expanded }
+end
+
 function Terrain.register()
 	Dispatch.registerAll("terrain", {
 		fill = Terrain.fill,
 		replace = Terrain.replace,
 		clear = Terrain.clear,
 		stats = Terrain.stats,
+		materials = Terrain.materials,
 	})
 end
 

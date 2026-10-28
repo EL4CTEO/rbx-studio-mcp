@@ -29,15 +29,15 @@ export type Slot = Theme.Slot
 
 	Lattice first because it is the default and the one people return to. Then
 	the dark presets closest to it, then the ones with a scene of their own --
-	each a physical system whose state you can read: orbiting moons, a sonar
-	sweep, rising sparks, a swinging wave. A user scanning the drawer should be
+	each a physical system whose state you can read: orbiting moons, arcs
+	of lightning, rising sparks, a swinging wave. A user scanning the drawer should be
 	able to stop as soon as the list stops looking like what they came for.
 ]]
 local ORDER: { Theme.Theme } = {
 	require(script.Lattice),
 	require(script.Observatory),
 	require(script.Orbit),
-	require(script.Sonar),
+	require(script.Electro),
 	require(script.Ember),
 	require(script.Aurora),
 	require(script.Phosphor),
@@ -48,6 +48,9 @@ local byId: { [string]: Theme.Theme } = {}
 for _, theme in ORDER do
 	byId[theme.id] = theme
 end
+-- Sonar was replaced by Electro in 1.0; a saved "sonar" lands on its successor
+-- rather than falling back to the default.
+byId.sonar = byId.electro
 
 local DEFAULT = "lattice"
 local activeId = DEFAULT

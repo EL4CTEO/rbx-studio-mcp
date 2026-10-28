@@ -557,6 +557,103 @@ const readAll = (id, lines) => {
   }
 }
 
+// --- the 1.0 harnesses -----------------------------------------------------
+//
+// Shapes from each vendor's documentation (Oct 2026). Most of these CLIs copy
+// an existing envelope, so the point is that `readEvents` recognises each
+// family by its contents rather than trusting a guessed field list.
+{
+  // Cline: `run_result` carries the final text; `agent_event` repeats it.
+  const cline = readAll("cline", [
+    JSON.stringify({ ts: "t", type: "agent_event", event: { type: "iteration_start" } }),
+    JSON.stringify({ ts: "t", type: "agent_event", event: { type: "done", reason: "completed", text: "Hello!" } }),
+    JSON.stringify({ ts: "t", type: "run_result", finishReason: "completed", text: "Hello!", iterations: 1 }),
+  ]);
+  ok(cline.rows.filter((row) => row.message === "Hello!").length === 1, "cline: the answer once, not twice");
+  ok(cline.rows.some((row) => row.message === "agent done"), "cline: run_result ends the run");
+  ok(find("cline").argv("hi", "s-1").join(" ") === "--id s-1 --json hi", "cline: resumes with --id");
+
+  // Kimi Code writes bare chat messages, tool calls first.
+  const kimi = readAll("kimi", [
+    JSON.stringify({
+      role: "assistant",
+      content: "",
+      tool_calls: [{ id: "1", type: "function", function: { name: "ReadFile", arguments: '{"path":"a.lua"}' } }],
+    }),
+    JSON.stringify({ role: "tool", content: "file body" }),
+    JSON.stringify({ role: "assistant", content: "Read it." }),
+  ]);
+  ok(kimi.rows.some((row) => row.message === "ReadFile" && /path=a\.lua/.test(row.detail ?? "")), "kimi: tool call with its arguments");
+  ok(kimi.rows.some((row) => row.message === "Read it."), "kimi: prose");
+  ok(!kimi.rows.some((row) => row.message === "file body"), "kimi: tool output is not echoed");
+  ok(
+    readAll("kimi", [JSON.stringify({ role: "assistant", tool_calls: [{ function: { name: "mcp__rbx-studio__tree" } }] })]).rows.length === 0,
+    "kimi: our own tools are left to Studio's rows",
+  );
+
+  // Kilo and Grok speak opencode's event names.
+  const kilo = readAll("kilo", [
+    JSON.stringify({ type: "step_start", sessionID: "ses_k" }),
+    JSON.stringify({ type: "tool_use", sessionID: "ses_k", part: { tool: "glob", state: { input: { pattern: "*.lua" } } } }),
+    JSON.stringify({ type: "text", sessionID: "ses_k", part: { text: "Found two." } }),
+  ]);
+  ok(kilo.session === "ses_k", "kilo: session id");
+  ok(kilo.rows.some((row) => row.message === "glob"), "kilo: tool calls");
+  ok(kilo.rows.some((row) => row.message === "Found two."), "kilo: prose");
+  ok(find("kilo").argv("hi", null).includes("--auto"), "kilo: auto, or every permission is rejected");
+  const grok = readAll("grok", [JSON.stringify({ type: "text", text: "Hi from grok" })]);
+  ok(grok.rows.some((row) => row.message === "Hi from grok"), "grok: flat text events");
+
+  // OpenHands: actions are work, observations are output.
+  const openhands = readAll("openhands", [
+    JSON.stringify({ type: "action", action: "write", path: "app.py" }),
+    JSON.stringify({ type: "observation", content: "File created successfully" }),
+    JSON.stringify({ type: "action", action: "finish", message: "All done." }),
+  ]);
+  ok(openhands.rows.some((row) => row.message === "write" && /path=app\.py/.test(row.detail ?? "")), "openhands: actions");
+  ok(!openhands.rows.some((row) => /File created/.test(row.message)), "openhands: observations stay quiet");
+  ok(openhands.rows.some((row) => row.message === "All done."), "openhands: the finish message");
+
+  // OpenClaw answers once, with payloads; a failure is `ok: false`.
+  ok(
+    readAll("openclaw", [JSON.stringify({ payloads: [{ text: "Sent." }], meta: { durationMs: 10 } })]).rows[0].message === "Sent.",
+    "openclaw: payload text",
+  );
+  ok(
+    readAll("openclaw", [JSON.stringify({ ok: false, error: { type: "cli_error", message: "no gateway" } })]).rows[0].level === "error",
+    "openclaw: failures are errors",
+  );
+  ok(find("openclaw").argv("hi", null).includes("--session-id"), "openclaw: always names a session");
+
+  // Qoder copies Claude Code's envelope.
+  const qoder = readAll("qoder", [
+    JSON.stringify({ type: "system", subtype: "init", session_id: "q-9" }),
+    JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "Qoder here." }] } }),
+    JSON.stringify({ type: "result", is_error: false }),
+  ]);
+  ok(qoder.session === "q-9" && qoder.rows.some((row) => row.message === "Qoder here."), "qoder: claude envelope");
+  ok(find("qoder").mcpFlag?.()[0] === "--mcp-config", "qoder: is handed our MCP config");
+
+  // Hermes ends on a `result` record.
+  ok(readAll("hermes", [JSON.stringify({ type: "result", status: "error" })]).rows[0].level === "error", "hermes: failed result");
+
+  // Binaries that differ from their ids.
+  ok(find("rovodev").bin === "acli" && find("rovodev").argv("x", null)[0] === "rovodev", "rovodev: runs through acli");
+  ok(find("kiro").bin === "kiro-cli", "kiro: kiro-cli binary");
+  ok(find("continue").bin === "cn", "continue: cn binary");
+
+  // Every registered harness, old and new, shows a plain line rather than eating it.
+  const { known } = await import("../dist/bridge/harness.js");
+  ok(known().length >= 30, "registry: 30+ harnesses");
+  ok(new Set(known().map((h) => h.id)).size === known().length, "registry: ids are unique");
+  for (const harness of known()) {
+    const rows = readAll(harness.id, ["some unstructured output"]).rows;
+    ok(rows.length > 0, harness.id + ": unrecognised output is shown, not swallowed");
+    const argv = harness.argv("the prompt", null);
+    ok(argv.includes("the prompt"), harness.id + ": the prompt is passed as its own argument");
+  }
+}
+
 // A prompt reaches a Windows .cmd shim as ONE argument, byte for byte. Before
 // cmdQuote, `&` in a prompt ran the rest of it as a second shell command.
 if (process.platform === "win32") {

@@ -108,14 +108,6 @@ export type Theme = {
 		omits it and Visuals draws them.
 	]]
 	paintSlot: ((slot: Slot, ctx: Context) -> ())?,
-	--[[
-		A still miniature for the picker, drawn into a 40x24 frame.
-
-		Static on purpose. Eight live renderers running behind a hover menu is
-		the one place the "only one preset runs at a time" argument breaks, and
-		it breaks in a drawer the user looks at for two seconds.
-	]]
-	swatch: (frame: Frame, palette: Palette) -> (),
 }
 
 return {}

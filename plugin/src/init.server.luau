@@ -709,10 +709,12 @@ elseif Mirror.isPlaytestClient() then
 		if kind == "log" then
 			local level, message, detail = arguments[1], arguments[2], arguments[3]
 			if typeof(level) == "string" and typeof(message) == "string" then
+				local ms = arguments[4]
 				Console.log(
 					level :: any,
 					message,
-					if typeof(detail) == "string" then detail else nil
+					if typeof(detail) == "string" then detail else nil,
+					if typeof(ms) == "number" then ms else nil
 				)
 			end
 		elseif kind == "beginCall" then
@@ -808,7 +810,7 @@ local function onCommand(id: string, op: string, params: { [string]: any }?, dea
 			announced, so the bar on the trace lost the name it was supposed to
 			carry. A microsecond is not worth an ordering hazard.
 		]]
-		Console.beginCall(title, Phrase.kindOf(op))
+		Console.beginCall(title, Phrase.kindOf(op, params))
 
 		local result = Dispatch.invoke(id, op, params, deadlineMs)
 		local milliseconds = (os.clock() - startedAt) * 1000
@@ -830,13 +832,14 @@ local function onCommand(id: string, op: string, params: { [string]: any }?, dea
 		Console.recordCall(result.ok, milliseconds)
 
 		if result.ok then
-			Console.log("reply", title, elapsed)
+			Console.log("reply", title, elapsed, milliseconds)
 		else
 			local err = result.error
 			Console.log(
 				"error",
 				string.format("%s failed: %s", title, if err then err.code else "unknown"),
-				elapsed
+				elapsed,
+				milliseconds
 			)
 			if err and err.message then
 				Console.log("dim", "   " .. err.message)
@@ -887,6 +890,9 @@ local function onEvent(event: { [string]: any })
 		)
 	elseif event.event == "agent-run" then
 		Console.setPromptBusy(event.state == "running")
+		if event.state ~= "running" then
+			Console.endTurn()
+		end
 	elseif event.event == "peer" and typeof(event.op) == "string" then
 		--[[
 			A command another session on this place just finished.
@@ -907,12 +913,12 @@ local function onEvent(event: { [string]: any })
 		local ok = event.ok == true
 		local detail = string.format("%s %.0fms", peerTag(event.from), milliseconds)
 
-		Console.beginCall(title, Phrase.kindOf(event.op))
+		Console.beginCall(title, Phrase.kindOf(event.op, params))
 		Console.recordCall(ok, milliseconds)
 		if ok then
-			Console.log("reply", title, detail)
+			Console.log("reply", title, detail, milliseconds)
 		else
-			Console.log("error", string.format("%s failed", title), detail)
+			Console.log("error", string.format("%s failed", title), detail, milliseconds)
 		end
 	end
 end

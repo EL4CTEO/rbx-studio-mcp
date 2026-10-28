@@ -57,6 +57,10 @@ export type Row = {
 	message: string,
 	detail: string?,
 	stamp: string,
+	-- Threadline shape, so a carried log keeps its threads and latency bars.
+	turn: boolean?,
+	threaded: boolean?,
+	ms: number?,
 }
 
 local store: Plugin? = nil
@@ -100,6 +104,9 @@ local function sane(value: any): Row?
 		message = row.message,
 		detail = if typeof(row.detail) == "string" then row.detail else nil,
 		stamp = row.stamp,
+		turn = if row.turn == true then true else nil,
+		threaded = if row.threaded == true then true else nil,
+		ms = if typeof(row.ms) == "number" then row.ms else nil,
 	}
 end
 

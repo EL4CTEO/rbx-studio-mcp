@@ -221,20 +221,4 @@ function Observatory.paintSlot(slot: Theme.Slot, ctx: Theme.Context)
 	frame.Rotation = 0
 end
 
-function Observatory.swatch(frame: Frame, palette: Theme.Palette)
-	local pool = Draw.pool(frame, 14, "Star", true)
-	for index = 1, 14 do
-		local x = 3 + Draw.hash(index, 11) * 34
-		local y = 3 + Draw.hash(index, 12) * 18
-		local bright = Draw.hash(index, 13)
-		Draw.dot(
-			pool[index],
-			Vector2.new(x, y),
-			if bright > 0.85 then 3 else 1 + math.floor(bright * 2),
-			palette.cyan:Lerp(Color3.new(1, 1, 1), bright * 0.7),
-			0.85 - bright * 0.7
-		)
-	end
-end
-
 return Observatory

@@ -547,9 +547,53 @@ interface GameServerLog {
   severity?: number;
   message?: string;
   stackTrace?: string;
+  /** Parsed frames, since Oct 2026. Older entries and Roblox-side errors have none. */
+  structuredStackTrace?: StackFrame[] | string;
   context?: string;
   skippedCount?: number;
   rateLimitedCount?: number;
+}
+
+interface StackFrame {
+  line?: number;
+  functionName?: string;
+  scriptPath?: string;
+  scriptUniqueId?: string;
+  isDynamic?: boolean;
+}
+
+/**
+ * Frames as `Path.To.Script:line in fn`, the shape `script_read` can open.
+ *
+ * Dynamic frames come from scripts cloned at runtime, which have no stable
+ * place in the edit-time tree, so they are marked rather than offered as paths.
+ */
+export function framesOf(raw: StackFrame[] | string | undefined): string[] | undefined {
+  let frames: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      frames = JSON.parse(raw);
+    } catch {
+      return undefined;
+    }
+  }
+  if (!Array.isArray(frames) || frames.length === 0) return undefined;
+  // A frame that cannot be opened is worse than the raw trace it replaces, so
+  // anything partial falls back to `stackTrace`.
+  const usable = frames.every(
+    (frame: unknown) =>
+      frame !== null &&
+      typeof frame === "object" &&
+      typeof (frame as StackFrame).scriptPath === "string" &&
+      (frame as StackFrame).scriptPath !== "" &&
+      typeof (frame as StackFrame).line === "number",
+  );
+  if (!usable) return undefined;
+  return frames.map((frame: StackFrame) => {
+    const where = `${frame.scriptPath ?? "?"}:${frame.line ?? "?"}`;
+    const fn = frame.functionName ? ` in ${frame.functionName}` : "";
+    return where + fn + (frame.isDynamic ? " (runtime clone)" : "");
+  });
 }
 
 /** Numeric severities as the API returns them, and the names a caller filters by. */
@@ -590,6 +634,7 @@ export async function listServerLogs(
       level: SEVERITY_NAMES[entry.severity ?? -1] ?? String(entry.severity),
       message: entry.message,
       stack: entry.stackTrace || undefined,
+      frames: framesOf(entry.structuredStackTrace),
       context: entry.context || undefined,
       repeats: (entry.skippedCount ?? 0) + (entry.rateLimitedCount ?? 0) || undefined,
     })),

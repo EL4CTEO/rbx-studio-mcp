@@ -41,6 +41,7 @@ local promptChat = nil
 local Console = {
  log = function(level, message, detail) table.insert(rows, {level = level, message = message, detail = detail}) end,
  setPromptBusy = function() end,
+ endTurnUnlessBusy = function() end,
  setPromptChat = function(enabled) promptChat = enabled end,
 }
 local Secret = {mask = function(line) return line, false end}

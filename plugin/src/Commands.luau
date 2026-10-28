@@ -30,7 +30,6 @@ local Playtest = require(script.Parent.handlers.Playtest)
 local Console = require(script.Parent.Console)
 local Net = require(script.Parent.Net)
 local Secret = require(script.Parent.Secret)
-local ThemePicker = require(script.Parent.ThemePicker)
 local Themes = require(script.Parent.Themes)
 
 local Commands = {}
@@ -247,7 +246,6 @@ define({
 		end
 
 		Console.applyTheme()
-		ThemePicker.applyTheme()
 		local current = hooks
 		if current then
 			current.saveTheme(wanted)
@@ -666,7 +664,7 @@ end
 	so a remote command is free to block on the bridge without freezing the
 	field the user is typing into.
 ]]
-function Commands.run(line: string)
+local function runLine(line: string)
 	local trimmed = string.match(line, "^%s*(.-)%s*$") or ""
 	if trimmed == "" then
 		return
@@ -740,6 +738,18 @@ function Commands.run(line: string)
 			Console.log("error", string.format("%s failed", entry.name), tostring(err))
 		end
 	end
+end
+
+--[[
+	Runs one line from the prompt, then closes its turn.
+
+	A command's output is finished by the time it returns, so its turn ends
+	here. A sentence handed to an agent is still running, and its turn stays
+	open until the bridge reports the run has ended.
+]]
+function Commands.run(line: string)
+	runLine(line)
+	Console.endTurnUnlessBusy()
 end
 
 return Commands

@@ -22,7 +22,6 @@ local TweenService = game:GetService("TweenService")
 
 local Format = require(script.Parent.Format)
 local Prompt = require(script.Parent.Prompt)
-local ThemePicker = require(script.Parent.ThemePicker)
 local Themes = require(script.Parent.Themes)
 local Visuals = require(script.Parent.Visuals)
 
@@ -76,6 +75,23 @@ local MAX_RECORDS = 300
 -- The status bar's height. Named because three things now measure against it:
 -- the bar itself, the prompt row sitting on top of it, and the log above both.
 local FOOTER_HEIGHT = 22
+
+--[[
+	Header controls, Threadline sizes.
+
+	The three words that used to sit in the header cost 244px between them, more
+	than a third of a docked panel, and said less than a glyph with its name on
+	hover. Icons plus the theme swatches now fit in 196px, and the swatches give
+	way first when the dock gets narrow.
+]]
+local ICON_BUTTON = 22
+local SWATCH = 9
+local SWATCH_GAP = 4
+local SWATCHES_WIDTH = 8 * SWATCH + 7 * SWATCH_GAP
+local BUTTONS_NARROW = 3 * ICON_BUTTON + 2 * 4
+local BUTTONS_WIDE = BUTTONS_NARROW + 4 + SWATCHES_WIDTH + 6
+-- Below this width the swatches hide and the meta line goes with them.
+local NARROW_HEADER = 520
 
 --[[
 	The active preset's colours, rebound rather than re-read.
@@ -206,6 +222,18 @@ type Record = {
 	-- Monotonic, never reused: the row's LayoutOrder, so a row built late (after
 	-- a filter change) still lands where it belongs.
 	order: number,
+	--[[
+		Threadline: what a row is to the turn around it.
+
+		`turn` marks a line typed into the prompt -- the head of a thread.
+		`threaded` marks everything logged while that turn was open, which hangs
+		off the head under a thread line instead of carrying its own timestamp.
+		`ms` is a tool call's duration, kept as a number so the row can draw its
+		latency bar; prose and notices have none.
+	]]
+	turn: boolean?,
+	threaded: boolean?,
+	ms: number?,
 }
 
 --[[
@@ -331,6 +359,12 @@ type State = {
 	]]
 	relayout: (() -> ())?,
 	visualsButton: TextButton?,
+	-- Whether rows logged now belong to the turn the last prompt opened.
+	inTurn: boolean,
+	headerButtons: Frame?,
+	swatchRow: Frame?,
+	-- The header's theme swatches, repainted when the active one changes.
+	swatches: { [string]: TextButton },
 }
 
 local state: State = {
@@ -370,6 +404,10 @@ local state: State = {
 	filter = nil,
 	relayout = nil,
 	visualsButton = nil,
+	inTurn = false,
+	headerButtons = nil,
+	swatchRow = nil,
+	swatches = {},
 }
 
 -- Declared ahead of its definition: `setClients` calls it and is written
@@ -502,17 +540,37 @@ local function renderRecord(record: Record): { string }
 	]]
 	local prose = record.level == "reply"
 
-	local function line(text: string): string
-		local escaped = Format.escape(text)
-		if prose then
-			escaped = Format.emphasise(escaped, hex(PALETTE.cyan))
-		end
-		return string.format('<font color="%s">%s</font>', hex(PALETTE[spec.key]), escaped)
+	--[[
+		Threadline colours. A turn's head reads in the text colour behind a violet
+		caret, because it is the user's own words; a finished tool call is a cyan
+		mark beside a plain name, so the eye runs down the marks and reads the
+		names. Everything else keeps its level's colour.
+	]]
+	local sigil = spec.sigil
+	local sigilKey = spec.key
+	local textKey = spec.key
+	if record.turn then
+		sigil, sigilKey, textKey = "\u{203A}", "violet", "text"
+	elseif record.ms ~= nil and record.level == "reply" then
+		sigil, sigilKey, textKey = "\u{25B8}", "cyan", "text"
 	end
 
-	local body = string.format("%s %s", spec.sigil, trimmed)
+	local function line(text: string): string
+		local escaped = Format.escape(text)
+		if prose and record.ms == nil then
+			escaped = Format.emphasise(escaped, hex(PALETTE.cyan))
+		end
+		return string.format('<font color="%s">%s</font>', hex(PALETTE[textKey]), escaped)
+	end
+
+	-- A threaded row gives its timestamp's columns to the thread line, so every
+	-- column to its right stays exactly where an unthreaded row puts it.
+	local stamp = if record.threaded then string.rep(" ", utf8.len(record.stamp) or #record.stamp) else record.stamp
+	local body = string.format("%s %s", sigil, trimmed)
 	local bodyWidth = utf8.len(body) or #body
-	local lines = { span(PALETTE.dim, record.stamp) .. " " .. line(body) }
+	local lines = {
+		span(PALETTE.dim, stamp) .. " " .. span(PALETTE[sigilKey], sigil) .. " " .. line(trimmed),
+	}
 
 	-- In the message's own colour, not the dim of a detail: these lines ARE the
 	-- message, and greying them would read as an explanation of it.
@@ -582,6 +640,20 @@ end
 -- scanning for. A bar on every row would be a column of noise.
 local BAR_LEVELS: { [string]: string } = { error = "red", warn = "amber" }
 
+-- Width of a row's latency bar, in pixels.
+local LATENCY_BAR = 34
+
+--[[
+	One character of the log's font, in pixels.
+
+	A constant, not a measurement. Code is Inconsolata, which advances exactly
+	half an em, so 12pt text is 6px a character. This was measured with
+	`TextService:GetTextSize` once, and at plugin load -- before Studio had the
+	font -- it answered 5, which put every latency bar a sixth of the way back
+	over the duration it was meant to follow.
+]]
+local CHAR_WIDTH = 6
+
 local function buildRow(record: Record, list: Frame): Frame
 	local row = Instance.new("TextButton")
 	row.Name = "Row"
@@ -619,6 +691,72 @@ local function buildRow(record: Record, list: Frame): Frame
 		bar.Position = UDim2.new(0, -8, 0, 1)
 		bar.Size = UDim2.new(0, 2, 1, -2)
 		bar.Parent = row
+	end
+
+	local glyph = CHAR_WIDTH
+
+	--[[
+		The thread: a hairline down the timestamp column of every row a turn
+		owns. Rows sit flush against each other, so the segments join into one
+		line from the turn's head to its last call.
+	]]
+	if record.threaded then
+		local thread = Instance.new("Frame")
+		thread.Name = "Thread"
+		thread.BorderSizePixel = 0
+		thread.BackgroundColor3 = PALETTE.violet
+		thread.BackgroundTransparency = 0.62
+		thread.Position = UDim2.new(0, math.floor(glyph * 3.5), 0, 0)
+		thread.Size = UDim2.new(0, 1, 1, 0)
+		thread.Parent = row
+	end
+
+	-- Air above a turn's head, so threads read as separate requests.
+	if record.turn then
+		local padding = Instance.new("UIPadding")
+		padding.PaddingTop = UDim.new(0, 6)
+		padding.Parent = row
+	end
+
+	--[[
+		A latency bar after the duration, on a log scale fixed at load: 1ms is
+		empty and five seconds is full. Fixed rather than relative to the slowest
+		call so far, which would change the meaning of every bar already drawn
+		whenever a slower one arrived.
+	]]
+	local ms = record.ms
+	if ms ~= nil and record.detail ~= nil and not string.find(record.detail, "\n", 1, true) then
+		-- The same arithmetic `renderRecord` lays the detail out with: a stamp and
+		-- a space, then "sigil message", padded out to the detail column.
+		local detailWidth = utf8.len(record.detail) or #record.detail
+		local messageWidth = utf8.len(record.message) or #record.message
+		local inline = messageWidth <= DETAIL_COLUMN - 3
+			and messageWidth + detailWidth + 3 <= DETAIL_COLUMN + INLINE_DETAIL
+		if inline then
+			local bodyWidth = 2 + messageWidth
+			local stampWidth = (utf8.len(record.stamp) or #record.stamp) + 1
+			local column = stampWidth + bodyWidth + math.max(1, DETAIL_COLUMN - bodyWidth) + detailWidth + 1
+			local track = Instance.new("Frame")
+			track.Name = "Latency"
+			track.BorderSizePixel = 0
+			track.BackgroundColor3 = PALETTE.dim
+			track.BackgroundTransparency = 0.8
+			track.Position = UDim2.new(0, math.floor(column * glyph), 0, 7)
+			track.Size = UDim2.fromOffset(LATENCY_BAR, 3)
+			track.Parent = row
+
+			local fill = Instance.new("Frame")
+			fill.Name = "Fill"
+			fill.BorderSizePixel = 0
+			fill.BackgroundColor3 = if record.level == "error" then PALETTE.red else PALETTE.violet
+			local share = math.clamp(math.log10(math.max(ms, 1)) / math.log10(5000), 0.06, 1)
+			fill.Size = UDim2.new(share, 0, 1, 0)
+			fill.Parent = track
+
+			local round = Instance.new("UICorner")
+			round.CornerRadius = UDim.new(0, 1)
+			round.Parent = track
+		end
 	end
 
 	-- A faint wash under the pointer, so a long log can be read down a column.
@@ -785,13 +923,16 @@ local function refreshCounters()
 		counters.Text = "idle"
 		return
 	end
+	-- RichText so the error count can wear red when there is one, the one
+	-- number on this line that asks for attention.
+	counters.RichText = true
+	local errors = string.format("%d error%s", state.errors, if state.errors == 1 then "" else "s")
 	counters.Text = string.format(
-		"%d call%s  %d error%s  typical %s",
+		"%d call%s \u{00B7} %s \u{00B7} typical %s",
 		state.calls,
 		if state.calls == 1 then "" else "s",
-		state.errors,
-		if state.errors == 1 then "" else "s",
-		typicalText()
+		if state.errors > 0 then span(PALETTE.red, errors) else Format.escape(errors),
+		Format.escape(typicalText())
 	)
 end
 
@@ -800,7 +941,30 @@ end
 	latencies stack into a readable column instead of trailing each message at a
 	ragged offset.
 ]]
-function Console.log(level: Level, message: string, detail: string?)
+function Console.log(level: Level, message: string, detail: string?, ms: number?)
+	--[[
+		A line typed into the prompt opens a turn; it is echoed as a `call` whose
+		detail says it was "you". Everything after it hangs off that head until
+		the turn is closed -- see `Console.endTurn`.
+	]]
+	local relayed = detail
+	local turn = level == "call" and (detail == "you" or detail == "you (hidden)")
+	--[[
+		Only a line typed while nothing is running opens a thread. One typed
+		while a panel agent works joins that agent's thread instead of stealing
+		the rest of its run. The playtest client mirror never opens one: the
+		events that close a turn are not relayed to it, so a thread opened there
+		would never end.
+	]]
+	local opens = turn and not mirroring and not Prompt.isBusy()
+	if turn then
+		-- "you" is what the caret already says. A masked line keeps its warning.
+		detail = if detail == "you (hidden)" then "hidden" else nil
+	end
+	if opens then
+		state.inTurn = true
+	end
+
 	state.nextOrder += 1
 	table.insert(state.records, {
 		order = state.nextOrder,
@@ -811,6 +975,9 @@ function Console.log(level: Level, message: string, detail: string?)
 		-- a theme switch re-renders every line, and re-reading the clock there
 		-- would restamp the whole session to the moment the user changed colour.
 		stamp = os.date("%H:%M:%S") :: string,
+		turn = if turn then true else nil,
+		threaded = if state.inTurn and not opens then true else nil,
+		ms = ms,
 	})
 	state.entries += 1
 	while #state.records > MAX_RECORDS do
@@ -820,7 +987,7 @@ function Console.log(level: Level, message: string, detail: string?)
 		end
 	end
 	redraw()
-	notify("log", { level, message, detail })
+	notify("log", { level, message, relayed, ms })
 end
 
 export type Row = {
@@ -828,7 +995,28 @@ export type Row = {
 	message: string,
 	detail: string?,
 	stamp: string,
+	turn: boolean?,
+	threaded: boolean?,
+	ms: number?,
 }
+
+--[[
+	Closes the open turn, so what is logged next stands on its own again.
+
+	Called when a typed command has finished, when an agent the panel started
+	exits, and before anything that reports on the session as a whole. Calls
+	from an agent driven from a terminal never open a turn, so they are never
+	mistaken for the answer to a command typed here.
+]]
+function Console.endTurn()
+	state.inTurn = false
+end
+
+function Console.endTurnUnlessBusy()
+	if not Prompt.isBusy() then
+		state.inTurn = false
+	end
+end
 
 --[[
 	The rows this console is holding, oldest first.
@@ -846,6 +1034,9 @@ function Console.snapshot(): { Row }
 			message = record.message,
 			detail = record.detail,
 			stamp = record.stamp,
+			turn = record.turn,
+			threaded = record.threaded,
+			ms = record.ms,
 		})
 	end
 	return rows
@@ -877,6 +1068,9 @@ function Console.restore(rows: { Row })
 			message = row.message,
 			detail = row.detail,
 			stamp = row.stamp,
+			turn = row.turn,
+			threaded = row.threaded,
+			ms = row.ms,
 		})
 	end
 	while #state.records > MAX_RECORDS do
@@ -917,7 +1111,7 @@ function Console.beginCall(title: string, kind: string)
 	state.running = title
 	state.generation += 1
 	local look = KIND_LOOK[kind] or KIND_LOOK.read
-	Visuals.setCaption(title)
+	Visuals.setRunning(title)
 	Visuals.setKind(PALETTE[look.key], look.urgency)
 	refreshCounters()
 	notify("beginCall", { title, kind })
@@ -988,6 +1182,7 @@ function Console.recordCall(ok: boolean, milliseconds: number)
 		if Prompt.isBusy() then
 			return
 		end
+		Console.endTurn()
 		Console.log(
 			"dim",
 			string.format(
@@ -1031,6 +1226,7 @@ function Console.agentFinished()
 		watched live it announced a completed task for an agent that had simply
 		been closed mid-idle.
 	]]
+	Console.endTurn()
 	Console.log("ok", "Agent disconnected.", "client left")
 	Visuals.setQuiet()
 end
@@ -1124,13 +1320,26 @@ end
 	plus a gap. The meta line then ends a fixed distance further left, which is
 	the rule it always followed -- it just no longer has to be told the answer.
 ]]
-local BUTTONS_WIDTH = 244
 local HEADER_GAP = 8
 local CHIP_WIDTH = 84
 local META_CLEARANCE = 150
 
 layoutHeader = function()
-	local edge = BUTTONS_WIDTH
+	--[[
+		Narrow docks drop the swatches first, then the meta line: the status word
+		and the controls are the part of the header nobody can do without.
+	]]
+	local buttons = state.headerButtons
+	local swatches = state.swatchRow
+	local width = if buttons and buttons.Parent then (buttons.Parent :: GuiObject).AbsoluteSize.X else 1000
+	local wide = width >= NARROW_HEADER
+	if swatches then
+		swatches.Visible = wide
+	end
+	local edge = if wide then BUTTONS_WIDE else BUTTONS_NARROW
+	if buttons then
+		buttons.Size = UDim2.new(0, edge, 0, 20)
+	end
 
 	local chip = state.clientsChip
 	if chip then
@@ -1145,6 +1354,7 @@ layoutHeader = function()
 	local meta = state.metaText
 	if meta then
 		meta.Size = UDim2.new(1, -(edge + META_CLEARANCE), 1, 0)
+		meta.Visible = width - edge - META_CLEARANCE >= 60
 	end
 end
 
@@ -1360,6 +1570,7 @@ function Console.clear()
 		the one that went.
 	]]
 	local cleared = state.entries
+	state.inTurn = false
 	table.clear(state.records)
 	state.rebuild = true
 	state.unread = 0
@@ -1465,17 +1676,95 @@ local function themed<T>(instance: T & Instance, property: string, key: string):
 	return instance
 end
 
-local function makeButton(parent: Instance, text: string, order: number): TextButton
+
+--[[
+	The header's three controls, drawn rather than typed.
+
+	Code renders the geometric shapes the log's sigils use and nothing much
+	beyond them: the arrow and erase glyphs these started with came out as
+	empty boxes. So visuals keeps its diamond, which renders, and reconnect and
+	clear are built from Frames -- a ring with an arrowhead, a bin with a lid --
+	which draw the same in every font Studio will ever ship.
+]]
+type Ink = { instance: Instance, property: string }
+
+local function drawIcon(button: TextButton, kind: string): { Ink }
+	local inks: { Ink } = {}
+	local function ink(instance: Instance, property: string)
+		table.insert(inks, { instance = instance, property = property })
+	end
+	local function part(name: string, size: Vector2, offset: Vector2): Frame
+		local frame = Instance.new("Frame")
+		frame.Name = name
+		frame.AnchorPoint = Vector2.new(0.5, 0.5)
+		frame.Position = UDim2.new(0.5, offset.X, 0.5, offset.Y)
+		frame.Size = UDim2.fromOffset(size.X, size.Y)
+		frame.BorderSizePixel = 0
+		frame.Parent = button
+		return frame
+	end
+
+	if kind == "visuals" then
+		local diamond = Instance.new("TextLabel")
+		diamond.Name = "Glyph"
+		diamond.BackgroundTransparency = 1
+		diamond.Size = UDim2.fromScale(1, 1)
+		diamond.Font = Enum.Font.Code
+		diamond.TextSize = 13
+		diamond.Text = "\u{25C6}"
+		diamond.Parent = button
+		ink(diamond, "TextColor3")
+	elseif kind == "reconnect" then
+		local ring = part("Ring", Vector2.new(10, 10), Vector2.zero)
+		ring.BackgroundTransparency = 1
+		local round = Instance.new("UICorner")
+		round.CornerRadius = UDim.new(1, 0)
+		round.Parent = ring
+		local stroke = Instance.new("UIStroke")
+		stroke.Thickness = 1.5
+		stroke.Parent = ring
+		ink(stroke, "Color")
+		-- The gap the arrow turns into: a square of the button's own colour
+		-- over the ring's upper right.
+		local gap = part("Gap", Vector2.new(5, 5), Vector2.new(3, -3))
+		themed(gap, "BackgroundColor3", "background")
+		local head = Instance.new("TextLabel")
+		head.Name = "Head"
+		head.BackgroundTransparency = 1
+		head.AnchorPoint = Vector2.new(0.5, 0.5)
+		head.Position = UDim2.new(0.5, 1, 0.5, -5)
+		head.Size = UDim2.fromOffset(8, 8)
+		head.Font = Enum.Font.Code
+		head.TextSize = 10
+		head.Text = "\u{25B8}"
+		head.Parent = button
+		ink(head, "TextColor3")
+	else
+		local lid = part("Lid", Vector2.new(10, 1), Vector2.new(0, -4))
+		ink(lid, "BackgroundColor3")
+		local handle = part("Handle", Vector2.new(4, 1), Vector2.new(0, -6))
+		ink(handle, "BackgroundColor3")
+		local bin = part("Bin", Vector2.new(7, 7), Vector2.new(0, 1))
+		bin.BackgroundTransparency = 1
+		local corner = Instance.new("UICorner")
+		corner.CornerRadius = UDim.new(0, 1)
+		corner.Parent = bin
+		local stroke = Instance.new("UIStroke")
+		stroke.Thickness = 1
+		stroke.Parent = bin
+		ink(stroke, "Color")
+	end
+	return inks
+end
+
+local function makeIconButton(parent: Instance, kind: string, tip: string, order: number): TextButton
 	local button = Instance.new("TextButton")
-	button.Name = text
-	button.Text = text
-	button.Font = Enum.Font.Code
-	button.TextSize = 11
-	themed(button, "TextColor3", "dim")
+	button.Name = kind
+	button.Text = ""
 	themed(button, "BackgroundColor3", "background")
 	button.AutoButtonColor = false
 	button.BorderSizePixel = 0
-	button.Size = UDim2.new(0, 76, 0, 20)
+	button.Size = UDim2.fromOffset(ICON_BUTTON, 20)
 	button.LayoutOrder = order
 	button.Parent = parent
 
@@ -1484,22 +1773,52 @@ local function makeButton(parent: Instance, text: string, order: number): TextBu
 	corner.Parent = button
 
 	local stroke = Instance.new("UIStroke")
-	themed(stroke, "Color", "dim")
+	stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	stroke.Color = PALETTE.dim
 	stroke.Transparency = 0.6
 	stroke.Parent = button
 
+	local inks = drawIcon(button, kind)
+	local hovered = false
+	local function paint()
+		local key = button:GetAttribute("RestKey")
+		local color = if hovered then PALETTE.violet else PALETTE[if typeof(key) == "string" then key else "dim"]
+		for _, entry in inks do
+			(entry.instance :: any)[entry.property] = color
+		end
+		stroke.Color = if hovered then PALETTE.violet else PALETTE.dim
+		stroke.Transparency = if hovered then 0.3 else 0.6
+	end
+
 	button.MouseEnter:Connect(function()
-		button.TextColor3 = PALETTE.violet
-		stroke.Color = PALETTE.violet
-		stroke.Transparency = 0.3
+		hovered = true
+		paint()
+		Visuals.showNote(tip)
 	end)
 	button.MouseLeave:Connect(function()
-		button.TextColor3 = PALETTE.dim
-		stroke.Color = PALETTE.dim
-		stroke.Transparency = 0.6
+		hovered = false
+		paint()
+		Visuals.clearNote()
 	end)
-
+	-- `RestKey` says which state a toggle is in; `Repaint` is bumped by a theme
+	-- switch, since the drawn parts are not on the themed role list.
+	button:GetAttributeChangedSignal("RestKey"):Connect(paint)
+	button:GetAttributeChangedSignal("Repaint"):Connect(paint)
+	paint()
 	return button
+end
+
+-- Rings the active theme's swatch, and quiets the rest.
+function Console.paintSwatches()
+	local active = Themes.activeId()
+	for id, dot in state.swatches do
+		local ring = dot:FindFirstChild("Ring") :: UIStroke?
+		if ring then
+			ring.Color = PALETTE.text
+			ring.Transparency = if id == active then 0 else 1
+		end
+		dot.BackgroundTransparency = if id == active then 0 else 0.25
+	end
 end
 
 export type Handlers = {
@@ -1648,21 +1967,96 @@ function Console.mount(parent: Instance, handlers: Handlers)
 	local buttons = Instance.new("Frame")
 	buttons.AnchorPoint = Vector2.new(1, 0.5)
 	buttons.Position = UDim2.new(1, 0, 0.5, 0)
-	buttons.Size = UDim2.new(0, 244, 0, 20)
+	buttons.Size = UDim2.new(0, BUTTONS_WIDE, 0, 20)
 	buttons.BackgroundTransparency = 1
 	buttons.Parent = header
+	state.headerButtons = buttons
 
 	local buttonLayout = Instance.new("UIListLayout")
 	buttonLayout.FillDirection = Enum.FillDirection.Horizontal
 	buttonLayout.HorizontalAlignment = Enum.HorizontalAlignment.Right
 	buttonLayout.VerticalAlignment = Enum.VerticalAlignment.Center
-	buttonLayout.Padding = UDim.new(0, 6)
+	buttonLayout.Padding = UDim.new(0, 4)
 	buttonLayout.SortOrder = Enum.SortOrder.LayoutOrder
 	buttonLayout.Parent = buttons
 
-	local visualsButton = makeButton(buttons, "visuals", 1)
-	makeButton(buttons, "reconnect", 2).MouseButton1Click:Connect(handlers.onReconnect)
-	makeButton(buttons, "clear", 3).MouseButton1Click:Connect(handlers.onClear)
+	--[[
+		Theme swatches: one dot per preset, in the accent it paints the panel with.
+
+		The one theme control besides the `theme` command. Hovering names the
+		preset in the caption, the active one carries a ring, and the row steps
+		aside when the dock is too narrow to hold it.
+	]]
+	local swatchRow = Instance.new("Frame")
+	swatchRow.Name = "Swatches"
+	swatchRow.BackgroundTransparency = 1
+	swatchRow.Size = UDim2.fromOffset(SWATCHES_WIDTH, 20)
+	swatchRow.LayoutOrder = 0
+	swatchRow.Parent = buttons
+	state.swatchRow = swatchRow
+
+	local swatchLayout = Instance.new("UIListLayout")
+	swatchLayout.FillDirection = Enum.FillDirection.Horizontal
+	swatchLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+	swatchLayout.Padding = UDim.new(0, SWATCH_GAP)
+	swatchLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	swatchLayout.Parent = swatchRow
+
+	local function picked(id: string)
+		Console.applyTheme()
+		local relayout = state.relayout
+		if relayout then
+			relayout()
+		end
+		handlers.onTheme(id)
+	end
+
+	for order, theme in Themes.list() do
+		local swatch = Instance.new("TextButton")
+		swatch.Name = theme.id
+		swatch.Text = ""
+		swatch.AutoButtonColor = false
+		swatch.BorderSizePixel = 0
+		swatch.Size = UDim2.fromOffset(SWATCH, SWATCH)
+		swatch.BackgroundColor3 = theme.palette.rule
+		swatch.LayoutOrder = order
+		swatch.Parent = swatchRow
+
+		local round = Instance.new("UICorner")
+		round.CornerRadius = UDim.new(1, 0)
+		round.Parent = swatch
+
+		local ring = Instance.new("UIStroke")
+		ring.Name = "Ring"
+		ring.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+		ring.Thickness = 1
+		ring.Parent = swatch
+
+		swatch.MouseEnter:Connect(function()
+			ring.Transparency = 0.1
+			Visuals.showNote(string.format("theme: %s -- %s", theme.label, theme.blurb))
+		end)
+		swatch.MouseLeave:Connect(function()
+			Console.paintSwatches()
+			Visuals.clearNote()
+		end)
+		swatch.Activated:Connect(function()
+			if Themes.use(theme.id) then
+				picked(theme.id)
+			end
+		end)
+		state.swatches[theme.id] = swatch
+	end
+
+	local visualsButton = makeIconButton(buttons, "visuals", "visuals: show or hide the activity band", 1)
+	makeIconButton(buttons, "reconnect", "reconnect to the bridge", 2).Activated:Connect(handlers.onReconnect)
+	makeIconButton(buttons, "clear", "clear the log", 3).Activated:Connect(handlers.onClear)
+
+	header:GetPropertyChangedSignal("AbsoluteSize"):Connect(layoutHeader)
+	task.defer(function()
+		layoutHeader()
+		Console.paintSwatches()
+	end)
 
 	-- Accent rule under the header. One hairline in the signature violet is what
 	-- separates this from every other grey dock in Studio.
@@ -1707,7 +2101,10 @@ function Console.mount(parent: Instance, handlers: Handlers)
 	-- One row per record lives in here; see `paint`.
 	local list = Instance.new("Frame")
 	list.Name = "Log"
-	list.Size = UDim2.new(1, 0, 0, 0)
+	-- Narrowed by the scroller's side padding by hand: a scale width inside a
+	-- ScrollingFrame measures against the canvas, which UIPadding does not
+	-- shrink, so a full-width log ran 12px past the panel's right edge.
+	list.Size = UDim2.new(1, -24, 0, 0)
 	list.AutomaticSize = Enum.AutomaticSize.Y
 	list.BackgroundTransparency = 1
 	list.BorderSizePixel = 0
@@ -1892,27 +2289,13 @@ function Console.mount(parent: Instance, handlers: Handlers)
 	-- nobody discovers is not a signal; anyone who wants the extra 44px back can
 	-- turn it off in one click.
 	Visuals.setVisible(true)
-	visualsButton.Text = utf8.char(0x25C6) .. " visuals"
+	visualsButton:SetAttribute("RestKey", "violet")
 	Visuals.setIdle()
 	layoutLog()
 
 	state.visualsButton = visualsButton
 	visualsButton.MouseButton1Click:Connect(function()
 		Console.toggleVisuals()
-	end)
-
-	--[[
-		The preset drawer, mounted last so its tab sits over everything.
-
-		It has to be the last child of `root` as well as the highest ZIndex: the
-		band, the log and the footer are all built before it and a drawer that
-		opens behind the log is a drawer nobody can click.
-	]]
-	ThemePicker.mount(root, function(id)
-		Console.applyTheme()
-		ThemePicker.applyTheme()
-		layoutLog()
-		handlers.onTheme(id)
 	end)
 
 	-- Treat "scrolled away from the bottom" as the user reading history, and
@@ -1991,7 +2374,7 @@ function Console.toggleVisuals(): boolean
 		-- The button reports the state it is in, not the state it would move to.
 		-- A toggle that reads as an instruction is ambiguous the moment you look
 		-- away and back.
-		button.Text = if wanted then utf8.char(0x25C6) .. " visuals" else "visuals"
+		button:SetAttribute("RestKey", if wanted then "violet" else "dim")
 	end
 	return wanted
 end
@@ -2034,8 +2417,10 @@ end
 function Console.plainText(): string
 	local lines: { string } = { "-- rbx-studio console log" }
 	for _, record in state.records do
-		local sigil = (LEVELS[record.level] or LEVELS.info).sigil
-		local detail = if record.detail ~= nil then "    " .. record.detail else ""
+		local sigil = if record.turn then "\u{203A}" else (LEVELS[record.level] or LEVELS.info).sigil
+		-- Typed lines say so, as they did before the thread replaced "you".
+		local shown = if record.turn then (record.detail or "you") else record.detail
+		local detail = if shown ~= nil then "    " .. shown else ""
 		table.insert(
 			lines,
 			string.format("-- %s %s %s%s", record.stamp, sigil, record.message, detail)
@@ -2112,6 +2497,19 @@ function Console.applyTheme()
 	redraw()
 	Prompt.applyTheme()
 	Visuals.applyTheme()
+	Console.paintSwatches()
+	local buttons = state.headerButtons
+	if buttons then
+		for _, child in buttons:GetChildren() do
+			if child:IsA("TextButton") then
+				child:SetAttribute("Repaint", ((child:GetAttribute("Repaint") or 0) :: number) + 1)
+			end
+		end
+	end
+	local visualsButton = state.visualsButton
+	if visualsButton then
+		visualsButton:SetAttribute("RestKey", if Visuals.isVisible() then "violet" else "dim")
+	end
 end
 
 return Console

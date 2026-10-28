@@ -155,28 +155,4 @@ function Pendulum.paintSlot(slot: Theme.Slot, ctx: Theme.Context)
 	frame.Rotation = 0
 end
 
-function Pendulum.swatch(frame: Frame, palette: Theme.Palette)
-	local rail = Instance.new("Frame")
-	rail.AnchorPoint = Vector2.new(0, 0.5)
-	rail.Position = UDim2.fromScale(0, 0.5)
-	rail.Size = UDim2.new(1, 0, 0, 1)
-	rail.BorderSizePixel = 0
-	rail.BackgroundColor3 = palette.dim
-	rail.BackgroundTransparency = 0.88
-	rail.Parent = frame
-
-	local pool = Draw.pool(frame, BOBS, "Bob", true)
-	for index = 1, BOBS do
-		-- A snapshot of the wave partway through its cycle.
-		local swing = math.cos(TAU * (BASE + index) * 0.11)
-		Draw.dot(
-			pool[index],
-			Vector2.new(40 * (index / (BOBS + 1)), 12 + swing * 8),
-			3,
-			shade(palette, index),
-			0.2
-		)
-	end
-end
-
 return Pendulum

@@ -73,6 +73,11 @@ function parse(line: string): any {
   }
 }
 
+/** Plain prose on stdout, one row per line: for CLIs with no event stream. */
+function readProse(line: string): Reading {
+  return line.trim() === "" ? NOTHING : { lines: [{ level: "reply", message: line.trim() }] };
+}
+
 /** A tool call written the way the console writes its own. */
 /**
  * What to do with a line that is not the JSON we expected.
@@ -398,8 +403,7 @@ const dsh: Harness = {
   // come first. `mcpFlag` appends, which would have put it after the prompt.
   //]]
   argv: (prompt) => ["--profile", "headless", "--patch", dshOverlay(), prompt],
-  read: (line) =>
-    line.trim() === "" ? NOTHING : { lines: [{ level: "reply", message: line.trim() }] },
+  read: (line) => readProse(line),
 };
 
 /**
@@ -509,8 +513,7 @@ const crush: Harness = {
   label: "Crush",
   bin: "crush",
   argv: (prompt) => ["run", prompt],
-  read: (line) =>
-    line.trim() === "" ? NOTHING : { lines: [{ level: "reply", message: line.trim() }] },
+  read: (line) => readProse(line),
 };
 
 /**
@@ -674,8 +677,7 @@ const copilot: Harness = {
   label: "GitHub Copilot CLI",
   bin: "copilot",
   argv: (prompt) => ["-p", prompt, "--no-ask-user", "--allow-tool", "mcp__rbx-studio"],
-  read: (line) =>
-    line.trim() === "" ? NOTHING : { lines: [{ level: "reply", message: line.trim() }] },
+  read: (line) => readProse(line),
 };
 
 /**
@@ -687,8 +689,414 @@ const aider: Harness = {
   label: "Aider",
   bin: "aider",
   argv: (prompt) => ["--message", prompt, "--yes", "--no-pretty"],
-  read: (line) =>
-    line.trim() === "" ? NOTHING : { lines: [{ level: "reply", message: line.trim() }] },
+  read: (line) => readProse(line),
+};
+
+/** The field names CLIs use for the id a follow-up resumes. */
+const SESSION_KEYS = [
+  "session_id",
+  "sessionId",
+  "sessionID",
+  "thread_id",
+  "threadId",
+  "conversation_id",
+  "conversationId",
+];
+
+function sessionOf(event: any): string | undefined {
+  for (const key of SESSION_KEYS) {
+    const value = event?.[key];
+    if (typeof value === "string" && value !== "") return value;
+  }
+  return undefined;
+}
+
+/** Text out of a string, or out of an array of `{type:"text", text}` parts. */
+function textOf(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    return value
+      .map((part: any) =>
+        typeof part === "string" ? part : part?.type === "text" || part?.type === undefined ? String(part?.text ?? "") : "",
+      )
+      .join("");
+  }
+  return "";
+}
+
+/** A tool call's arguments, which some CLIs send as a JSON string. */
+function argsOf(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Reads the event streams the newer CLIs emit, whichever family they copied.
+ *
+ * Most of them borrowed an envelope rather than inventing one: Claude Code's
+ * `system`/`assistant`/`result`, opencode's `text`/`tool_use` with a `part`,
+ * Gemini's `init`/`message`, Codex's `item`, or a bare OpenAI chat message with
+ * `role` and `tool_calls`. Their docs name the format and rarely the fields, so
+ * an adapter written against one guessed shape is the opencode failure again --
+ * silence. This recognises each family by what is actually in the object, and
+ * anything still unrecognised but carrying text is shown rather than dropped.
+ */
+function readEvents(line: string): Reading {
+  const event = parse(line);
+  if (event === null || Array.isArray(event)) return unparsed(line);
+  const session = sessionOf(event);
+  const kind = typeof event.type === "string" ? event.type : "";
+  const withSession = (reading: Reading): Reading => ({
+    lines: reading.lines,
+    session: reading.session ?? session,
+  });
+
+  // The other side of the conversation, and tool output: the prompt is already
+  // in the log, and results belong to Studio's own rows.
+  if (kind === "user" || event.role === "user" || event.role === "tool" || event.role === "system") {
+    return { lines: [], session };
+  }
+  if (kind === "tool_result" || kind === "observation" || kind === "hook_event" || kind === "team_event") {
+    return { lines: [], session };
+  }
+
+  // Claude Code's envelope.
+  if ((kind === "system" && event.subtype === "init") || (kind === "assistant" && event.message)) {
+    return withSession(readAnthropicStream(line));
+  }
+  if (kind === "result") {
+    const failed = event.is_error === true || event.subtype === "error" || event.status === "error";
+    if (!failed) return { lines: [{ level: "ok", message: "agent done" }], session };
+    // The reason, when the record carries one: "agent failed" alone sends the
+    // user to the CLI's own logs for the one fact this row could have given.
+    const error = event.error;
+    const reason = typeof error === "string" ? error : error?.message ?? (typeof event.result === "string" ? event.result : undefined);
+    return {
+      lines: [{ level: "error", message: "agent failed", detail: reason ? String(reason).slice(0, 200) : undefined }],
+      session,
+    };
+  }
+
+  // Codex's `item` envelope.
+  if (event.item !== undefined && typeof kind === "string" && kind.startsWith("item.")) {
+    return withSession(codex.read(line));
+  }
+
+  // Cline: `run_result` closes the run with the final text; `agent_event`
+  // repeats that text in pieces, so only its errors are taken.
+  if (kind === "run_result") {
+    const reason = String(event.finishReason ?? "");
+    return {
+      lines: [
+        ...say(textOf(event.text)),
+        /error|fail/i.test(reason)
+          ? { level: "error", message: "agent failed", detail: reason }
+          : { level: "ok", message: "agent done" },
+      ],
+      session,
+    };
+  }
+  if (kind === "run_aborted") {
+    return { lines: [{ level: "warn", message: String(event.message ?? event.reason ?? "agent stopped") }], session };
+  }
+  if (kind === "agent_event") {
+    const inner = event.event ?? {};
+    if (inner.type === "error") {
+      return { lines: [{ level: "error", message: String(inner.message ?? inner.error ?? "agent failed") }], session };
+    }
+    const tool = inner.toolName ?? inner.tool_name ?? (/tool/i.test(String(inner.contentType ?? "")) ? inner.name : undefined);
+    if (inner.type === "content_start" && typeof tool === "string") {
+      return { lines: toolLines(tool, argsOf(inner.input ?? inner.args)), session };
+    }
+    return { lines: [], session };
+  }
+
+  // OpenHands: actions are what it did; a `message`/`finish` action is it talking.
+  if (kind === "action") {
+    const action = String(event.action ?? "action");
+    if (action === "message" || action === "finish") {
+      return { lines: say(textOf(event.message ?? event.content ?? event.thought ?? event.final_thought)), session };
+    }
+    return { lines: toolLines(action, { path: event.path, command: event.command }), session };
+  }
+
+  // A bare chat message, as Kimi Code writes them.
+  if (event.role === "assistant") {
+    const lines = say(textOf(event.content));
+    for (const call of Array.isArray(event.tool_calls) ? event.tool_calls : []) {
+      const name = call?.function?.name ?? call?.name;
+      if (typeof name === "string") lines.push(...toolLines(name, argsOf(call?.function?.arguments ?? call?.arguments)));
+    }
+    return { lines, session };
+  }
+
+  // opencode's family (Kilo, Grok CLI): a `part`, or the same type names flat.
+  const part = event.part ?? {};
+  if (kind === "text" || (kind === "message" && event.role !== "user")) {
+    return { lines: say(textOf(part.text ?? event.text ?? event.content)), session };
+  }
+  if (kind === "tool_use" || kind === "tool_call" || kind === "tool_request") {
+    const name = part.tool ?? event.name ?? event.tool ?? event.tool_name ?? "tool";
+    return { lines: toolLines(String(name), argsOf(part.state?.input ?? event.input ?? event.args ?? event.arguments)), session };
+  }
+  if (kind === "init" || kind === "step_start" || kind === "step_finish") return { lines: [], session };
+
+  if (kind === "error" || event.ok === false) {
+    const error = event.error;
+    const message = typeof error === "string" ? error : error?.message ?? event.message ?? "agent failed";
+    return { lines: [{ level: "error", message: String(message) }], session };
+  }
+
+  // One object at the end: OpenClaw's `payloads`, or a plain text field.
+  if (Array.isArray(event.payloads)) {
+    return { lines: event.payloads.flatMap((payload: any) => say(textOf(payload?.text))), session };
+  }
+  const prose = textOf(event.text ?? event.content ?? event.output ?? event.result ?? event.message);
+  return { lines: say(prose), session };
+}
+
+/**
+ * Kimi Code. `-p` is print mode and `--output-format stream-json` writes one
+ * chat message per line; print mode already runs with `auto` permissions.
+ */
+const kimi: Harness = {
+  id: "kimi",
+  label: "Kimi Code",
+  bin: "kimi",
+  argv: (prompt, session) => [
+    ...(session === null ? [] : ["--session", session]),
+    "--output-format",
+    "stream-json",
+    "-p",
+    prompt,
+  ],
+  read: readEvents,
+};
+
+/**
+ * Cline CLI. A bare prompt runs headless with auto-approve on by default;
+ * `--json` writes `agent_event` lines and a closing `run_result`.
+ */
+const cline: Harness = {
+  id: "cline",
+  label: "Cline",
+  bin: "cline",
+  argv: (prompt, session) => [...(session === null ? [] : ["--id", session]), "--json", prompt],
+  read: readEvents,
+};
+
+/**
+ * Kilo Code CLI, an opencode fork with the same `run --format json` stream.
+ * `--auto` because without it a run rejects every permission it is asked for.
+ */
+const kilo: Harness = {
+  id: "kilo",
+  label: "Kilo Code",
+  bin: "kilo",
+  argv: (prompt, session) => [
+    "run",
+    "--auto",
+    ...(session === null ? [] : ["--session", session]),
+    "--format",
+    "json",
+    prompt,
+  ],
+  read: readEvents,
+};
+
+/** Augment's Auggie. `--print` with `--mode json`; takes our MCP config inline. */
+const auggie: Harness = {
+  id: "auggie",
+  label: "Auggie",
+  bin: "auggie",
+  mcpFlag: () => ["--mcp-config", mcpConfig()],
+  argv: (prompt) => ["--print", "--mode", "json", prompt],
+  read: readEvents,
+};
+
+/** Qoder CLI. `-p -o stream-json`, `--session-id` to continue, `--mcp-config` for us. */
+const qoder: Harness = {
+  id: "qoder",
+  label: "Qoder CLI",
+  bin: "qoder",
+  mcpFlag: () => ["--mcp-config", mcpConfig()],
+  argv: (prompt, session) => [
+    ...(session === null ? [] : ["--session-id", session]),
+    "-p",
+    "-o",
+    "stream-json",
+    prompt,
+  ],
+  read: readEvents,
+};
+
+/** Continue's `cn`. `-p` is headless and `--format json` structures the answer. */
+const continueCli: Harness = {
+  id: "continue",
+  label: "Continue CLI",
+  bin: "cn",
+  argv: (prompt) => ["-p", "--format", "json", prompt],
+  read: readEvents,
+};
+
+/**
+ * Kiro CLI, Amazon Q Developer CLI's successor. `chat --no-interactive`; the
+ * JSON Lines stream needs the v3 engine, so it is asked for explicitly.
+ */
+const kiro: Harness = {
+  id: "kiro",
+  label: "Kiro CLI",
+  bin: "kiro-cli",
+  argv: (prompt, session) => [
+    "chat",
+    "--no-interactive",
+    "--agent-engine",
+    "v3",
+    "--output-format",
+    "stream-json",
+    ...(session === null ? [] : ["--resume-id", session]),
+    prompt,
+  ],
+  read: readEvents,
+};
+
+/** Mistral Vibe. `--prompt` with `--output streaming`, one JSON message per line. */
+const vibe: Harness = {
+  id: "vibe",
+  label: "Mistral Vibe",
+  bin: "vibe",
+  argv: (prompt, session) => [
+    ...(session === null ? [] : ["--resume", session]),
+    "--output",
+    "streaming",
+    "--prompt",
+    prompt,
+  ],
+  read: readEvents,
+};
+
+/** Grok CLI. `-p` headless, `--format json` in opencode's event names. */
+const grok: Harness = {
+  id: "grok",
+  label: "Grok CLI",
+  bin: "grok",
+  argv: (prompt, session) => [
+    ...(session === null ? [] : ["--session", session]),
+    "--format",
+    "json",
+    "-p",
+    prompt,
+  ],
+  read: readEvents,
+};
+
+/** OpenHands. `--headless --json -t`; headless always runs in always-approve. */
+const openhands: Harness = {
+  id: "openhands",
+  label: "OpenHands",
+  bin: "openhands",
+  argv: (prompt) => ["--headless", "--json", "-t", prompt],
+  read: readEvents,
+};
+
+/** Hermes Agent. `chat -q --format stream-json`, ending on a `result` record. */
+const hermes: Harness = {
+  id: "hermes",
+  label: "Hermes Agent",
+  bin: "hermes",
+  argv: (prompt, session) => [
+    "chat",
+    ...(session === null ? [] : ["--resume", session]),
+    "--format",
+    "stream-json",
+    "-q",
+    prompt,
+  ],
+  read: readEvents,
+};
+
+/**
+ * OpenClaw. `agent --local` runs the embedded agent one-shot; it needs a
+ * session selector, so the panel keeps its own named session.
+ */
+const openclaw: Harness = {
+  id: "openclaw",
+  label: "OpenClaw",
+  bin: "openclaw",
+  argv: (prompt, session) => [
+    "agent",
+    "--local",
+    "--session-id",
+    session ?? "rbx-studio-panel",
+    "--json",
+    "--message",
+    prompt,
+  ],
+  read: readEvents,
+};
+
+/** Warp's Oz CLI. `agent run --prompt`; `--mcp` takes our config file. */
+const oz: Harness = {
+  id: "oz",
+  label: "Warp Oz",
+  bin: "oz",
+  mcpFlag: () => ["--mcp", mcpConfig()],
+  argv: (prompt) => ["agent", "run", "--prompt", prompt],
+  read: readEvents,
+};
+
+/** Atlassian Rovo Dev, behind `acli`. `rovodev run <instruction>` is one-shot. */
+const rovodev: Harness = {
+  id: "rovodev",
+  label: "Rovo Dev",
+  bin: "acli",
+  argv: (prompt, session) => [
+    "rovodev",
+    "run",
+    ...(session === null ? [] : ["--restore", session]),
+    prompt,
+  ],
+  read: readProse,
+};
+
+/** Forge. `-p` runs one prompt; `--conversation-id` continues one. */
+const forge: Harness = {
+  id: "forge",
+  label: "Forge",
+  bin: "forge",
+  argv: (prompt, session) => [...(session === null ? [] : ["--conversation-id", session]), "-p", prompt],
+  read: readProse,
+};
+
+/** pi. `-p` prints the final answer and exits. */
+const pi: Harness = {
+  id: "pi",
+  label: "pi",
+  bin: "pi",
+  argv: (prompt, session) => [...(session === null ? [] : ["--session", session]), "-p", prompt],
+  read: readProse,
+};
+
+/** Letta Code. `-p` is headless. */
+const letta: Harness = {
+  id: "letta",
+  label: "Letta Code",
+  bin: "letta",
+  argv: (prompt) => ["-p", prompt],
+  read: readProse,
+};
+
+/** ByteDance's Trae Agent. `run <task>`, working in the panel's directory. */
+const trae: Harness = {
+  id: "trae",
+  label: "Trae Agent",
+  bin: "trae-cli",
+  argv: (prompt) => ["run", prompt],
+  read: readProse,
 };
 
 const REGISTRY: Harness[] = [
@@ -705,7 +1113,30 @@ const REGISTRY: Harness[] = [
   copilot,
   aider,
   crush,
+  kimi,
+  cline,
+  kilo,
+  auggie,
+  qoder,
+  continueCli,
+  kiro,
+  vibe,
+  grok,
+  openhands,
+  hermes,
+  openclaw,
+  oz,
+  rovodev,
+  forge,
+  pi,
+  letta,
+  trae,
 ];
+
+/** Every harness this build knows, installed or not. */
+export function known(): Harness[] {
+  return REGISTRY;
+}
 
 /**
  * Whether an MCP client's self-reported name is this harness.

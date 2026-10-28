@@ -251,22 +251,4 @@ function Orbit.paintSlot(slot: Theme.Slot, ctx: Theme.Context)
 	frame.Rotation = 0
 end
 
-function Orbit.swatch(frame: Frame, palette: Theme.Palette)
-	local centre = Vector2.new(20, 12)
-	local ring = Draw.pool(frame, 20, "Path", true)
-	for index = 1, 20 do
-		local turn = (index / 20) * math.pi * 2
-		Draw.dot(
-			ring[index],
-			centre + Vector2.new(math.cos(turn) * 13, math.sin(turn) * 5.5),
-			1,
-			palette.dim,
-			0.6
-		)
-	end
-	local pool = Draw.pool(frame, 2, "Body", true)
-	Draw.dot(pool[1], centre, 7, palette.amber:Lerp(Color3.new(1, 1, 1), 0.3), 0)
-	Draw.dot(pool[2], centre + Vector2.new(13, -1), 3, palette.amber, 0.1)
-end
-
 return Orbit

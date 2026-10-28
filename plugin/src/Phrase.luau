@@ -557,6 +557,10 @@ local DESCRIBERS: { [string]: Describer } = {
 		local name = leaf(params.path)
 		return if name ~= nil then "Read the audio graph in " .. name else "Read the audio graph"
 	end,
+	["audio.speech"] = function(params)
+		local lines = if typeof(params.lines) == "table" then #params.lines else 0
+		return string.format("Voice %s", plural(lines, "line"))
+	end,
 
 	["character.moveTo"] = function(params)
 		local name = leaf(params.path)
@@ -754,6 +758,16 @@ local DESCRIBERS: { [string]: Describer } = {
 	["terrain.stats"] = function()
 		return "Measure the terrain"
 	end,
+	["terrain.materials"] = function(params)
+		local action = tostring(params.action or "list")
+		local count = if typeof(params.slots) == "table" then #params.slots else 0
+		if action == "set" then
+			return string.format("Set %s", plural(count, "terrain material"))
+		elseif action == "reset" then
+			return string.format("Reset %s", plural(count, "terrain material"))
+		end
+		return "List terrain materials"
+	end,
 
 	["device.list"] = function()
 		return "List devices"
@@ -816,7 +830,7 @@ local KINDS: { [string]: string } = {
 	sync = "write",
 }
 
-function Phrase.kindOf(op: string): string
+function Phrase.kindOf(op: string, params: { [string]: any }?): string
 	local group = string.match(op, "^([^%.]+)%.") or op
 	-- Reads within the script group, writes outside it: a script edit changes
 	-- the game, a read or a grep does not, and they are far apart in weight.
@@ -826,6 +840,12 @@ function Phrase.kindOf(op: string): string
 	end
 	-- Same shape as the script group: one read sitting among writes.
 	if op == "audio.inspect" then
+		return "read"
+	end
+	if op == "terrain.stats" then
+		return "read"
+	end
+	if op == "terrain.materials" and (params == nil or params.action == nil or params.action == "list") then
 		return "read"
 	end
 	if op == "sync.scan" or op == "sync.shape" or op == "sync.revisions" or op == "sync.read" or op == "sync.changes" or op == "sync.classes" or op == "sync.export" then

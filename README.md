@@ -165,9 +165,9 @@ Every call is logged with how long it took. At the foot of the panel is a comman
 
 Click the bar and every command is listed with what it does. Keep typing to filter, scroll for the rest, click one to fill it in.
 
-**With `chat on`, prompts start a real agent** — whichever you have on PATH: Claude Code, Codex, opencode, Gemini, Cursor, Amp, Qwen Code, Factory Droid, goose, Copilot CLI, Aider, Crush, DeepSeek Harness. It runs headless, drives the same Studio, and its work appears in the log. It is a separate session from your terminal, billed separately, and allowed the `rbx-studio` tools only. The **stop** button beside the prompt cancels it.
+**With `chat on`, prompts start a real agent**, using whichever of 31 supported agents you have on PATH: Claude Code, Codex, opencode, Gemini, Cursor, Amp, Qwen Code, Factory Droid, goose, Copilot CLI, Aider, Crush, DeepSeek Harness, Kimi Code, Cline, Kilo Code, Auggie, Qoder, Continue, Kiro, Mistral Vibe, Grok CLI, OpenHands, Hermes, OpenClaw, Warp Oz, Rovo Dev, Forge, pi, Letta Code or Trae Agent. It runs headless, drives the same Studio, and its work appears in the log under your prompt. It is a separate session from your terminal and billed separately. Claude Code and Copilot are limited to the `rbx-studio` tools; the others use their own permission settings. The **stop** button beside the prompt cancels it.
 
-Eight themes behind the tab on the right edge. Your pick is remembered.
+Eight themes: pick one from the dots in the header, or with `theme <name>`. Your pick is remembered.
 
 ## Why this one
 

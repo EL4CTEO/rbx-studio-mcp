@@ -63,7 +63,7 @@ local BAR_STRIDE = 5
 
 -- Height of the trace, and so of every bar's hit column. The taller band spends
 -- its extra pixels here: a 19px column was a small thing to aim a pointer at.
-local TRACE_HEIGHT = 26
+local TRACE_HEIGHT = 22
 
 --[[
 	The connecting wave: what the trace does while there is no session to plot.
@@ -195,10 +195,33 @@ local CHEER_FADE = 2.5
 	border. The band grew with them so the extra margin comes out of empty space
 	rather than out of the trace, whose bars are what people try to point at.
 ]]
-Visuals.BAND_HEIGHT = 58
-local CELL = 40
+--[[
+	Threadline (1.0): one row instead of two. The caption moved from above the
+	trace to its right, which is where the eye lands after reading the bars,
+	and the strip gave 18px of height back to the log it sits above.
+]]
+Visuals.BAND_HEIGHT = 40
+local CELL = 30
 local INSET = 12
-local GUTTER = 22
+local GUTTER = 18
+-- The share of the strip the caption takes, at the right end.
+local CAPTION_SHARE = 0.38
+-- How often a quiet strip repaints. The cell keeps breathing, at a rate a
+-- person cannot tell from full speed but Studio's frame budget can.
+local IDLE_FPS = 15
+-- A running call shows its elapsed time once it has run this long; quicker
+-- ones would only flicker a number nobody can read.
+local ELAPSED_AFTER = 0.25
+--[[
+	Seconds a new call takes to slide into the trace.
+
+	Every bar used to jump one slot left the frame a call landed, and the new
+	one appeared at full height. For a trace whose whole job is to be read at a
+	glance, the jump hid the one event worth seeing: which bar just arrived. Now
+	the history glides a slot left and the newcomer rises into place, in every
+	preset, because the motion lives here and not in the painters.
+]]
+local SLIDE_TIME = 0.22
 
 type Bar = {
 	frame: Frame,
@@ -271,6 +294,16 @@ type Runtime = {
 	lastTitle: string?,
 	-- Whether the active preset has been given its Instances yet.
 	mounted: boolean,
+	-- When the call now running started, for the caption's live timer.
+	runningSince: number?,
+	-- The last elapsed text written, so the caption is only touched on change.
+	elapsedShown: string?,
+	-- Whether the widget holding the strip is open. A closed dock draws nothing.
+	widgetOpen: boolean,
+	-- Time banked while the strip is idle and repainting at IDLE_FPS.
+	idleBank: number,
+	-- 1 the instant a call lands, easing to 0 as the history slides into place.
+	slide: number,
 
 	-- The wave's columns, pooled at mount and hidden until a connect needs them.
 	wave: { Frame },
@@ -334,6 +367,11 @@ local runtime: Runtime = {
 	activity = 0,
 	lastTitle = nil,
 	mounted = false,
+	runningSince = nil,
+	elapsedShown = nil,
+	widgetOpen = true,
+	idleBank = 0,
+	slide = 0,
 	wave = {},
 	waveWanted = false,
 	waveLevel = 0,
@@ -372,11 +410,68 @@ end
 -- painter history does and that helper is defined after this function.
 local stepWave: (delta: number) -> ()
 
+-- Rewrites the caption with the running call's elapsed time, when it changed.
+local function tickElapsed()
+	local since = runtime.runningSince
+	local caption = runtime.caption
+	if since == nil or caption == nil or runtime.noted ~= nil then
+		return
+	end
+	local elapsed = os.clock() - since
+	if elapsed < ELAPSED_AFTER then
+		return
+	end
+	local text = string.format("\u{25CF} %s \u{00B7} %.1fs", runtime.lastTitle or "call", elapsed)
+	if text ~= runtime.elapsedShown then
+		runtime.elapsedShown = text
+		caption.Text = text
+	end
+end
+
+--[[
+	Whether nothing on the strip is moving for a reason.
+
+	Quiet for longer than the wind-down, no agent thinking, no wave and no
+	arrival flourish: the cell is only breathing, and breathing does not need
+	sixty frames a second.
+]]
+local function resting(): boolean
+	return runtime.quiet > QUIET_AFTER + 2
+		and not runtime.thinking
+		and runtime.runningSince == nil
+		and runtime.waveLevel < 0.01
+		and runtime.cheer <= 0
+		and runtime.flare <= 0
+		and runtime.slide <= 0
+end
+
+-- Declared ahead, like `stepWave`: the slide animation re-lays the history
+-- from `step`, and the history's layout is defined further down.
+local relayout: (modulate: ((number, number, number) -> (number, number))?) -> ()
+
 local function step(delta: number)
 	local band = runtime.band
 	local cell = runtime.cell
 	if band == nil or cell == nil or not band.Visible then
 		return
+	end
+
+	if resting() then
+		runtime.idleBank += delta
+		if runtime.idleBank < 1 / IDLE_FPS then
+			return
+		end
+		delta = runtime.idleBank
+	end
+	runtime.idleBank = 0
+	tickElapsed()
+
+	if runtime.slide > 0 then
+		runtime.slide = math.max(0, runtime.slide - delta / SLIDE_TIME)
+		-- The wave redraws the history itself while it runs.
+		if not runtime.waveShown then
+			relayout()
+		end
 	end
 
 	runtime.energy = math.max(0, runtime.energy - delta * 0.9)
@@ -657,15 +752,19 @@ end
 	set here and the preset is expected to keep it -- everything else about the
 	bar is the preset's to decide.
 ]]
-local function relayout(modulate: ((number, number, number) -> (number, number))?)
+function relayout(modulate: ((number, number, number) -> (number, number))?)
 	local ctx = context()
 	local painter = Themes.active().paintSlot or defaultSlot
 	local total = #runtime.bars
+	-- Ease-out cubic: quick to leave, soft to settle.
+	local remaining = runtime.slide
+	local eased = remaining * remaining * remaining
+	local shift = eased * BAR_STRIDE
 
 	for index, item in runtime.bars do
 		local fromRight = total - index
 		local number = fromRight + 1
-		local offset = slotOffset(number)
+		local offset = slotOffset(number) + shift
 
 		item.frame.Position = UDim2.new(1, offset, 1, 0)
 		item.hit.Position = UDim2.new(1, offset, 1, 0)
@@ -673,6 +772,9 @@ local function relayout(modulate: ((number, number, number) -> (number, number))
 		-- 0 for the newest, rising toward 1 for the oldest still shown.
 		local age = if TRACE > 1 then fromRight / (TRACE - 1) else 0
 		local weight = math.clamp(item.milliseconds / SLOW_MS, 0.06, 1)
+		if number == 1 and eased > 0 then
+			weight = math.max(0.06, weight * (1 - eased))
+		end
 		if modulate ~= nil then
 			weight, age = modulate(number, weight, age)
 		end
@@ -1014,6 +1116,8 @@ function Visuals.recordCall(milliseconds: number, ok: boolean, title: string)
 		table.remove(runtime.bars, 1)
 	end
 
+	-- Only animated while the strip is drawing; a hidden one just lands.
+	runtime.slide = if runtime.connection ~= nil then 1 else 0
 	relayout()
 
 	-- The bars have all moved, so a reading still on screen now names the wrong
@@ -1064,6 +1168,7 @@ end
 ]]
 function Visuals.setCaption(title: string)
 	runtime.lastTitle = title
+	runtime.elapsedShown = nil
 	-- A note is holding the caption's real text for later. Update what will be
 	-- restored, not what is on screen, or the note is wiped by the next command
 	-- and clearing it would put back a line that is already out of date.
@@ -1074,6 +1179,16 @@ function Visuals.setCaption(title: string)
 	if runtime.caption then
 		runtime.caption.Text = title
 	end
+end
+
+--[[
+	Starts the caption's live timer for the call that just began. Cleared by
+	`setIdle` when it finishes.
+]]
+function Visuals.setRunning(title: string)
+	Visuals.setCaption(title)
+	runtime.runningSince = os.clock()
+	runtime.idleBank = 0
 end
 
 --[[
@@ -1112,6 +1227,8 @@ end
 	not shown anywhere else.
 ]]
 function Visuals.setIdle()
+	runtime.runningSince = nil
+	runtime.elapsedShown = nil
 	if runtime.caption == nil then
 		return
 	end
@@ -1190,21 +1307,31 @@ function Visuals.clearTrace()
 	clearReading()
 end
 
+--[[
+	Connects the frame loop only while there is something to see.
+
+	A hidden strip, or a strip inside a closed dock, kept projecting geometry
+	every frame -- the dock's close button hides the widget but leaves every
+	Heartbeat connection in it running.
+]]
+local function syncLoop()
+	local band = runtime.band
+	local wanted = band ~= nil and band.Visible and runtime.widgetOpen
+	if wanted and runtime.connection == nil then
+		runtime.connection = RunService.Heartbeat:Connect(step)
+	elseif not wanted and runtime.connection ~= nil then
+		runtime.connection:Disconnect()
+		runtime.connection = nil
+	end
+end
+
 function Visuals.setVisible(visible: boolean)
 	local band = runtime.band
 	if band == nil then
 		return
 	end
 	band.Visible = visible
-
-	-- Connected only while on screen: a hidden strip that keeps projecting
-	-- geometry every frame is a battery complaint waiting to happen.
-	if visible and runtime.connection == nil then
-		runtime.connection = RunService.Heartbeat:Connect(step)
-	elseif not visible and runtime.connection ~= nil then
-		runtime.connection:Disconnect()
-		runtime.connection = nil
-	end
+	syncLoop()
 end
 
 function Visuals.isVisible(): boolean
@@ -1300,8 +1427,8 @@ function Visuals.mount(parent: Instance)
 	-- on one.
 	local divider = Instance.new("Frame")
 	divider.Name = "Divider"
-	divider.Position = UDim2.fromOffset(INSET + CELL + GUTTER / 2, 10)
-	divider.Size = UDim2.new(0, 1, 1, -20)
+	divider.Position = UDim2.fromOffset(INSET + CELL + GUTTER / 2, 9)
+	divider.Size = UDim2.new(0, 1, 1, -18)
 	divider.BackgroundColor3 = palette.dim
 	divider.BackgroundTransparency = 0.78
 	divider.BorderSizePixel = 0
@@ -1312,13 +1439,14 @@ function Visuals.mount(parent: Instance)
 
 	local caption = Instance.new("TextLabel")
 	caption.Name = "Caption"
-	caption.Position = UDim2.new(0, right, 0, 6)
-	caption.Size = UDim2.new(1, -right - 12, 0, 14)
+	caption.AnchorPoint = Vector2.new(1, 0.5)
+	caption.Position = UDim2.new(1, -12, 0.5, 0)
+	caption.Size = UDim2.new(CAPTION_SHARE, -12, 0, 14)
 	caption.BackgroundTransparency = 1
 	caption.Font = Enum.Font.Code
 	caption.TextSize = 11
 	caption.TextColor3 = palette.text
-	caption.TextXAlignment = Enum.TextXAlignment.Left
+	caption.TextXAlignment = Enum.TextXAlignment.Right
 	caption.TextTruncate = Enum.TextTruncate.AtEnd
 	caption.Text = "idle"
 	caption.Parent = band
@@ -1326,8 +1454,9 @@ function Visuals.mount(parent: Instance)
 
 	local trace = Instance.new("Frame")
 	trace.Name = "Trace"
-	trace.Position = UDim2.new(0, right, 0, 24)
-	trace.Size = UDim2.new(1, -right - 12, 0, TRACE_HEIGHT)
+	trace.AnchorPoint = Vector2.new(0, 0.5)
+	trace.Position = UDim2.new(0, right, 0.5, 0)
+	trace.Size = UDim2.new(1 - CAPTION_SHARE, -right - 12, 0, TRACE_HEIGHT)
 	trace.BackgroundTransparency = 1
 	trace.ClipsDescendants = true
 	trace.Parent = band
@@ -1403,6 +1532,17 @@ function Visuals.mount(parent: Instance)
 	runtime.mounted = ok
 	if not ok then
 		warn(string.format("[rbx-studio] theme %q failed to mount: %s", Themes.activeId(), tostring(err)))
+	end
+
+	-- Follows the dock's own open state, so closing the panel stops the loop.
+	local widget = if parent:IsA("PluginGui") then parent else parent:FindFirstAncestorWhichIsA("PluginGui")
+	if widget ~= nil then
+		local dock = widget :: PluginGui
+		runtime.widgetOpen = dock.Enabled
+		dock:GetPropertyChangedSignal("Enabled"):Connect(function()
+			runtime.widgetOpen = dock.Enabled
+			syncLoop()
+		end)
 	end
 end
 

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { json, type ToolResult } from "../lib/format.js";
+import { errorText, json, type ToolResult } from "../lib/format.js";
 import { defineTool, type ToolContext } from "../lib/tool.js";
 
 export function registerAudioTools(context: ToolContext): void {
@@ -27,6 +27,9 @@ export function registerAudioTools(context: ToolContext): void {
         "one undoable step. `kind=\"world\"` gives a sound that comes from a " +
         "part; `kind=\"ui\"` gives one with no position, for menus and music. " +
         "Add `effects` to splice reverb, EQ or a fader into the chain.\n\n" +
+        "`speech` generates voice lines from text as real audio assets " +
+        "(Studio beta: Text-to-Speech asset creation). Feed the returned " +
+        "asset to `graph` to play it.\n\n" +
         "`wire` joins two instances you already have. `inspect` reads an " +
         "existing graph back and reports every connection — including the ones " +
         "that report Connected = false, which the Explorer does not show and " +
@@ -36,11 +39,28 @@ export function registerAudioTools(context: ToolContext): void {
         "effects, per-listener mixing, or one emitter fed by several sources.",
       inputSchema: {
         op: z
-          .enum(["graph", "wire", "inspect"])
+          .enum(["graph", "wire", "inspect", "speech"])
           .default("graph")
           .describe(
             "'graph' builds a whole working chain, 'wire' joins two existing " +
-              "instances, 'inspect' reads a graph back.",
+              "instances, 'inspect' reads a graph back, 'speech' turns text " +
+              "into voice-line audio assets.",
+          ),
+        lines: z
+          .array(
+            z.object({
+              text: z.string().min(1).max(300).describe("What is said. 300 characters at most."),
+              voiceId: z.string().optional().describe('AudioTextToSpeech VoiceId. Defaults to "1".'),
+              pitch: z.number().min(-12).max(12).optional().describe("Semitones, -12 to 12."),
+              speed: z.number().min(0.5).max(2).optional().describe("0.5 to 2."),
+            }),
+          )
+          .min(1)
+          .max(20)
+          .optional()
+          .describe(
+            "speech only: voice lines to generate. Each becomes an audio asset " +
+              "on your account that plays instantly, with no play-time rate limit.",
           ),
         kind: z
           .enum(["world", "ui"])
@@ -105,6 +125,22 @@ export function registerAudioTools(context: ToolContext): void {
     },
     async (args): Promise<ToolResult> => {
       const { op, studioId, ...rest } = args;
+      if (op === "speech") {
+        if (rest.lines === undefined) {
+          return errorText('speech needs `lines`, e.g. [{ text: "Welcome to the obby!" }].');
+        }
+        // Each line is a generation plus an upload, a few seconds apiece.
+        const response = await bridge.call<Record<string, unknown>>(
+          "audio.speech",
+          { lines: rest.lines },
+          { studioId, timeoutMs: 30_000 + rest.lines.length * 20_000 },
+        );
+        return json(
+          response,
+          'Play one with `audio op="graph" asset=...`. The assets are named ' +
+            "TTS_Asset_<id> on your account; Roblox does not take a name yet.",
+        );
+      }
       const response = await bridge.call<Record<string, unknown>>(
         op === "wire" ? "audio.wire" : op === "inspect" ? "audio.inspect" : "audio.graph",
         rest,

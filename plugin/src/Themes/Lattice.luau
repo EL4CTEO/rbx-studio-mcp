@@ -270,35 +270,4 @@ function Lattice.paint(ctx: Theme.Context, _delta: number)
 	end
 end
 
---[[
-	A still cube, which is the shape people recognise the console by, drawn at a
-	three-quarter angle so all three dimensions are visible at once.
-]]
-function Lattice.swatch(frame: Frame, palette: Theme.Palette)
-	local centre = Vector2.new(20, 12)
-	local pool = Draw.pool(frame, 12, "Edge", false)
-	local shape = SHAPES[3]
-	local angle = Vector3.new(0.5, 0.7, 0)
-
-	local projected: { Vector2 } = {}
-	local depths: { number } = {}
-	for index, vertex in shape.vertices do
-		local point, depth = Draw.project(Draw.rotate(vertex, angle), FOCAL, 5.5, centre)
-		projected[index] = point
-		depths[index] = depth
-	end
-	for index, edge in shape.edges do
-		local a, b = edge[1], edge[2]
-		local depth = math.clamp(((depths[a] + depths[b]) / 2 + 2) / 4, 0, 1)
-		Draw.edge(
-			pool[index],
-			projected[a],
-			projected[b],
-			1,
-			palette.violet:Lerp(Color3.new(1, 1, 1), depth * 0.4),
-			0.75 - depth * 0.6
-		)
-	end
-end
-
 return Lattice

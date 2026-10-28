@@ -421,11 +421,78 @@ function Audio.inspect(params: { [string]: any }): { [string]: any }
 	}
 end
 
+--[[
+	Text to speech, generated once in Studio and saved as an audio asset.
+
+	`AssetService:CreateAssetAsync` accepts an `AudioTextToSpeech` since the
+	Studio beta of Oct 2026. The point over a live AudioTextToSpeech is that the
+	asset plays instantly and costs no play-time requests against the per-player
+	rate limit. Only Text, VoiceId, Pitch and Speed are read by the asset
+	service, so those are the only knobs offered.
+
+	Lines are made one after another, not in parallel: each is a web request on
+	the user's account, and a failure partway should leave a clear record of
+	which lines exist rather than a race.
+]]
+local MAX_SPEECH_LINES = 20
+
+function Audio.speech(params: { [string]: any }): { [string]: any }
+	local lines = params.lines
+	if typeof(lines) ~= "table" or #lines == 0 then
+		Dispatch.fail("BAD_PARAMS", "`lines` is a list of voice lines, each with `text`.")
+	end
+	if #lines > MAX_SPEECH_LINES then
+		Dispatch.fail("BAD_PARAMS", string.format("At most %d lines per call.", MAX_SPEECH_LINES))
+	end
+
+	local AssetService = game:GetService("AssetService")
+	local made = {}
+	for index, line in lines :: { any } do
+		if typeof(line) ~= "table" or typeof(line.text) ~= "string" or line.text == "" then
+			Dispatch.fail("BAD_PARAMS", string.format("lines[%d] needs `text`.", index))
+		end
+		if utf8.len(line.text) == nil or (utf8.len(line.text) :: number) > 300 then
+			Dispatch.fail("BAD_PARAMS", string.format("lines[%d]: text is limited to 300 characters.", index))
+		end
+
+		local speech = Instance.new("AudioTextToSpeech")
+		speech.Text = line.text
+		speech.VoiceId = tostring(line.voiceId or "1")
+		speech.Pitch = math.clamp(tonumber(line.pitch) or 0, -12, 12)
+		speech.Speed = math.clamp(tonumber(line.speed) or 1, 0.5, 2)
+
+		local voiceId = speech.VoiceId
+		local ok, result, idOrError = pcall(AssetService.CreateAssetAsync, AssetService, speech, Enum.AssetType.Audio, {})
+		speech:Destroy()
+		if not ok or result ~= Enum.CreateAssetResult.Success then
+			local why = if ok then string.format("%s: %s", tostring(result), tostring(idOrError)) else tostring(result)
+			local ids = {}
+			for _, entry in made do
+				table.insert(ids, entry.asset)
+			end
+			Dispatch.fail(
+				"SPEECH_FAILED",
+				string.format("lines[%d] could not be made: %s", index, why),
+				if #ids > 0
+					then string.format("Lines before it were made: %s", table.concat(ids, ", "))
+					else "Text-to-speech asset creation is a Studio beta: enable it under File > Beta Features, and check the VoiceId."
+			)
+		end
+		table.insert(made, {
+			text = line.text,
+			voiceId = voiceId,
+			asset = "rbxassetid://" .. tostring(idOrError),
+		})
+	end
+	return { lines = made }
+end
+
 function Audio.register()
 	Dispatch.registerAll("audio", {
 		wire = Audio.wire,
 		graph = Audio.graph,
 		inspect = Audio.inspect,
+		speech = Audio.speech,
 	})
 end
 

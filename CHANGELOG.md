@@ -2,6 +2,27 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 1.0.0
+
+### Added
+
+- New panel design, Threadline. A line you type opens a thread, and every call and reply it causes hangs under it. Each call row shows a small latency bar. The activity band is one row, 18px shorter, and shows a live timer for the running call. The header uses icon buttons, and a row of theme dots replaces the theme drawer on the right edge.
+- Electro theme, which replaces Sonar: a charged core with lightning arcs that strike faster as the session works. A saved Sonar choice switches to Electro.
+- 18 more agents for `chat on`: Kimi Code, Cline, Kilo Code, Auggie, Qoder, Continue, Kiro, Mistral Vibe, Grok CLI, OpenHands, Hermes, OpenClaw, Warp Oz, Rovo Dev, Forge, pi, Letta Code and Trae Agent. That makes 31. The new adapters follow each vendor's documentation and haven't all been run yet, so please report any that misbehave.
+- `terrain op="materials"` lists, sets and resets custom terrain material slots (Custom Terrain Materials, launched Oct 2026).
+- `audio op="speech"` turns text into voice-line audio assets (Studio beta, Oct 2026).
+- `universe op="logs"` shows server stack frames as script paths and line numbers that `script_read` can open, when Roblox provides them.
+
+### Changed
+
+- History bars slide in and grow in every theme, instead of jumping.
+- The activity band stops redrawing while the panel is closed, and redraws at 15fps once the session has gone quiet.
+- Dependencies updated (MCP SDK 1.32.2), with 4 security fixes in transitive dependencies.
+
+### Fixed
+
+- Long log lines no longer run past the panel's right edge, under the scrollbar.
+
 ## 0.9.5
 
 ### Added

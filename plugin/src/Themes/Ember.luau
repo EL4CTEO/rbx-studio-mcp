@@ -161,33 +161,4 @@ function Ember.paintSlot(slot: Theme.Slot, ctx: Theme.Context)
 	frame.Rotation = 0
 end
 
-function Ember.swatch(frame: Frame, palette: Theme.Palette)
-	local glow = Instance.new("Frame")
-	glow.AnchorPoint = Vector2.new(0.5, 1)
-	glow.Position = UDim2.fromScale(0.5, 1)
-	glow.Size = UDim2.new(1, 0, 0, 10)
-	glow.BorderSizePixel = 0
-	glow.BackgroundColor3 = palette.violet
-	glow.Parent = frame
-	local fade = Instance.new("UIGradient")
-	fade.Rotation = 90
-	fade.Transparency = NumberSequence.new({
-		NumberSequenceKeypoint.new(0, 1),
-		NumberSequenceKeypoint.new(1, 0.3),
-	})
-	fade.Parent = glow
-
-	local pool = Draw.pool(frame, 16, "Spark", true)
-	for index = 1, 16 do
-		local life = Draw.hash(index, 83)
-		Draw.dot(
-			pool[index],
-			Vector2.new(5 + Draw.hash(index, 84) * 30 + math.sin(life * 7) * 2, 20 - life * 17),
-			math.max(1, math.floor(1 + (1 - life) * 2.4)),
-			heat(palette, life),
-			0.1 + life * 0.8
-		)
-	end
-end
-
 return Ember

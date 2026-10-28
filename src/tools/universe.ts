@@ -428,7 +428,13 @@ export function registerUniverseTools(context: ToolContext): void {
           [
             `${String(entry["time"])} [${String(entry["level"])}] ${String(entry["message"])}` +
               (entry["repeats"] ? `  (+${String(entry["repeats"])} similar)` : ""),
-            entry["stack"] ? `  ${String(entry["stack"]).trim().replace(/\n/g, "\n  ")}` : undefined,
+            // Parsed frames replace the raw trace when Roblox sent them: they
+            // name the script by its place path, ready for `script_read`.
+            Array.isArray(entry["frames"])
+              ? (entry["frames"] as string[]).map((frame) => `  at ${frame}`).join("\n")
+              : entry["stack"]
+                ? `  ${String(entry["stack"]).trim().replace(/\n/g, "\n  ")}`
+                : undefined,
             entry["context"] ? `  context: ${String(entry["context"])}` : undefined,
           ]
             .filter((line): line is string => line !== undefined)

@@ -159,21 +159,4 @@ function Aurora.paintSlot(slot: Theme.Slot, ctx: Theme.Context)
 	frame.Rotation = 0
 end
 
-function Aurora.swatch(frame: Frame, palette: Theme.Palette)
-	for index = 1, 12 do
-		local ray = Instance.new("Frame")
-		ray.AnchorPoint = Vector2.new(0.5, 1)
-		ray.BorderSizePixel = 0
-		local across = index / 12
-		local wave = math.sin(across * 5.2) + 0.6 * math.sin(across * 2.7)
-		local reach = (wave + 1.6) / 3.2
-		local height = math.max(2, math.floor(4 + reach * 17))
-		ray.Size = UDim2.fromOffset(2, height)
-		ray.Position = UDim2.fromOffset(3 + index * 3, 23)
-		ray.BackgroundColor3 = ramp(palette, reach)
-		ray.BackgroundTransparency = 0.35
-		ray.Parent = frame
-	end
-end
-
 return Aurora
