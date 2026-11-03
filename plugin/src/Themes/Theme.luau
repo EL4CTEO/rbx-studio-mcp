@@ -61,9 +61,23 @@ export type Context = {
 	angle: Vector3,
 	-- `os.clock()`, sampled once per frame so every painter agrees on the time.
 	clock: number,
-	-- The cell is square; this is its side in pixels.
+	-- The cell is square; this is its side in pixels. A wide preset's cell is
+	-- the whole band, so `size` is its height and `width` is the real width.
 	size: number,
 	centre: Vector2,
+	width: number,
+	height: number,
+}
+
+--[[
+	One call, as it leaves and as it comes back. Only presets that draw
+	individual calls (Hyperline's trails) need it; the rest read the simulation.
+	`kind` is the console's work kind: read, write, run or debug.
+]]
+export type CallEvent = {
+	phase: "out" | "back",
+	kind: string,
+	ok: boolean,
 }
 
 --[[
@@ -108,6 +122,16 @@ export type Theme = {
 		omits it and Visuals draws them.
 	]]
 	paintSlot: ((slot: Slot, ctx: Context) -> ())?,
+	--[[
+		Takes the whole band instead of the square cell. Visuals makes the band
+		taller, lays the trace along its bottom edge as a rail, and moves the
+		caption to a HUD line over the scene.
+	]]
+	wide: boolean?,
+	-- The month's featured preset: marked in the header and in `theme`.
+	special: boolean?,
+	-- Told about each call going out and coming back. Optional.
+	onCall: ((event: CallEvent) -> ())?,
 }
 
 return {}

@@ -1277,7 +1277,7 @@ export function registerWorldTools(context: ToolContext): void {
         "`worldModel` to reach that one. A group of the same name in each is " +
         "two different groups.\n\n" +
         "THE SAME TOOL ANSWERS WHAT IS ACTUALLY THERE. `cast` fires a ray, " +
-        "block or sphere and reports the first thing it meets — the part, the " +
+        "block, sphere or an existing part's own shape and reports the first thing it meets — the part, the " +
         "hit point, the surface normal, the material and the distance. " +
         "`overlap` lists everything inside a box, a radius, or overlapping " +
         "an existing part.\n\n" +
@@ -1306,13 +1306,38 @@ export function registerWorldTools(context: ToolContext): void {
               "lists what is inside a volume.",
           ),
         shape: z
-          .enum(["ray", "block", "sphere"])
+          .enum(["ray", "block", "sphere", "part"])
           .optional()
           .describe(
             "cast only: 'ray' is a line and the usual choice. 'block' and " +
               "'sphere' sweep a volume along the same path — use them when " +
               "the thing moving has width, e.g. whether a character fits " +
-              "through a gap rather than whether a point does.",
+              "through a gap rather than whether a point does. 'part' sweeps " +
+              "the real shape of the part at `path` (meshes included); `from` " +
+              "and `size` override its start and size without moving it.",
+          ),
+        margin: z
+          .number()
+          .min(0)
+          .optional()
+          .describe(
+            "cast only: inflate the swept shape by this many studs on every side. " +
+              "On a ray it makes a sphere cast of that radius.",
+          ),
+        sizeGradient: z
+          .number()
+          .min(-1)
+          .optional()
+          .describe(
+            "cast only: grow or shrink the shape along the cast. 0.5 ends 50% larger " +
+              "(a cone, e.g. vision checks), -0.5 at half size, -1 to nothing (a funnel).",
+          ),
+        visualize: z
+          .boolean()
+          .optional()
+          .describe(
+            "cast only: turn on Studio's shapecast overlay so the user sees the sweep " +
+              "(green hit, red miss). Stays on until switched off in Visualization Modes.",
           ),
         from: z.string().optional().describe('cast only: where the cast starts, e.g. "12, 0, 5".'),
         to: z
@@ -1353,7 +1378,10 @@ export function registerWorldTools(context: ToolContext): void {
               "to find things clipping through each other. Defaults to 'box'.",
           ),
         at: z.string().optional().describe('overlap only: the centre, for region "box" or "radius".'),
-        path: z.string().optional().describe('overlap region="part" only: the part to test against.'),
+        path: z
+          .string()
+          .optional()
+          .describe('overlap region="part": the part to test against. cast shape="part": the part to sweep.'),
         only: z
           .array(z.string())
           .optional()
@@ -1429,6 +1457,9 @@ export function registerWorldTools(context: ToolContext): void {
             distance: args.distance,
             size: args.size,
             radius: args.radius,
+            margin: args.margin,
+            sizeGradient: args.sizeGradient,
+            visualize: args.visualize,
             region: args.region,
             at: args.at,
             path: args.path,

@@ -169,9 +169,23 @@ function Results.read(params: { [string]: any }): { [string]: any }
 			table.insert(childPath, key)
 			local item = value[key]
 			if params.resultFields and typeof(item) == "table" then
+				--[[
+					Only a row that has at least one of the fields is projected. Projecting
+					everything turned a child that is not a row -- an array of numbers, a
+					nested list -- into an empty table, which came back as `[]` and read
+					as "this was empty" when it was full.
+				]]
 				local projected: { [string]: any } = {}
-				for _, field in params.resultFields do projected[field] = item[field] end
-				item = projected
+				local matched = false
+				for _, field in params.resultFields do
+					if item[field] ~= nil then
+						projected[field] = item[field]
+						matched = true
+					end
+				end
+				if matched then
+					item = projected
+				end
 			end
 			table.insert(items, { key = key, value = preview(item, childPath) })
 			if #HttpService:JSONEncode(result) > 10000 then

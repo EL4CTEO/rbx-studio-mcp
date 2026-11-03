@@ -227,7 +227,10 @@ define({
 				Console.log(
 					if theme.id == active then "ok" else "dim",
 					"   " .. theme.id,
-					if theme.id == active then "in use" else nil
+					if theme.id == active
+						then (if theme.special then "in use, month special" else "in use")
+						elseif theme.special then "month special"
+						else nil
 				)
 			end
 			return
@@ -236,14 +239,18 @@ define({
 		-- `Themes.use` answers false both for an unknown id and for re-picking
 		-- the current one, so the two are separated here rather than reported as
 		-- the same shrug.
+		local found = Themes.find(wanted)
+		if found == nil then
+			Console.log("error", string.format("no theme called %q", wanted), "run `theme` to list them")
+			return
+		end
+		-- A retired name lands on its successor; say and save the real one.
+		wanted = found.id
 		if wanted == Themes.activeId() then
 			Console.log("dim", string.format("already on %s", wanted))
 			return
 		end
-		if not Themes.use(wanted) then
-			Console.log("error", string.format("no theme called %q", wanted), "run `theme` to list them")
-			return
-		end
+		Themes.use(wanted)
 
 		Console.applyTheme()
 		local current = hooks

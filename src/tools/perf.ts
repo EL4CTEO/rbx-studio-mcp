@@ -124,7 +124,97 @@ interface SceneSection {
   error?: string;
 }
 
-type ProfileFrame = NonNullable<NonNullable<ProfileResponse["data"]>["Functions"]>[number];
+interface MicroProfileResponse {
+  frames: number;
+  threads: number;
+  walkedThreads: number;
+  steps: number;
+  captureBytes: number;
+  frameMs: { avg: number; p50: number; p95: number; max: number; worstFrame: number };
+  idleMs: number;
+  sort: "self" | "total";
+  matched: number;
+  scopes: Array<{
+    thread: string;
+    group: string;
+    name: string;
+    selfMs: number;
+    totalMs: number;
+    avgMs: number;
+    peakMs: number;
+    peakFrame: number;
+    calls: number;
+  }>;
+  worstFrameScopes: Array<{ thread: string; name: string; ms: number }>;
+  html?: string;
+  exportFailed?: boolean;
+  libmpLoadMs?: number;
+  profilerLeftOn?: boolean;
+}
+
+async function renderMicroProfile(response: MicroProfileResponse): Promise<string> {
+  const f = response.frameMs;
+  const head =
+    `${response.frames} frames · frame ms avg ${f.avg} · p50 ${f.p50} · p95 ${f.p95} · ` +
+    `max ${f.max} (frame ${f.worstFrame}) · ${response.walkedThreads}/${response.threads} CPU threads walked`;
+  const parts = [head];
+  if (response.scopes.length === 0) {
+    parts.push("\nNo scope matched. Loosen `filter`/`thread`, or pass `includeIdle`.");
+  } else {
+    parts.push(
+      "\n" +
+        textOf(
+          table(
+            ["thread", "scope", "selfMs", "totalMs", "avg/frame", "peak", "calls"],
+            response.scopes.map((scope) => ({
+              thread: scope.thread,
+              scope: `${scope.group}/${scope.name}`,
+              selfMs: scope.selfMs,
+              totalMs: scope.totalMs,
+              "avg/frame": scope.avgMs,
+              peak: scope.peakMs,
+              calls: scope.calls,
+            })),
+            {
+              more:
+                `ranked by ${response.sort} time over the whole capture; ` +
+                `${response.matched} scopes matched` +
+                (response.idleMs > 0 ? `; ${response.idleMs} ms of Sleep/Wait hidden` : ""),
+            },
+          ),
+        ),
+    );
+  }
+  if (response.worstFrameScopes.length > 0) {
+    parts.push(
+      `\nWorst frame (${f.worstFrame}, ${f.max} ms) was filled by:\n` +
+        response.worstFrameScopes.map((s) => `  ${s.ms} ms  ${s.name}  [${s.thread}]`).join("\n"),
+    );
+  }
+  if (response.html !== undefined) {
+    const { mkdir, writeFile } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const dir = join(tmpdir(), "rbx-studio-mcp");
+    await mkdir(dir, { recursive: true });
+    const file = join(dir, `microprofile-${new Date().toISOString().replace(/[:.]/g, "-")}.x.html`);
+    await writeFile(file, response.html, "utf8");
+    parts.push(`\nSaved the capture for the MicroProfiler viewer: ${file}`);
+  } else if (response.exportFailed) {
+    parts.push("\n[Export failed: LibMP could not convert this capture to .x.html.]");
+  }
+  const notes: string[] = [];
+  if (response.libmpLoadMs !== undefined) notes.push(`LibMP loaded in ${response.libmpLoadMs} ms (once per session)`);
+  if (response.profilerLeftOn) notes.push("MicroProfiler left running");
+  if (response.scopes.some((scope) => scope.name === "Present")) {
+    notes.push("Render/Present is mostly the main thread waiting on the GPU and vsync, not CPU work");
+  }
+  notes.push("the profiler is process-wide: in Studio this includes Studio's own UI and plugins");
+  parts.push(`\n[${notes.join("; ")}]`);
+  return parts.join("\n");
+}
+
+type ProfileFrame =NonNullable<NonNullable<ProfileResponse["data"]>["Functions"]>[number];
 
 /**
  * Whether a profiler frame belongs to a Studio plugin rather than to the place.
@@ -321,6 +411,15 @@ export function registerPerfTools(context: ToolContext): void {
         "— for `seconds` and reports which scripts consumed CPU. It blocks for " +
         "that long, so keep it short. It only sees code that actually runs, so " +
         "start a playtest first; profiling an idle edit session returns nothing.\n\n" +
+        "`microprofile` is the MicroProfiler: it captures the last `frames` frames " +
+        "and ranks the engine scopes that filled them — physics, rendering, " +
+        "replication, GC, scripts — by self time, on every CPU thread, plus frame " +
+        "time p50/p95/max and what filled the worst frame. Use it for a frame-time " +
+        "spike that `profile` cannot explain, because most spikes are not Luau. " +
+        "The profiler is process-wide, so in Studio it includes Studio's own UI " +
+        "work; play first to measure the game. `export` saves the capture as an " +
+        ".x.html file the MicroProfiler viewer opens. Same frames, compared before " +
+        "and after a change, is the way to prove a fix.\n\n" +
         "`coverage` reports which lines of which scripts actually executed — dead " +
         "code, untested branches, whether a fix was even reached. Pass `enable` " +
         "first, then play, then read the coverage back FROM THE PLAYTEST session, " +
@@ -363,10 +462,11 @@ export function registerPerfTools(context: ToolContext): void {
       inputSchema: {
         ...readTargetSchema,
         op: z
-          .enum(["snapshot", "profile", "coverage", "scene", "audit"])
+          .enum(["snapshot", "profile", "microprofile", "coverage", "scene", "audit"])
           .default("snapshot")
           .describe(
             "'snapshot' reads counters now; 'profile' samples running scripts; " +
+              "'microprofile' captures MicroProfiler frames (engine scopes on every thread); " +
               "'coverage' reports which lines have executed; 'scene' breaks the " +
               "place down by what it is made of; 'audit' finds broken asset " +
               "references and other silent faults.",
@@ -415,6 +515,38 @@ export function registerPerfTools(context: ToolContext): void {
               "— an idle Studio is mostly plugin activity, which buries the " +
               "place's own scripts.",
           ),
+        frames: z
+          .number()
+          .int()
+          .min(4)
+          .max(256)
+          .default(64)
+          .describe("microprofile only: how many recent frames to capture."),
+        top: z.number().int().min(1).max(60).default(20).describe("microprofile only: scopes to list."),
+        filter: z
+          .string()
+          .optional()
+          .describe('microprofile only: keep scopes whose name or group contains this, e.g. "Physics" or "Script".'),
+        thread: z
+          .string()
+          .optional()
+          .describe('microprofile only: walk only threads whose name contains this, e.g. "RBX Main".'),
+        sort: z
+          .enum(["self", "total"])
+          .default("self")
+          .describe("microprofile only: rank by self time (where work happened) or total (including children)."),
+        includeIdle: z
+          .boolean()
+          .default(false)
+          .describe("microprofile only: keep Sleep/Wait scopes, hidden by default because they are the absence of work."),
+        export: z
+          .boolean()
+          .default(false)
+          .describe("microprofile only: also save the capture as an .x.html file and return its path."),
+        keepRunning: z
+          .boolean()
+          .default(false)
+          .describe("microprofile only: leave the MicroProfiler on afterwards instead of switching it off."),
         studioId: z.string().optional().describe("Target Studio; omit for the active one."),
       },
       readOnly: true,
@@ -726,6 +858,25 @@ export function registerPerfTools(context: ToolContext): void {
         }
 
         return text(blocks.join("\n\n"));
+      }
+
+      if (args.op === "microprofile") {
+        const response = await bridge.call<MicroProfileResponse>(
+          "perf.microprofile",
+          {
+            frames: args.frames,
+            top: args.top,
+            filter: args.filter,
+            thread: args.thread,
+            sort: args.sort,
+            includeIdle: args.includeIdle,
+            export: args.export,
+            keepRunning: args.keepRunning,
+          },
+          // Fill time, the one-off LibMP load and the walk all happen in the plugin.
+          { studioId: args.studioId, timeoutMs: 90_000 },
+        );
+        return text(await renderMicroProfile(response));
       }
 
       if (args.op === "profile") {

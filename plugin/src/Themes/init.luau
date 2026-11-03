@@ -23,34 +23,38 @@ export type Theme = Theme.Theme
 export type Palette = Theme.Palette
 export type Context = Theme.Context
 export type Slot = Theme.Slot
+export type CallEvent = Theme.CallEvent
 
 --[[
 	Presentation order in the picker, which is not alphabetical.
 
 	Lattice first because it is the default and the one people return to. Then
 	the dark presets closest to it, then the ones with a scene of their own --
-	each a physical system whose state you can read: orbiting moons, arcs
-	of lightning, rising sparks, a swinging wave. A user scanning the drawer should be
-	able to stop as soon as the list stops looking like what they came for.
+	each a physical system whose state you can read: orbiting moons, rising
+	sparks, a swinging wave. A user scanning the drawer should be able to stop
+	as soon as the list stops looking like what they came for.
 ]]
 local ORDER: { Theme.Theme } = {
 	require(script.Lattice),
 	require(script.Observatory),
 	require(script.Orbit),
-	require(script.Electro),
 	require(script.Ember),
 	require(script.Aurora),
 	require(script.Phosphor),
 	require(script.Pendulum),
+	-- Last: the one wide preset, which reshapes the band rather than filling
+	-- the cell, so it reads as the newest option rather than a sibling.
+	require(script.Hyperline),
 }
 
 local byId: { [string]: Theme.Theme } = {}
 for _, theme in ORDER do
 	byId[theme.id] = theme
 end
--- Sonar was replaced by Electro in 1.0; a saved "sonar" lands on its successor
--- rather than falling back to the default.
-byId.sonar = byId.electro
+-- Retired presets land on their successor rather than the default: Sonar was
+-- replaced by Electro in 1.0, and Electro by Hyperline in 1.0.5.
+byId.sonar = byId.hyperline
+byId.electro = byId.hyperline
 
 local DEFAULT = "lattice"
 local activeId = DEFAULT
@@ -76,6 +80,16 @@ function Themes.get(id: string?): Theme.Theme
 		end
 	end
 	return byId[DEFAULT]
+end
+
+--[[
+	Strict lookup for something a person typed: nil for an unknown name, where
+	`get` falls back to the default (right for a stale saved id, wrong for a
+	typo, which used to switch the panel to Lattice and report success).
+	Retired ids still resolve to their successor.
+]]
+function Themes.find(id: string): Theme.Theme?
+	return byId[id]
 end
 
 function Themes.active(): Theme.Theme

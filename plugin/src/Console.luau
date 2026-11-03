@@ -87,7 +87,8 @@ local FOOTER_HEIGHT = 22
 local ICON_BUTTON = 22
 local SWATCH = 9
 local SWATCH_GAP = 4
-local SWATCHES_WIDTH = 8 * SWATCH + 7 * SWATCH_GAP
+local SWATCH_COUNT = #Themes.list()
+local SWATCHES_WIDTH = SWATCH_COUNT * SWATCH + (SWATCH_COUNT - 1) * SWATCH_GAP
 local BUTTONS_NARROW = 3 * ICON_BUTTON + 2 * 4
 local BUTTONS_WIDE = BUTTONS_NARROW + 4 + SWATCHES_WIDTH + 6
 -- Below this width the swatches hide and the meta line goes with them.
@@ -234,6 +235,11 @@ type Record = {
 	turn: boolean?,
 	threaded: boolean?,
 	ms: number?,
+	-- The work kind of the call this row reports (read, write, run, debug):
+	-- the colour of its station on the line.
+	kind: string?,
+	-- The last row of a turn that has closed: its line ends in a cap.
+	capped: boolean?,
 }
 
 --[[
@@ -252,6 +258,10 @@ export type Client = {
 }
 
 type State = {
+	-- The work kind of the last call that went out, for the line map's stations.
+	lastKind: string?,
+	-- The status dot's breathing while connected.
+	statusPulse: Tween?,
 	records: { Record },
 	-- The last status reported, replayed after a theme switch. Without it the
 	-- header has no way to know what colour it should be wearing.
@@ -654,6 +664,31 @@ local LATENCY_BAR = 34
 ]]
 local CHAR_WIDTH = 6
 
+local KIND_LOOK: { [string]: { key: string, urgency: number } } = {
+	read = { key = "cyan", urgency = 0.3 },
+	write = { key = "violet", urgency = 0.7 },
+	run = { key = "green", urgency = 0.9 },
+	debug = { key = "amber", urgency = 0.5 },
+}
+
+--[[
+	The end of a turn's line: a short bar across it, like a terminus on a map.
+]]
+local function addCap(row: GuiObject)
+	if row:FindFirstChild("Terminus") then
+		return
+	end
+	local cap = Instance.new("Frame")
+	cap.Name = "Terminus"
+	cap.AnchorPoint = Vector2.new(0.5, 1)
+	cap.BorderSizePixel = 0
+	cap.BackgroundColor3 = PALETTE.violet
+	cap.Position = UDim2.new(0, math.floor(CHAR_WIDTH * 3.5) + 1, 1, 0)
+	cap.Size = UDim2.fromOffset(10, 2)
+	cap.ZIndex = 2
+	cap.Parent = row
+end
+
 local function buildRow(record: Record, list: Frame): Frame
 	local row = Instance.new("TextButton")
 	row.Name = "Row"
@@ -701,14 +736,54 @@ local function buildRow(record: Record, list: Frame): Frame
 		line from the turn's head to its last call.
 	]]
 	if record.threaded then
+		--[[
+			Transit (1.0.5): the hairline became a line on a map. Two pixels with a
+			faint glow either side, and every finished call is a station on it,
+			coloured by the kind of work -- so a turn reads as a route, and the
+			one red stop on it is the failure, findable without reading a word.
+		]]
+		local x = math.floor(glyph * 3.5)
+		local glow = Instance.new("Frame")
+		glow.Name = "ThreadGlow"
+		glow.BorderSizePixel = 0
+		glow.BackgroundColor3 = PALETTE.violet
+		glow.BackgroundTransparency = 0.86
+		glow.Position = UDim2.new(0, x - 2, 0, 0)
+		glow.Size = UDim2.new(0, 6, 1, 0)
+		glow.Parent = row
+
 		local thread = Instance.new("Frame")
 		thread.Name = "Thread"
 		thread.BorderSizePixel = 0
 		thread.BackgroundColor3 = PALETTE.violet
-		thread.BackgroundTransparency = 0.62
-		thread.Position = UDim2.new(0, math.floor(glyph * 3.5), 0, 0)
-		thread.Size = UDim2.new(0, 1, 1, 0)
+		thread.BackgroundTransparency = 0.4
+		thread.Position = UDim2.new(0, x, 0, 0)
+		thread.Size = UDim2.new(0, 2, 1, 0)
 		thread.Parent = row
+
+		local failed = record.level == "error"
+		if record.ms ~= nil or failed then
+			local look = KIND_LOOK[record.kind or "read"] or KIND_LOOK.read
+			local station = Instance.new("Frame")
+			station.Name = "Station"
+			station.AnchorPoint = Vector2.new(0.5, 0.5)
+			station.Position = UDim2.new(0, x + 1, 0, 8)
+			station.Size = UDim2.fromOffset(8, 8)
+			station.BorderSizePixel = 0
+			station.BackgroundColor3 = if failed then PALETTE.red else PALETTE.background
+			station.ZIndex = 2
+			station.Parent = row
+			local round = Instance.new("UICorner")
+			round.CornerRadius = UDim.new(1, 0)
+			round.Parent = station
+			local ring = Instance.new("UIStroke")
+			ring.Thickness = 2
+			ring.Color = if failed then PALETTE.red else PALETTE[look.key]
+			ring.Parent = station
+		end
+		if record.capped then
+			addCap(row)
+		end
 	end
 
 	-- Air above a turn's head, so threads read as separate requests.
@@ -748,7 +823,13 @@ local function buildRow(record: Record, list: Frame): Frame
 			local fill = Instance.new("Frame")
 			fill.Name = "Fill"
 			fill.BorderSizePixel = 0
-			fill.BackgroundColor3 = if record.level == "error" then PALETTE.red else PALETTE.violet
+			-- The same colour as the row's station, so the line map and the
+			-- latency column agree about what kind of call this was.
+			local kindLook = KIND_LOOK[record.kind or ""]
+			fill.BackgroundColor3 = if record.level == "error"
+				then PALETTE.red
+				elseif kindLook ~= nil then PALETTE[kindLook.key]
+				else PALETTE.violet
 			local share = math.clamp(math.log10(math.max(ms, 1)) / math.log10(5000), 0.06, 1)
 			fill.Size = UDim2.new(share, 0, 1, 0)
 			fill.Parent = track
@@ -978,6 +1059,7 @@ function Console.log(level: Level, message: string, detail: string?, ms: number?
 		turn = if turn then true else nil,
 		threaded = if state.inTurn and not opens then true else nil,
 		ms = ms,
+		kind = if ms ~= nil then state.lastKind else nil,
 	})
 	state.entries += 1
 	while #state.records > MAX_RECORDS do
@@ -998,6 +1080,8 @@ export type Row = {
 	turn: boolean?,
 	threaded: boolean?,
 	ms: number?,
+	kind: string?,
+	capped: boolean?,
 }
 
 --[[
@@ -1008,12 +1092,33 @@ export type Row = {
 	from an agent driven from a terminal never open a turn, so they are never
 	mistaken for the answer to a command typed here.
 ]]
+--[[
+	Ends the open line on its last row with a cap, so a finished turn reads as
+	a line that stops rather than one that was cut off by the next.
+]]
+local function capTurn()
+	if not state.inTurn then
+		return
+	end
+	local last = state.records[#state.records]
+	if last == nil or not last.threaded or last.capped then
+		return
+	end
+	last.capped = true
+	local widget = last.widget
+	if widget ~= nil then
+		addCap(widget)
+	end
+end
+
 function Console.endTurn()
+	capTurn()
 	state.inTurn = false
 end
 
 function Console.endTurnUnlessBusy()
 	if not Prompt.isBusy() then
+		capTurn()
 		state.inTurn = false
 	end
 end
@@ -1037,6 +1142,8 @@ function Console.snapshot(): { Row }
 			turn = record.turn,
 			threaded = record.threaded,
 			ms = record.ms,
+			kind = record.kind,
+			capped = record.capped,
 		})
 	end
 	return rows
@@ -1071,6 +1178,8 @@ function Console.restore(rows: { Row })
 			turn = row.turn,
 			threaded = row.threaded,
 			ms = row.ms,
+			kind = row.kind,
+			capped = row.capped,
 		})
 	end
 	while #state.records > MAX_RECORDS do
@@ -1087,12 +1196,6 @@ end
 	and heavier still. Urgency drives both the spin rate and how strongly the
 	colour takes over, so the two never disagree.
 ]]
-local KIND_LOOK: { [string]: { key: string, urgency: number } } = {
-	read = { key = "cyan", urgency = 0.3 },
-	write = { key = "violet", urgency = 0.7 },
-	run = { key = "green", urgency = 0.9 },
-	debug = { key = "amber", urgency = 0.5 },
-}
 
 --[[
 	Announces a command as it starts -- everywhere except the log.
@@ -1113,6 +1216,8 @@ function Console.beginCall(title: string, kind: string)
 	local look = KIND_LOOK[kind] or KIND_LOOK.read
 	Visuals.setRunning(title)
 	Visuals.setKind(PALETTE[look.key], look.urgency)
+	Visuals.callOut(if KIND_LOOK[kind] then kind else "read")
+	state.lastKind = if KIND_LOOK[kind] then kind else "read"
 	refreshCounters()
 	notify("beginCall", { title, kind })
 end
@@ -1622,6 +1727,28 @@ function Console.setStatus(status: string, meta: string)
 		else PALETTE.red
 
 	dot.TextColor3 = color
+	--[[
+		A live session breathes: the dot pulses while connected and holds still
+		otherwise, so "connected but frozen" and "connected and alive" stop
+		looking the same. One looping tween, replaced only when the state
+		changes, so a theme repaint does not restart it.
+	]]
+	if status ~= previous or state.statusPulse == nil then
+		if state.statusPulse then
+			state.statusPulse:Cancel()
+			state.statusPulse = nil
+		end
+		dot.TextTransparency = 0
+		if status == "connected" then
+			local pulse = TweenService:Create(
+				dot,
+				TweenInfo.new(1.1, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+				{ TextTransparency = 0.55 }
+			)
+			pulse:Play()
+			state.statusPulse = pulse
+		end
+	end
 	text.Text = string.upper(status)
 	text.TextColor3 = color
 	metaLabel.Text = meta
@@ -1814,8 +1941,11 @@ function Console.paintSwatches()
 	for id, dot in state.swatches do
 		local ring = dot:FindFirstChild("Ring") :: UIStroke?
 		if ring then
-			ring.Color = PALETTE.text
-			ring.Transparency = if id == active then 0 else 1
+			-- The month special keeps an amber ring, so it stands out in the row
+			-- without being picked. The active dot's ring wins.
+			local special = Themes.get(id).special == true
+			ring.Color = if id ~= active and special then PALETTE.amber else PALETTE.text
+			ring.Transparency = if id == active then 0 elseif special then 0.25 else 1
 		end
 		dot.BackgroundTransparency = if id == active then 0 else 0.25
 	end
@@ -2034,7 +2164,9 @@ function Console.mount(parent: Instance, handlers: Handlers)
 
 		swatch.MouseEnter:Connect(function()
 			ring.Transparency = 0.1
-			Visuals.showNote(string.format("theme: %s -- %s", theme.label, theme.blurb))
+			Visuals.showNote(
+				string.format("theme: %s -- %s%s", theme.label, theme.blurb, if theme.special then " (month special)" else "")
+			)
 		end)
 		swatch.MouseLeave:Connect(function()
 			Console.paintSwatches()
@@ -2240,6 +2372,7 @@ function Console.mount(parent: Instance, handlers: Handlers)
 	counters.Parent = footer
 	state.countersText = counters
 
+
 	--[[
 		The band sits above the log and pushes it down, rather than over it.
 
@@ -2274,12 +2407,15 @@ function Console.mount(parent: Instance, handlers: Handlers)
 	Visuals.mount(root)
 	local band = root:FindFirstChild("ActivityBand") :: Frame
 	band.Position = UDim2.new(0, 0, 0, 33)
-	band.Size = UDim2.new(1, 0, 0, Visuals.BAND_HEIGHT)
+	band.Size = UDim2.new(1, 0, 0, Visuals.bandHeight())
 
 	-- The log's top edge follows the band, so turning it on never hides a line.
 	-- Its bottom edge clears the prompt and the status bar, which do not move.
 	local function layoutLog()
-		local top = 33 + (if Visuals.isVisible() then Visuals.BAND_HEIGHT else 0)
+		-- Asked every time: a wide preset (Hyperline) makes the band taller.
+		local bandHeight = Visuals.bandHeight()
+		band.Size = UDim2.new(1, 0, 0, bandHeight)
+		local top = 33 + (if Visuals.isVisible() then bandHeight else 0)
 		scroller.Position = UDim2.new(0, 0, 0, top)
 		scroller.Size = UDim2.new(1, 0, 1, -(top + FOOTER_HEIGHT + Prompt.HEIGHT))
 	end
@@ -2497,6 +2633,11 @@ function Console.applyTheme()
 	redraw()
 	Prompt.applyTheme()
 	Visuals.applyTheme()
+	-- A wide preset changes the band's height, and so where the log starts.
+	local relayout = state.relayout
+	if relayout then
+		relayout()
+	end
 	Console.paintSwatches()
 	local buttons = state.headerButtons
 	if buttons then

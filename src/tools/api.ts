@@ -134,6 +134,17 @@ export function registerApiTools(context: ToolContext): void {
       } catch (cause) {
         if (cause instanceof ToolError && cause.code === "NO_SUCH_CLASS") {
           const near = await suggestClass(wanted);
+          // The published API dump knows the class and this Studio's engine
+          // does not: it shipped behind a beta or early-access flag that is off
+          // here. Suggesting the very name that was typed read as a contradiction.
+          if (near.includes(wanted)) {
+            throw new ToolError(
+              "CLASS_NOT_ENABLED",
+              `"${wanted}" is in Roblox's API dump, but this Studio does not expose it.`,
+              "It is probably behind a Studio beta or early-access program that is not enabled here " +
+                "(File > Beta Features), or this Studio is older than the dump.",
+            );
+          }
           if (near.length > 0) {
             throw new ToolError(
               cause.code,

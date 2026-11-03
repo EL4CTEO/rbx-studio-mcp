@@ -23,6 +23,7 @@ local LogBuffer = require(script.Parent.Parent.LogBuffer)
 local Paths = require(script.Parent.Parent.Paths)
 local Scope = require(script.Parent.Parent.Scope)
 local Snapshot = require(script.Parent.Parent.PerfSnapshot)
+local MicroProfiler = require(script.Parent.Parent.MicroProfiler)
 
 -- The log holds thousands of lines in a busy session; an unbounded tail would
 -- swamp any context window.
@@ -872,6 +873,7 @@ end
 		profile = Perf.profile,
 		coverage = Perf.coverage,
 		scene = Perf.scene,
+		microprofile = MicroProfiler.capture,
 	})
 end
 

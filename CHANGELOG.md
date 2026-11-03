@@ -2,6 +2,39 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 1.0.5
+
+### Added
+
+- Hyperline, this month's special theme: the band becomes a live tunnel where every call is a light trail. Pick it from the amber-ringed dot or with `theme hyperline`.
+- `performance op="microprofile"`: captures MicroProfiler frames and ranks engine scopes on every thread, with frame times and what filled the worst frame. `export` saves a file for the MicroProfiler viewer. Uses Roblox's LibMP.
+- `collision op="cast"`: `shape="part"`, `margin`, `sizeGradient` and `visualize`.
+- A send button on the prompt.
+
+### Changed
+
+- Calls in a turn now show as stations on the thread, coloured by kind of work, and a finished turn ends with a cap. Latency bars match.
+- The status dot pulses while connected.
+- Writes refuse an ambiguous path with `AMBIGUOUS_PATH`, instead of changing the first of several same-named siblings. Reads still accept it.
+
+### Removed
+
+- Electro theme. A saved Electro or Sonar choice switches to Hyperline.
+
+### Fixed
+
+- `theme <unknown name>` switched to Lattice instead of reporting an error.
+- Block and sphere casts reported distance to the contact point rather than how far the shape travelled.
+- `execute_luau` with `resultFields` returned non-empty arrays as `[]`.
+- `api` said a class didn't exist and then suggested the same name. It now says the class isn't enabled in this Studio.
+- Union and other geometry results listed wrong paths for consumed same-named parts.
+- `viewport op="focus"` returned unrounded numbers.
+
+### Performance
+
+- Resizing the panel no longer rewrites the settings file on every pixel.
+- Live sync polls no longer pile up while Studio is busy.
+
 ## 1.0.0
 
 ### Added

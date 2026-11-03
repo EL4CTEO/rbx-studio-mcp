@@ -211,10 +211,10 @@ function Viewport.focus(params: { [string]: any }): { [string]: any }
 
 	return {
 		focused = if typeof(params.path) == "string" then params.path else tostring(centre),
-		cameraPosition = tostring(eye),
-		lookingAt = tostring(centre),
+		cameraPosition = Serialize.value(eye),
+		lookingAt = Serialize.value(centre),
 		distance = math.floor(distance * 10 + 0.5) / 10,
-		subjectSize = tostring(size),
+		subjectSize = Serialize.value(size),
 	}
 end
 

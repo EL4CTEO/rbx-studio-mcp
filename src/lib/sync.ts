@@ -1157,6 +1157,7 @@ class Watch {
   private token: string | undefined;
   private shape = "";
   private stopped = false;
+  private polling = false;
   private readonly files = new Set<string>();
   private readonly dirty = new Set<string>();
   private structural = false;
@@ -1214,6 +1215,11 @@ class Watch {
 
   private async pollStudio(initial: boolean): Promise<void> {
     if (this.stopped) return;
+    // One poll at a time. The timer fires every 500ms and a poll can wait up
+    // to 5s on a busy Studio, so without this they stacked ten deep exactly
+    // when Studio could least afford them.
+    if (this.polling && !initial) return;
+    this.polling = true;
     try {
       const changes = await this.bridge.call<{ token: string; reset: boolean; dirty: string[]; structural: boolean }>(
         "sync.changes",
@@ -1229,6 +1235,8 @@ class Watch {
       if (this.structural || this.dirty.size > 0) this.schedule(150);
     } catch (cause) {
       if (!(await this.reattach(cause))) this.fail(cause);
+    } finally {
+      this.polling = false;
     }
   }
 

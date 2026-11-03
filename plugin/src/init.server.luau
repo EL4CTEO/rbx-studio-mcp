@@ -177,7 +177,15 @@ end
 	It cannot simply be applied here either -- the console is not mounted yet.
 	So it is remembered and applied the moment it can be, right after mounting.
 ]]
-local themeNeedsApplying = typeof(storedTheme) == "string" and Themes.activeId() == storedTheme
+-- Compared against the default, not the saved name: a retired name ("electro")
+-- resolves to its successor, and comparing names left that panel unpainted.
+local themeNeedsApplying = typeof(storedTheme) == "string" and Themes.activeId() ~= Themes.get(nil).id
+if themeNeedsApplying and storedTheme ~= Themes.activeId() then
+	-- Save the successor's id, so the old name is not resolved forever.
+	pcall(function()
+		plugin:SetSetting(SETTING_THEME, Themes.activeId())
+	end)
+end
 
 Session.register()
 ClientRelay.register()
@@ -474,7 +482,22 @@ if RunService:IsEdit() then
 		return true
 	end
 
-	widget:GetPropertyChangedSignal("AbsoluteSize"):Connect(persistSize)
+	--[[
+		Debounced. AbsoluteSize changes on every pixel of a drag, and each
+		SetSetting rewrites the plugin's whole settings file on disk -- dozens of
+		writes a second for as long as the user is resizing. Only the size they
+		let go at is worth keeping.
+	]]
+	local resizeGeneration = 0
+	widget:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+		resizeGeneration += 1
+		local mine = resizeGeneration
+		task.delay(0.5, function()
+			if mine == resizeGeneration then
+				persistSize()
+			end
+		end)
+	end)
 
 	--[[
 		Seed from the size Studio has already restored, rather than waiting for

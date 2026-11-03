@@ -58,6 +58,8 @@ local CARET_WIDTH = 14
 
 -- The stop button, shown at the right of the row only while an agent runs.
 local STOP_WIDTH = 64
+-- The SEND button, in the same slot the stop button takes while an agent runs.
+local SEND_WIDTH = 56
 local STOP_GAP = 8
 
 --[[
@@ -169,6 +171,8 @@ type Runtime = {
 	-- The cancel button, and whether it has been pressed and is waiting for the
 	-- agent to actually go.
 	stop: TextButton?,
+	send: TextButton?,
+	sendHover: boolean?,
 	stopping: boolean,
 	-- Whether a line that is not a command goes to an agent. Off until the user
 	-- runs `chat on`; only used to word the placeholder, since `Commands` is what
@@ -259,6 +263,13 @@ local function layoutRow()
 	local stop = runtime.stop
 	if stop ~= nil then
 		stop.Visible = runtime.busy
+	end
+	local send = runtime.send
+	if send ~= nil then
+		send.Visible = not runtime.busy and string.find(field.Text, "%S") ~= nil
+		if send.Visible then
+			hint.Position = UDim2.new(1, -(SEND_WIDTH + 8), 0, 0)
+		end
 	end
 end
 
@@ -619,6 +630,57 @@ end
 --[[
 	Builds the row. Called once from `Console.mount`, positioned by it.
 ]]
+--[[
+	Shows SEND while there is something to send and nothing running (the stop
+	button owns that slot while an agent works), and moves the hint out of its way.
+]]
+local function syncSend()
+	local send, field, hint = runtime.send, runtime.field, runtime.hint
+	if send == nil or field == nil then
+		return
+	end
+	local wanted = not runtime.busy and string.find(field.Text, "%S") ~= nil
+	send.Visible = wanted
+	-- While busy the stop button owns the slot and the busy layout owns the hint.
+	if hint ~= nil and not runtime.busy then
+		hint.Position = UDim2.new(1, if wanted then -(SEND_WIDTH + 8) else -INSET, 0, 0)
+	end
+	--[[
+		The field stops short of SEND. It used to run underneath it, so a click
+		on SEND was also a click on the field: it took focus back and opened the
+		whole command list the moment the line had been sent.
+	]]
+	if not runtime.busy then
+		local reserved = if wanted then SEND_WIDTH - INSET + 4 else 0
+		field.Size = UDim2.new(1, -(INSET + CARET_WIDTH + INSET + reserved), 1, 0)
+	end
+end
+
+--[[
+	Submits whatever is in the field. Shared by Enter and by SEND.
+]]
+local function submitField()
+	local field = runtime.field
+	if field == nil then
+		return
+	end
+	local line = string.match(field.Text, "^%s*(.-)%s*$") or ""
+	field.Text = ""
+	if runtime.hint then
+		(runtime.hint :: TextLabel).Text = ""
+	end
+	if line == "" then
+		return
+	end
+	remember(line)
+	local run = runtime.submit
+	if run ~= nil then
+		-- Spawned so a slow command -- one that waits on the bridge -- cannot
+		-- hold the field unresponsive while it runs.
+		task.spawn(run, line)
+	end
+end
+
 function Prompt.mount(
 	parent: Instance,
 	handlers: {
@@ -774,6 +836,52 @@ function Prompt.mount(
 	end)
 
 	--[[
+		SEND: the same as pressing Enter, for a mouse.
+
+		Studio hands a plugin TextBox its own Enter and nothing else, so until
+		now the only way to submit was the keyboard. Clicking SEND releases the
+		field's focus first (FocusLost without Enter, which submits nothing),
+		then fires here with the text still in the field.
+	]]
+	local send = Instance.new("TextButton")
+	send.Name = "Send"
+	send.Text = "send \u{25B8}"
+	send.Font = Enum.Font.Code
+	send.TextSize = 11
+	send.AutoButtonColor = false
+	send.BorderSizePixel = 0
+	-- Flush with the panel's right edge, full row height: a docked button,
+	-- not a floating pill with a gap beside it.
+	send.AnchorPoint = Vector2.new(1, 0)
+	send.Position = UDim2.new(1, 0, 0, 1)
+	send.Size = UDim2.new(0, SEND_WIDTH, 1, -1)
+	send.BackgroundColor3 = palette.violet
+	send.BackgroundTransparency = 0.75
+	send.TextColor3 = palette.text
+	send.Visible = false
+	send.Parent = row
+	runtime.send = send
+
+
+	send.MouseEnter:Connect(function()
+		runtime.sendHover = true
+		send.BackgroundTransparency = 0.45
+	end)
+	send.MouseLeave:Connect(function()
+		runtime.sendHover = false
+		send.BackgroundTransparency = 0.75
+	end)
+	send.MouseButton1Click:Connect(function()
+		submitField()
+		-- After the submit, so the empty field's text change cannot re-open it.
+		runtime.focused = false
+		closeMenu()
+		showHint()
+	end)
+
+	field:GetPropertyChangedSignal("Text"):Connect(syncSend)
+
+	--[[
 		The menu, parented to the row rather than to the panel.
 
 		Anchored to its own bottom edge with a negative Y offset, so it grows
@@ -877,6 +985,10 @@ function Prompt.mount(
 		if input.UserInputType ~= Enum.UserInputType.MouseButton1 then
 			return
 		end
+		-- A press on SEND is not a click on the bar, even where they touch.
+		if runtime.sendHover then
+			return
+		end
 		runtime.focused = true
 		refreshMenu()
 	end)
@@ -929,21 +1041,7 @@ function Prompt.mount(
 			return
 		end
 
-		local line = string.match(field.Text, "^%s*(.-)%s*$") or ""
-		field.Text = ""
-		if runtime.hint then
-			(runtime.hint :: TextLabel).Text = ""
-		end
-		if line == "" then
-			return
-		end
-		remember(line)
-		local run = runtime.submit
-		if run ~= nil then
-			-- Spawned so a slow command -- one that waits on the bridge -- cannot
-			-- hold the field unresponsive while it runs.
-			task.spawn(run, line)
-		end
+		submitField()
 		--[[
 			The cursor is NOT taken back.
 
@@ -1066,6 +1164,11 @@ function Prompt.applyTheme()
 	local rule = runtime.rule
 	if rule then
 		rule.BackgroundColor3 = palette.rule
+	end
+	local send = runtime.send
+	if send then
+		send.BackgroundColor3 = palette.violet
+		send.TextColor3 = palette.text
 	end
 	local menu = runtime.menu
 	if menu then

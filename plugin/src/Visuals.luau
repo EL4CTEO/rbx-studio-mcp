@@ -201,6 +201,9 @@ local CHEER_FADE = 2.5
 	and the strip gave 18px of height back to the log it sits above.
 ]]
 Visuals.BAND_HEIGHT = 40
+-- A wide preset (Hyperline) paints a scene across the whole band, which needs
+-- room to read as depth rather than as a stripe.
+local TALL_BAND = 124
 local CELL = 30
 local INSET = 12
 local GUTTER = 18
@@ -338,6 +341,16 @@ type Runtime = {
 		"working" instead of to "nothing is happening".
 	]]
 	thinking: boolean,
+
+	-- Wide-preset HUD: calls/s and p50, top right of the scene.
+	hud: TextLabel?,
+	-- When recent calls landed, for the calls/s readout. Bounded ring.
+	callTimes: { number },
+	hudBank: number,
+	-- The kind of the call now in flight, so its reply trail matches it.
+	lastKind: string,
+	-- Whether the band is laid out for a wide preset right now.
+	wideLayout: boolean,
 }
 
 local runtime: Runtime = {
@@ -379,6 +392,11 @@ local runtime: Runtime = {
 	waveShown = false,
 	cheer = 0,
 	thinking = false,
+	hud = nil,
+	callTimes = {},
+	hudBank = 0,
+	lastKind = "read",
+	wideLayout = false,
 }
 
 --[[
@@ -390,6 +408,10 @@ local runtime: Runtime = {
 	own any of it.
 ]]
 local function context(): Themes.Context
+	local cell = runtime.cell
+	local wide = runtime.wideLayout and cell ~= nil
+	local width = if wide then (cell :: Frame).AbsoluteSize.X else CELL
+	local height = if wide then (cell :: Frame).AbsoluteSize.Y else CELL
 	return {
 		palette = Themes.palette(),
 		tint = runtime.tint,
@@ -401,8 +423,10 @@ local function context(): Themes.Context
 		quiet = runtime.quiet,
 		angle = runtime.angle,
 		clock = os.clock(),
-		size = CELL,
-		centre = Vector2.new(CELL / 2, CELL / 2),
+		size = height,
+		centre = Vector2.new(width / 2, height / 2),
+		width = width,
+		height = height,
 	}
 end
 
@@ -449,6 +473,47 @@ end
 -- from `step`, and the history's layout is defined further down.
 local relayout: (modulate: ((number, number, number) -> (number, number))?) -> ()
 
+--[[
+	The wide HUD's numbers: calls per second over the last five seconds, and
+	the median of the calls still on the trace.
+]]
+local function refreshHud()
+	local hud = runtime.hud
+	if hud == nil then
+		return
+	end
+	local now = os.clock()
+	local times = runtime.callTimes
+	while #times > 0 and now - times[1] > 5 do
+		table.remove(times, 1)
+	end
+	local durations = {}
+	for _, bar in runtime.bars do
+		table.insert(durations, bar.milliseconds)
+	end
+	table.sort(durations)
+	local median = if #durations > 0 then durations[math.max(1, math.ceil(#durations / 2))] else nil
+	hud.Text = string.format(
+		"%.1f calls/s%s",
+		#times / 5,
+		if median ~= nil then string.format("  \u{00B7}  typical %s", if median < 1 then "<1ms" else string.format("%dms", math.round(median))) else ""
+	)
+end
+
+--[[
+	Tells the active preset about a call, if it wants to know.
+]]
+local function fireCall(phase: "out" | "back", ok: boolean)
+	local hook = Themes.active().onCall
+	if hook == nil or not runtime.mounted then
+		return
+	end
+	local fine, err = pcall(hook, { phase = phase, kind = runtime.lastKind, ok = ok })
+	if not fine then
+		warn(string.format("[rbx-studio] theme %q failed on a call: %s", Themes.activeId(), tostring(err)))
+	end
+end
+
 local function step(delta: number)
 	local band = runtime.band
 	local cell = runtime.cell
@@ -458,7 +523,8 @@ local function step(delta: number)
 
 	if resting() then
 		runtime.idleBank += delta
-		if runtime.idleBank < 1 / IDLE_FPS then
+		-- A wide scene is mostly motion, and 15fps reads as stutter there.
+		if runtime.idleBank < 1 / (if runtime.wideLayout then 30 else IDLE_FPS) then
 			return
 		end
 		delta = runtime.idleBank
@@ -612,6 +678,14 @@ local function step(delta: number)
 		display down with it, so a failure here disables the strip and says so
 		once rather than erroring sixty times a second.
 	]]
+	if runtime.wideLayout then
+		runtime.hudBank += delta
+		if runtime.hudBank >= 0.2 then
+			runtime.hudBank = 0
+			refreshHud()
+		end
+	end
+
 	local ok, err = pcall(Themes.active().paint, context(), delta)
 	if not ok then
 		band.Visible = false
@@ -840,7 +914,7 @@ local function growWave(count: number)
 		column.Visible = false
 		-- Under the bars and the hover highlight. They never share a slot, but
 		-- depth should not be the thing standing between them if that changes.
-		column.ZIndex = 1
+		column.ZIndex = if runtime.wideLayout then 7 else 1
 		column.Parent = trace
 
 		-- Presets draw points as well as bars, same as the history slots.
@@ -1031,6 +1105,11 @@ end
 	Records one finished call and re-draws the trace.
 ]]
 function Visuals.recordCall(milliseconds: number, ok: boolean, title: string)
+	table.insert(runtime.callTimes, os.clock())
+	if #runtime.callTimes > 64 then
+		table.remove(runtime.callTimes, 1)
+	end
+	fireCall("back", ok)
 	runtime.energy = math.min(1.6, runtime.energy + (if ok then 0.3 else 0.8))
 	runtime.activity = math.min(1, runtime.activity + 0.34)
 	runtime.quiet = 0
@@ -1075,7 +1154,7 @@ function Visuals.recordCall(milliseconds: number, ok: boolean, title: string)
 	-- Above the wave's columns and the hover highlight. A plugin widget draws
 	-- with ZIndexBehavior.Global, so depth is stated rather than inherited from
 	-- the order things happened to be built in.
-	bar.ZIndex = 2
+	bar.ZIndex = if runtime.wideLayout then 8 else 2
 	bar.Parent = trace
 	-- Presets draw points as well as bars, and a square point is not a point.
 	local corner = Instance.new("UICorner")
@@ -1091,6 +1170,7 @@ function Visuals.recordCall(milliseconds: number, ok: boolean, title: string)
 	hit.AutoButtonColor = false
 	hit.BorderSizePixel = 0
 	hit.Size = UDim2.new(0, BAR_STRIDE, 1, 0)
+	hit.ZIndex = if runtime.wideLayout then 8 else 1
 	hit.Parent = trace
 
 	local entry: Bar = {
@@ -1160,6 +1240,22 @@ function Visuals.setKind(color: Color3, urgency: number)
 		0.18 + math.random() * 0.22,
 		0.06 + math.random() * 0.12
 	)
+end
+
+--[[
+	A call has gone out. `kind` is the console's work kind (read, write, run,
+	debug); a wide preset draws it, and its reply, as trails.
+]]
+function Visuals.callOut(kind: string)
+	runtime.lastKind = kind
+	fireCall("out", true)
+end
+
+--[[
+	The band's height for the active preset.
+]]
+function Visuals.bandHeight(): number
+	return if Themes.active().wide then TALL_BAND else Visuals.BAND_HEIGHT
 end
 
 --[[
@@ -1340,6 +1436,91 @@ function Visuals.isVisible(): boolean
 end
 
 --[[
+	Places the band's pieces for the active preset.
+
+	Compact (every preset but one): cell, divider, trace, caption in one 40px
+	row, exactly as Threadline 1.0 had it. Wide (Hyperline): the cell IS the
+	band, the trace becomes a rail along its bottom edge, the caption is a HUD
+	line top-left and calls/s with p50 sits top-right. The band's own height is
+	set by Console, which asks `bandHeight`.
+]]
+-- Depth of the trace's pieces: above a wide preset's scene, normal otherwise.
+local function traceDepth(wide: boolean)
+	local base = if wide then 7 else 1
+	if runtime.baseline then
+		(runtime.baseline :: Frame).ZIndex = base
+	end
+	if runtime.highlight then
+		(runtime.highlight :: Frame).ZIndex = base
+	end
+	if runtime.readout then
+		(runtime.readout :: TextLabel).ZIndex = base + 2
+	end
+	for _, bar in runtime.bars do
+		bar.frame.ZIndex = base + 1
+		bar.hit.ZIndex = base + 1
+	end
+	-- The connecting wave's columns too, or a wide scene hides them and only
+	-- the history bars riding the swell show.
+	for _, column in runtime.wave do
+		column.ZIndex = base
+	end
+end
+
+local function layoutBand()
+	local cell, trace, caption, divider, hud =
+		runtime.cell, runtime.trace, runtime.caption, runtime.divider, runtime.hud
+	if cell == nil or trace == nil or caption == nil then
+		return
+	end
+	local wide = Themes.active().wide == true
+	runtime.wideLayout = wide
+	traceDepth(wide)
+	if wide then
+		cell.Position = UDim2.fromOffset(0, 0)
+		cell.Size = UDim2.fromScale(1, 1)
+		trace.AnchorPoint = Vector2.new(0, 1)
+		trace.Position = UDim2.new(0, 12, 1, -4)
+		trace.Size = UDim2.new(1, -24, 0, TRACE_HEIGHT)
+		trace.ZIndex = 7
+		caption.AnchorPoint = Vector2.new(0, 0)
+		caption.Position = UDim2.fromOffset(12, 8)
+		caption.Size = UDim2.new(0.62, -12, 0, 14)
+		caption.TextXAlignment = Enum.TextXAlignment.Left
+		caption.TextSize = 12
+		caption.ZIndex = 9
+		if divider then
+			divider.Visible = false
+		end
+		if hud then
+			hud.Visible = true
+			hud.ZIndex = 9
+			refreshHud()
+		end
+	else
+		cell.Position = UDim2.fromOffset(INSET, (Visuals.BAND_HEIGHT - CELL) / 2)
+		cell.Size = UDim2.fromOffset(CELL, CELL)
+		local right = INSET + CELL + GUTTER
+		trace.AnchorPoint = Vector2.new(0, 0.5)
+		trace.Position = UDim2.new(0, right, 0.5, 0)
+		trace.Size = UDim2.new(1 - CAPTION_SHARE, -right - 12, 0, TRACE_HEIGHT)
+		trace.ZIndex = 1
+		caption.AnchorPoint = Vector2.new(1, 0.5)
+		caption.Position = UDim2.new(1, -12, 0.5, 0)
+		caption.Size = UDim2.new(CAPTION_SHARE, -12, 0, 14)
+		caption.TextXAlignment = Enum.TextXAlignment.Right
+		caption.TextSize = 11
+		caption.ZIndex = 1
+		if divider then
+			divider.Visible = true
+		end
+		if hud then
+			hud.Visible = false
+		end
+	end
+end
+
+--[[
 	Swaps the cell's contents and recolours the strip's own chrome.
 
 	The order matters. The outgoing preset is unmounted before the cell is
@@ -1381,6 +1562,10 @@ function Visuals.applyTheme()
 	if runtime.readout then
 		(runtime.readout :: TextLabel).BackgroundColor3 = palette.background
 	end
+	if runtime.hud then
+		(runtime.hud :: TextLabel).TextColor3 = palette.text
+	end
+	layoutBand()
 
 	local ok, err = pcall(function()
 		Themes.active().mount(cell)
@@ -1525,6 +1710,26 @@ function Visuals.mount(parent: Instance)
 	readoutPadding.PaddingLeft = UDim.new(0, 4)
 	readoutPadding.PaddingRight = UDim.new(0, 4)
 	readoutPadding.Parent = readout
+
+	-- Wide presets only: throughput over the scene, top right.
+	local hud = Instance.new("TextLabel")
+	hud.Name = "Hud"
+	hud.AnchorPoint = Vector2.new(1, 0)
+	hud.Position = UDim2.new(1, -12, 0, 8)
+	hud.Size = UDim2.new(0.38, 0, 0, 14)
+	hud.BackgroundTransparency = 1
+	hud.Font = Enum.Font.Code
+	hud.TextSize = 11
+	hud.TextColor3 = palette.text
+	hud.TextXAlignment = Enum.TextXAlignment.Right
+	hud.TextTruncate = Enum.TextTruncate.AtEnd
+	hud.Text = "0.0 calls/s"
+	hud.Visible = false
+	hud.ZIndex = 4
+	hud.Parent = band
+	runtime.hud = hud
+
+	layoutBand()
 
 	local ok, err = pcall(function()
 		Themes.active().mount(cell)

@@ -160,8 +160,14 @@ function Geometry.combine(params: { [string]: any }): { [string]: any }
 		-- operation that destroyed them first and then failed would leave
 		-- nothing to recover.
 		if params.keepOriginals ~= true then
-			for _, part in { subject, table.unpack(others) } do
+			-- Every path is read before anything is destroyed. Reading each one
+			-- just before its own removal named "Door[2]" as "Door" once
+			-- "Door[1]" was gone -- a path the caller never passed.
+			local inputs = { subject, table.unpack(others) }
+			for _, part in inputs do
 				table.insert(removed, Paths.of(part))
+			end
+			for _, part in inputs do
 				part:Destroy()
 			end
 		end

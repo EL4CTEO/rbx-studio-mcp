@@ -54,6 +54,32 @@ function Dispatch.checkDeadline(explicit: number?)
 	end
 end
 
+--[[
+	Commands that WRITE. On these an ambiguous path -- a bare name shared by
+	several siblings -- is refused instead of resolving to the first one, which
+	is how `modify` on "Map.Door" used to change one door of two without a word.
+	Reads keep accepting bare names (since 0.9.0), where the first match is a
+	harmless answer. Tracked per thread, like deadlines, because handlers yield.
+]]
+local WRITES: { [string]: boolean } = {
+	["instances.create"] = true,
+	["instances.modify"] = true,
+	["instances.delete"] = true,
+	["instances.move"] = true,
+	["script.edit"] = true,
+	["script.create"] = true,
+	["geometry.combine"] = true,
+	["geometry.fragment"] = true,
+	["geometry.sweep"] = true,
+	["geometry.mirror"] = true,
+	["world.collision"] = true,
+}
+local strictThreads: { [thread]: boolean } = {}
+
+function Dispatch.strictPaths(): boolean
+	return strictThreads[coroutine.running()] == true
+end
+
 function Dispatch.register(op: string, handler: Handler)
 	handlers[op] = handler
 end
@@ -105,11 +131,13 @@ function Dispatch.invoke(id: string, op: string, params: { [string]: any }?, dea
 
 	local thread = coroutine.running()
 	deadlines[thread] = deadlineMs
+	strictThreads[thread] = WRITES[op]
 	local ok, result = pcall(function()
 		Dispatch.checkDeadline()
 		return handler(params or {})
 	end)
 	deadlines[thread] = nil
+	strictThreads[thread] = nil
 	if ok then
 		return { id = id, ok = true, data = result }
 	end

@@ -1,4 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { CLIENT_HEADER, PROTOCOL_VERSION } from "../lib/protocol.js";
 import { PEER_HEADER } from "./remote.js";
 import { toToolError } from "../lib/errors.js";
@@ -248,6 +251,8 @@ async function handle(
         return await handleLatency(bridge, url, res);
       case "POST /transport":
         return await handleTransport(bridge, url, res);
+      case "GET /vendor/libmp":
+        return sendLibMP(res);
       case "GET /identity":
         // Answered so a second instance can tell us apart from whatever else
         // might be squatting on the port. See probeOwner.
@@ -606,6 +611,29 @@ async function handleConsoleCommand(
     const message = cause instanceof Error ? cause.message : String(cause);
     return send(res, 200, { lines: [{ level: "error", message }], running: false });
   }
+}
+
+/**
+ * Roblox's LibMP (MIT), for the plugin's MicroProfiler reader. 3.3 MB of Luau,
+ * so it lives here rather than in the plugin and is fetched once, on the first
+ * `performance op="microprofile"`. Read lazily and kept: the file never changes
+ * while the server runs.
+ */
+let libmpSource: Buffer | null = null;
+function sendLibMP(res: ServerResponse): void {
+  if (libmpSource === null) {
+    try {
+      libmpSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "vendor", "LibMP.luau"));
+    } catch {
+      return send(res, 404, { error: "LibMP is missing from this install (vendor/LibMP.luau)" });
+    }
+  }
+  res.writeHead(200, {
+    "Content-Type": "text/plain; charset=utf-8",
+    "Content-Length": libmpSource.length,
+    Connection: "close",
+  });
+  res.end(libmpSource);
 }
 
 function send(res: ServerResponse, status: number, body: unknown): void {

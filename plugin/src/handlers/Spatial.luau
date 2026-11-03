@@ -95,6 +95,23 @@ end
 	exists is a caller mistake worth reporting: silently querying against an
 	empty filter gives a plausible answer to the wrong question.
 ]]
+--[[
+	Sets a RaycastParams field an older Studio may not have yet, and says so
+	instead of letting "is not a valid member" reach the caller.
+]]
+local function setQueryField(query: RaycastParams, field: string, value: any)
+	local ok = pcall(function()
+		(query :: any)[field] = value
+	end)
+	if not ok then
+		Dispatch.fail(
+			"UNSUPPORTED",
+			string.format("This Studio has no RaycastParams.%s.", field),
+			"Update Roblox Studio; margins and size gradients shipped in October 2026."
+		)
+	end
+end
+
 local function buildParams(params: { [string]: any }): RaycastParams
 	local query = RaycastParams.new()
 
@@ -125,6 +142,31 @@ local function buildParams(params: { [string]: any }): RaycastParams
 	query.RespectCanCollide = params.respectCanCollide == true
 	query.IgnoreWater = params.ignoreWater == true
 	query.BruteForceAllSlow = false
+
+	--[[
+		Margin and SizeGradient (October 2026) shape the swept volume itself:
+		Margin wraps the shape in a skin of that thickness, SizeGradient grows or
+		shrinks it along the cast. Validated here because the engine's own error
+		for a bad value names neither field.
+	]]
+	local margin = tonumber(params.margin)
+	if margin ~= nil then
+		if margin < 0 or margin ~= margin or margin == math.huge then
+			Dispatch.fail("BAD_PARAMS", "`margin` must be a finite number of 0 or more.")
+		end
+		setQueryField(query, "Margin", margin)
+	end
+	local gradient = tonumber(params.sizeGradient)
+	if gradient ~= nil then
+		if gradient < -1 or gradient ~= gradient or gradient == math.huge then
+			Dispatch.fail(
+				"BAD_PARAMS",
+				"`sizeGradient` must be a finite number of -1 or more.",
+				"0.5 ends the cast 50% larger, -0.5 at half size, -1 shrinks it to nothing."
+			)
+		end
+		setQueryField(query, "SizeGradient", gradient)
+	end
 	return query
 end
 
@@ -135,7 +177,12 @@ local function describeHit(result: RaycastResult, origin: Vector3): { [string]: 
 		position = Serialize.value(result.Position),
 		normal = Serialize.value(result.Normal),
 		material = tostring(result.Material):gsub("Enum%.Material%.", ""),
-		distance = math.round((result.Position - origin).Magnitude * 100) / 100,
+		-- How far the shape TRAVELLED. For a block or sphere the contact point
+		-- sits off the centre line, so measuring origin-to-hit overstated it.
+		distance = math.round(result.Distance * 100) / 100,
+		contactDistance = if (result.Position - origin).Magnitude - result.Distance > 0.01
+			then math.round((result.Position - origin).Magnitude * 100) / 100
+			else nil,
 	}
 end
 
@@ -151,7 +198,7 @@ local function describePart(part: BasePart): { [string]: any }
 end
 
 --[[
-	Casts a ray, a block or a sphere.
+	Casts a ray, a block, a sphere, or the shape of an existing part.
 
 	The three are one operation with one extra argument, and the engine treats
 	them that way too -- `Blockcast` and `Spherecast` take the same params and
@@ -165,8 +212,27 @@ end
 function Spatial.cast(params: { [string]: any }): { [string]: any }
 	local world = root(params) :: WorldRoot
 	local shape = tostring(params.shape or "ray")
+	local hasFrom = params.from ~= nil and params.from ~= ""
 
-	local origin = vector(params.from, "from")
+	local castPart: BasePart? = nil
+	local origin: Vector3
+	if shape == "part" then
+		if typeof(params.path) ~= "string" or params.path == "" then
+			Dispatch.fail("BAD_PARAMS", 'shape="part" sweeps an existing part: give its `path`.')
+		end
+		local found = Paths.resolve(params.path)
+		if not found:IsA("BasePart") then
+			Dispatch.fail(
+				"BAD_PARAMS",
+				string.format("%s is a %s, not a part.", params.path, found.ClassName),
+				"Shapecast sweeps one BasePart. For a model, cast its main part, or use a block."
+			)
+		end
+		castPart = found :: BasePart
+		origin = if hasFrom then vector(params.from, "from") else (found :: BasePart).Position
+	else
+		origin = vector(params.from, "from")
+	end
 
 	--[[
 		Direction is given either as a target point or as a vector, because both
@@ -214,7 +280,30 @@ function Spatial.cast(params: { [string]: any }): { [string]: any }
 	local query = buildParams(params)
 	local result: RaycastResult?
 
-	if shape == "ray" then
+	if params.visualize == true then
+		-- Studio's own overlay (Visualization Modes > Physics > Shapecasts): the
+		-- sweep is drawn green on a hit and red on a miss. Stays on until the
+		-- user switches it off, like the menu item it mirrors.
+		pcall(function()
+			(settings() :: any).Physics.DrawShapecast = true
+		end)
+	end
+
+	if shape == "part" then
+		-- The part's real collision shape, mesh included. `from` and `size`
+		-- override where and how big without moving or resizing the part,
+		-- which is what a placement check needs.
+		local part = castPart :: BasePart
+		local start = if hasFrom then CFrame.new(origin) * part.CFrame.Rotation else nil
+		local sizeOverride = optionalVector(params.size, "size")
+		local ok, cast = pcall(function()
+			return (world :: any):Shapecast(part, direction, query, start, sizeOverride)
+		end)
+		if not ok then
+			Dispatch.fail("CAST_FAILED", string.format("Shapecast refused: %s", tostring(cast)))
+		end
+		result = cast
+	elseif shape == "ray" then
 		result = world:Raycast(origin, direction, query)
 	elseif shape == "block" then
 		local size = optionalVector(params.size, "size") or Vector3.new(1, 1, 1)
@@ -226,7 +315,7 @@ function Spatial.cast(params: { [string]: any }): { [string]: any }
 		Dispatch.fail(
 			"BAD_PARAMS",
 			string.format("unknown cast shape %q", shape),
-			'Use "ray", "block" or "sphere".'
+			'Use "ray", "block", "sphere" or "part".'
 		)
 	end
 

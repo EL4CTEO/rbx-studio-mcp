@@ -355,6 +355,9 @@ local DESCRIBERS: { [string]: Describer } = {
 	["perf.profile"] = function(params)
 		return string.format("Profile scripts for %ss", tostring(params.seconds or 5))
 	end,
+	["perf.microprofile"] = function(params)
+		return string.format("Capture %s MicroProfiler frames", tostring(params.frames or 64))
+	end,
 	["perf.coverage"] = function(params)
 		local total = count(params.enable)
 		if total > 0 then
@@ -527,6 +530,11 @@ local DESCRIBERS: { [string]: Describer } = {
 
 	["spatial.cast"] = function(params)
 		local shape = tostring(params.shape or "ray")
+		-- A part sweep names the part; it has no `from` unless overridden, and
+		-- "Cast a part from ?" read as a broken call.
+		if shape == "part" then
+			return string.format("Sweep %s", leaf(params.path) or "a part")
+		end
 		local target = if params.to ~= nil then tostring(params.to) else nil
 		if target ~= nil then
 			return string.format("Cast a %s at %s", shape, target)

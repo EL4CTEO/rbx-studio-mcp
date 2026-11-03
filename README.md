@@ -101,6 +101,8 @@ debug op="collisions" path="Workspace.Ball" minSpeed=5 seconds=5
 - **`watch`** records property, attribute and child changes for 1-15 seconds. Send input in parallel to see a reaction.
 - **`collisions`** reports what a part, or every part in a model, hit: contact point, normal, impact speed and area, hardest first. Sliding is not counted as a hit. Needs a running playtest.
 - **`uisnap`** snapshots a UI. Call it again with `compareTo="<id>"` after an edit to see every added, removed and changed element, property by property.
+- **`performance op="microprofile"`** captures MicroProfiler frames and ranks the engine scopes that filled them, on every thread. `export=true` saves a file the MicroProfiler viewer opens. Uses Roblox's [LibMP](https://github.com/Roblox/libmp) (MIT), sent to the plugin on first use.
+- **`collision op="cast"`** sweeps rays, blocks, spheres or a real part (`shape="part"`), with `margin` and `sizeGradient`.
 - **Clipped `execute_luau` results** return a `resultId`. Page through it with `source` omitted; nothing reruns. Results are kept for 120 seconds.
 
 ## Work on files
@@ -163,11 +165,11 @@ Every call is logged with how long it took. At the foot of the panel is a comman
 | `agent [use <id>\|new]` | which agent runs your prompts |
 | anything else | sent to that agent, once `chat` is on |
 
-Click the bar and every command is listed with what it does. Keep typing to filter, scroll for the rest, click one to fill it in.
+Click the bar and every command is listed with what it does. Keep typing to filter, scroll for the rest, click one to fill it in. Press Enter or click **send**.
 
 **With `chat on`, prompts start a real agent**, using whichever of 31 supported agents you have on PATH: Claude Code, Codex, opencode, Gemini, Cursor, Amp, Qwen Code, Factory Droid, goose, Copilot CLI, Aider, Crush, DeepSeek Harness, Kimi Code, Cline, Kilo Code, Auggie, Qoder, Continue, Kiro, Mistral Vibe, Grok CLI, OpenHands, Hermes, OpenClaw, Warp Oz, Rovo Dev, Forge, pi, Letta Code or Trae Agent. It runs headless, drives the same Studio, and its work appears in the log under your prompt. It is a separate session from your terminal and billed separately. Claude Code and Copilot are limited to the `rbx-studio` tools; the others use their own permission settings. The **stop** button beside the prompt cancels it.
 
-Eight themes: pick one from the dots in the header, or with `theme <name>`. Your pick is remembered.
+Eight themes: pick one from the dots in the header, or with `theme <name>`. Your pick is remembered. This month's special is **Hyperline**: the band becomes a live tunnel where every call is a light trail.
 
 ## Why this one
 

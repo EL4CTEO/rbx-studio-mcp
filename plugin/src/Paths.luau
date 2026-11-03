@@ -211,7 +211,45 @@ local function childBySegment(
 			return service, nil
 		end
 	end
-	return parent:FindFirstChild(name), nil
+	local found = parent:FindFirstChild(name)
+	if found == nil then
+		return nil, nil
+	end
+	--[[
+		A bare name shared by several siblings is ambiguous. For a READ the
+		first match is a harmless answer and stays accepted. For a WRITE it is
+		refused (see Dispatch.strictPaths): it used to resolve to whichever came
+		first, so `modify` on "Map.Door" changed one door of two without a word.
+		The refusal names the indexed paths, which every path this module emits
+		already carries.
+	]]
+	-- Only writes pay for the scan; reads never look past the first match.
+	local count = 0
+	if Dispatch.strictPaths() then
+		for _, child in parent:GetChildren() do
+			if child.Name == name then
+				count += 1
+				if count > 1 then
+					break
+				end
+			end
+		end
+	end
+	if count > 1 then
+		local total = #(childrenByName(parent, nil)[name] or {})
+		return nil,
+			string.format(
+				'"%s" has %d children named "%s", so the path is ambiguous. Pick one: %s[1] .. %s[%d] '
+					.. "(`find` or `tree` shows which is which).",
+				parent:GetFullName(),
+				total,
+				name,
+				name,
+				name,
+				total
+			)
+	end
+	return found, nil
 end
 
 --[[
@@ -294,6 +332,13 @@ function Paths.resolve(path: string): Instance
 	end
 
 	local failedAt = deepest + 1
+	if deepestNote and string.find(deepestNote, "the path is ambiguous", 1, true) then
+		return Dispatch.fail(
+			"AMBIGUOUS_PATH",
+			string.format('"%s" matches more than one instance.', table.concat(segments, ".", 1, failedAt)),
+			deepestNote
+		)
+	end
 	local reached = if deepest > 0 then table.concat(segments, ".", 1, deepest) .. "." else ""
 	local named = if deepestSegment
 		then reached .. deepestSegment

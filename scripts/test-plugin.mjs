@@ -61,6 +61,8 @@ const suites = [
 const DISPATCH_STUB = `local Dispatch = {}
 function Dispatch.checkDeadline() end
 function Dispatch.deadline() return nil end
+Dispatch.__strict = false
+function Dispatch.strictPaths() return Dispatch.__strict end
 function Dispatch.fail(code, message, hint)
 \terror({ code = code, message = message, hint = hint }, 0)
 end
