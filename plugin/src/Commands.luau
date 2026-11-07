@@ -576,7 +576,7 @@ define({ name = "stop", usage = "stop", summary = "cancel the running agent", re
 define({
 	name = "cloud",
 	usage = "cloud [key|user|group|universe|place|test|forget]",
-	summary = "the Open Cloud key `upload` uses",
+	summary = "the Open Cloud key, creator, universe and place",
 	remote = true,
 })
 

@@ -676,7 +676,17 @@ const copilot: Harness = {
   id: "copilot",
   label: "GitHub Copilot CLI",
   bin: "copilot",
-  argv: (prompt) => ["-p", prompt, "--no-ask-user", "--allow-tool", "mcp__rbx-studio"],
+  // Copilot allows a whole MCP server by its bare name, as the user registered
+  // it. `roblox-studio` is what the README told people to register earlier.
+  argv: (prompt) => [
+    "-p",
+    prompt,
+    "--no-ask-user",
+    "--allow-tool",
+    "rbx-studio",
+    "--allow-tool",
+    "roblox-studio",
+  ],
   read: (line) => readProse(line),
 };
 

@@ -64,7 +64,7 @@ function checkPluginFile(): Check {
     return {
       status: "bad",
       title: "Studio plugin",
-      detail: `Not installed. No file at ${file}.\n  Fix: npx rbx-studio-mcp --install-plugin`,
+      detail: `Not installed. No file at ${file}.\n  Fix: npx -y @el4cteo/rbx-studio-mcp --install-plugin`,
     };
   }
   const age = statSync(file).mtime.toISOString().slice(0, 16).replace("T", " ");
@@ -139,7 +139,7 @@ async function checkStudios(port: number, built: string | null): Promise<Check[]
       title: `Studio: ${session.placeName}`,
       detail: stale
         ? `Plugin build ${session.buildId} does not match this package's ${built}.\n` +
-          "  Fix: npx rbx-studio-mcp --install-plugin, then restart Studio."
+          "  Fix: npx -y @el4cteo/rbx-studio-mcp --install-plugin, then restart Studio."
         : `${session.context ?? "edit"}, over ${session.transport}, plugin ${session.pluginVersion}`,
     };
   });

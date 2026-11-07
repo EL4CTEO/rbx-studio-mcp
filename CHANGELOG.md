@@ -2,6 +2,18 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 1.0.6
+
+### Changed
+
+- Shorter README. Install commands now register the server as `rbx-studio`, the name the rest of the project uses.
+
+### Fixed
+
+- Copilot CLI's allow flag used the wrong tool format. It now allows the server by name, as `rbx-studio` or `roblox-studio`.
+- `doctor` suggested an install command without the package's `@el4cteo/` scope.
+- `cloud` help described the key as for uploads only.
+
 ## 1.0.5
 
 ### Added

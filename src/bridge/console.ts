@@ -433,7 +433,7 @@ export async function handleConsole(
     }
 
     /**
-     * The Open Cloud credentials `upload` runs on.
+     * The Open Cloud credentials for uploads and live calls.
      *
      * Everything printed here is deliberately non-secret: the key is echoed
      * back only as its last four characters, which is enough to tell two keys
@@ -449,9 +449,9 @@ export async function handleConsole(
         const status = await credentialStatus();
         if (!status.hasKey) {
           return [
-            { level: "warn", message: "no Open Cloud key set", detail: "upload cannot run" },
+            { level: "warn", message: "no Open Cloud key set", detail: "uploads and live calls cannot run" },
             { level: "dim", message: "1. create.roblox.com/dashboard/credentials -> Create API Key" },
-            { level: "dim", message: "2. Access Permissions -> add `assets`, tick Read and Write" },
+            { level: "dim", message: "2. Access Permissions -> add what you need, like `assets`, tick Read and Write" },
             { level: "dim", message: "3. add your IP, save, copy the key (it is shown once)" },
             { level: "dim", message: "4. cloud key <paste it>", detail: "then: cloud user <your user id>" },
           ];
