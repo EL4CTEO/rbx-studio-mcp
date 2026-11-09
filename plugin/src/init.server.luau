@@ -211,7 +211,9 @@ local toolbar = plugin:CreateToolbar("rbx-studio")
 local button = toolbar:CreateButton(
 	"rbx-studio",
 	"Show the rbx-studio console",
-	"rbxassetid://134859918773857"
+	-- The image inside the uploaded Decal (134859918773857), not the Decal:
+	-- a button needs the texture id, and the Decal id draws nothing.
+	"rbxassetid://116122341825117"
 )
 button.ClickableWhenViewportHidden = true
 
