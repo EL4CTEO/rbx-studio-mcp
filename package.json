@@ -32,7 +32,8 @@
     "test:live:v090": "node scripts/test-live-v090.mjs",
     "install:plugin": "node scripts/install-plugin.mjs",
     "check:plugin": "node scripts/check-plugin.mjs",
-    "doctor": "node bin/rbx-studio-mcp.js doctor"
+    "doctor": "node bin/rbx-studio-mcp.js doctor",
+    "prepublishOnly": "node scripts/publish-platforms.mjs"
   },
   "keywords": [
     "mcp",
