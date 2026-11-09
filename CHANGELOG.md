@@ -2,6 +2,13 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 1.2.2
+
+### Fixed
+
+- The toolbar icon loads.
+- `npm publish` in the repository publishes the platform packages first.
+
 ## 1.2.1
 
 ### Added
