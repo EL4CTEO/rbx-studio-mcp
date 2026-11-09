@@ -6,6 +6,8 @@ Let an AI agent drive Roblox Studio: read your place, edit scripts, build geomet
 
 ## Install
 
+Runs on Windows (x64, ARM) and macOS (Apple silicon, Intel). The server is a native binary that npm picks for your platform; `npx` needs Node 18 or newer.
+
 **1. The plugin**
 
 ```bash

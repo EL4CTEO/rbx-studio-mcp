@@ -1016,6 +1016,8 @@ pub fn run(harness: &'static Harness, prompt: &str, cwd: PathBuf, session: Optio
         let comspec = std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".into());
         let mut line = vec![cmd_quote(&executable.to_string_lossy())];
         line.extend(argv.iter().map(|a| cmd_quote(a)));
+        // Only Windows adds arguments here; elsewhere this branch never runs.
+        #[cfg_attr(not(windows), allow(unused_mut))]
         let mut c = tokio::process::Command::new(comspec);
         #[cfg(windows)]
         {
