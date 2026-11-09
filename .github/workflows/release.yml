@@ -43,6 +43,7 @@ jobs:
         shell: bash
         run: |
           node scripts/package-native.mjs ${{ matrix.npm }} server/target/${{ matrix.rust }}/release/rbx-studio-mcp${{ matrix.exe }} out
+          mkdir -p dist-npm
           cd out/${{ matrix.npm }} && npm pack --pack-destination ../../dist-npm
       - uses: actions/upload-artifact@v7
         with:
