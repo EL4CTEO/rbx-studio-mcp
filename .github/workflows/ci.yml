@@ -53,7 +53,9 @@ jobs:
       - run: cargo clippy --release -- -D warnings
       - run: cargo test --release
       - run: cargo build --release
-      - run: npm ci
+      # Not `npm ci`: the lock names the platform packages, which only exist on
+      # npm after a release. The tests need just the MCP SDK.
+      - run: npm install --no-package-lock --omit=optional --ignore-scripts
         working-directory: .
       - run: node scripts/test-native.mjs
         working-directory: .

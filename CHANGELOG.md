@@ -2,7 +2,7 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
-## 1.2.0
+## 1.2.1
 
 ### Added
 

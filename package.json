@@ -1,6 +1,6 @@
 {
   "name": "@el4cteo/rbx-studio-mcp",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "MCP server for Roblox Studio. 35 tools, push-based SSE bridge, two-way script sync with files, editor-safe script edits, one-step undo. Native, single binary.",
   "type": "module",
   "license": "MIT",
@@ -49,10 +49,10 @@
     "ai-agent"
   ],
   "optionalDependencies": {
-    "@el4cteo/rbx-studio-mcp-win32-x64": "1.2.0",
-    "@el4cteo/rbx-studio-mcp-win32-arm64": "1.2.0",
-    "@el4cteo/rbx-studio-mcp-darwin-arm64": "1.2.0",
-    "@el4cteo/rbx-studio-mcp-darwin-x64": "1.2.0"
+    "@el4cteo/rbx-studio-mcp-win32-x64": "1.2.1",
+    "@el4cteo/rbx-studio-mcp-win32-arm64": "1.2.1",
+    "@el4cteo/rbx-studio-mcp-darwin-arm64": "1.2.1",
+    "@el4cteo/rbx-studio-mcp-darwin-x64": "1.2.1"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2"
