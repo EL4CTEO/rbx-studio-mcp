@@ -10,6 +10,7 @@
  *
  * Usage: node scripts/test-live-sync.mjs [--port 44755] [--studio-id ID]
  */
+import { nativeBinary } from "./lib/native.mjs";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
@@ -31,8 +32,8 @@ const file = (relative) => join(dir, ...`${base}/${relative}`.split("/"));
 const client = new Client({ name: "test-live-sync", version: "0" });
 await client.connect(
   new StdioClientTransport({
-    command: process.execPath,
-    args: [join(root, "dist", "index.js"), ...(flag("port") ? ["--port", flag("port")] : [])],
+    command: nativeBinary(),
+    args: [...(flag("port") ? ["--port", flag("port")] : [])],
     stderr: "inherit",
   }),
 );

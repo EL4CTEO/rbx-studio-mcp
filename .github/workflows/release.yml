@@ -1,8 +1,9 @@
 name: Release
 
-# Tag a version to cut a release: `git tag v0.1.0 && git push --tags`.
-# The plugin is attached to it as a file, because the alternative is telling
-# people to clone a repository and run a build to get one .rbxmx.
+# Tag a version to cut a release: `git tag v2.0.0 && git push --tags`.
+# Builds the native server for every supported platform, packs the npm
+# packages, attaches them and the plugin to the GitHub release, and publishes
+# to npm when an NPM_TOKEN secret is set.
 on:
   push:
     tags: ["v*"]
@@ -11,41 +12,79 @@ permissions:
   contents: write
 
 jobs:
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { os: windows-latest, rust: x86_64-pc-windows-msvc, npm: win32-x64, exe: .exe }
+          - { os: windows-latest, rust: aarch64-pc-windows-msvc, npm: win32-arm64, exe: .exe }
+          - { os: macos-latest, rust: aarch64-apple-darwin, npm: darwin-arm64, exe: "" }
+          - { os: macos-latest, rust: x86_64-apple-darwin, npm: darwin-x64, exe: "" }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      - name: Toolchain
+        working-directory: server
+        run: |
+          rustup toolchain install
+          rustup target add ${{ matrix.rust }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server
+          key: ${{ matrix.rust }}
+      - name: Build
+        working-directory: server
+        run: cargo build --release --target ${{ matrix.rust }}
+      - name: Pack platform package
+        shell: bash
+        run: |
+          node scripts/package-native.mjs ${{ matrix.npm }} server/target/${{ matrix.rust }}/release/rbx-studio-mcp${{ matrix.exe }} out
+          cd out/${{ matrix.npm }} && npm pack --pack-destination ../../dist-npm
+      - uses: actions/upload-artifact@v7
+        with:
+          name: npm-${{ matrix.npm }}
+          path: dist-npm/*.tgz
+
   release:
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-
       - uses: actions/setup-node@v7
         with:
-          node-version: "22.15"
-          cache: npm
-
-      - run: npm ci
-      - run: npm run build
-
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
       - name: Fetch Luau
         run: |
-          # The permanent "latest" redirect, not the API: an unauthenticated
-          # api.github.com call is rate limited per runner IP, and when it is
-          # refused the version comes back empty and the download 404s.
           curl -sSfL -o luau.zip https://github.com/luau-lang/luau/releases/latest/download/luau-ubuntu.zip
           mkdir -p tools && unzip -o -q luau.zip -d tools
           chmod +x tools/luau tools/luau-compile tools/luau-analyze
-
-      - run: npm test
-      - run: npm run build:plugin
-      - run: npm pack --pack-destination build
-
-      # Fails the release when CHANGELOG.md has no section for the tag, which is
-      # deliberate: a tag with an empty body is worse than a failed workflow,
-      # because nobody notices it until someone lands on the release page.
+      - run: node scripts/check-plugin.mjs
+      - run: node scripts/build-plugin.mjs
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: npm-*
+          path: dist-npm
+          merge-multiple: true
+      - run: npm pack --pack-destination dist-npm
+      # Fails the release when CHANGELOG.md has no section for the tag.
       - name: Release notes
         run: node scripts/release-notes.mjs "${GITHUB_REF_NAME}" release-notes.md
-
       - uses: softprops/action-gh-release@v3
         with:
           files: |
             build/StudioMCP.rbxmx
-            build/*.tgz
+            dist-npm/*.tgz
           body_path: release-notes.md
+      # Platform packages first: the main package depends on them by version.
+      - name: Publish to npm
+        if: ${{ env.NODE_AUTH_TOKEN != '' }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          for pkg in dist-npm/el4cteo-rbx-studio-mcp-*-*.tgz; do npm publish "$pkg" --access public; done
+          npm publish dist-npm/el4cteo-rbx-studio-mcp-[0-9]*.tgz --access public

@@ -22,6 +22,7 @@
  *   --playtest   also start a playtest and exercise character, input and the client tools
  *   --no-camera  leave the viewport camera alone (skips the focus and camera checks)
  */
+import { nativeBinary } from "./lib/native.mjs";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { dirname, join, resolve } from "node:path";
@@ -40,8 +41,8 @@ const TERRAIN_AT = "5000, 0, 5000";
 const client = new Client({ name: "test-live-tools", version: "0" });
 await client.connect(
   new StdioClientTransport({
-    command: process.execPath,
-    args: [join(root, "dist", "index.js"), ...(flag("port") ? ["--port", flag("port")] : [])],
+    command: nativeBinary(),
+    args: [...(flag("port") ? ["--port", flag("port")] : [])],
     stderr: "inherit",
   }),
 );

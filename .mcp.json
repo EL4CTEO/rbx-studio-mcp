@@ -2,10 +2,8 @@
   "mcpServers": {
     "rbx-studio": {
       "type": "stdio",
-      "command": "node",
-      "args": [
-        "./dist/index.js"
-      ],
+      "command": "./server/target/release/rbx-studio-mcp",
+      "args": [],
       "env": {}
     }
   }

@@ -1,0 +1,51 @@
+[package]
+name = "rbx-studio-mcp"
+version = "1.2.0"
+edition = "2024"
+rust-version = "1.99.1"
+description = "MCP server for Roblox Studio"
+license = "MIT"
+repository = "https://github.com/EL4CTEO/rbx-studio-mcp"
+build = "build.rs"
+
+[[bin]]
+name = "rbx-studio-mcp"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1.54", features = ["rt", "macros", "net", "io-util", "io-std", "time", "sync", "process", "fs", "signal"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+schemars = "1.2"
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "multipart", "query"] }
+uuid = { version = "1.29", features = ["v4"] }
+parking_lot = "0.13"
+futures = { version = "0.3", default-features = false, features = ["std"] }
+bytes = "1"
+base64 = "0.23"
+sha2 = "0.11"
+regex = "1"
+dirs = "7"
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+ruzstd = "0.9"
+crc32fast = "1.5"
+notify = "9.0.0-rc.7"
+mimalloc = { version = "0.1", default-features = false }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[build-dependencies]
+sha2 = "0.11"
+flate2 = "1"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "unwind"
+strip = true

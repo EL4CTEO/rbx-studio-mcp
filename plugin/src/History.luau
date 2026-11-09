@@ -61,6 +61,8 @@ export type Row = {
 	turn: boolean?,
 	threaded: boolean?,
 	ms: number?,
+	-- A grouped row's sub-items.
+	children: { { message: string, detail: string? } }?,
 }
 
 local store: Plugin? = nil
@@ -99,7 +101,24 @@ local function sane(value: any): Row?
 	if typeof(row.stamp) ~= "string" then
 		return nil
 	end
+	-- A group's sub-items, each checked like a row: anything malformed is dropped.
+	local children: { { message: string, detail: string? } }? = nil
+	if typeof(row.children) == "table" then
+		local kept = {}
+		for _, child in row.children do
+			if typeof(child) == "table" and typeof(child.message) == "string" then
+				table.insert(kept, {
+					message = child.message,
+					detail = if typeof(child.detail) == "string" then child.detail else nil,
+				})
+			end
+		end
+		if #kept > 0 then
+			children = kept
+		end
+	end
 	return {
+		children = children,
 		level = row.level,
 		message = row.message,
 		detail = if typeof(row.detail) == "string" then row.detail else nil,

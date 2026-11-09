@@ -5,11 +5,12 @@ import { inflateSync } from "node:zlib";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { resolve } from "node:path";
+import { nativeBinary } from "./lib/native.mjs";
 
 const version = JSON.parse(readFileSync(resolve("package.json"), "utf8")).version;
 const requestedId = process.argv[process.argv.indexOf("--studio-id") + 1];
 const client = new Client({ name: "test-live-v090", version });
-await client.connect(new StdioClientTransport({ command: process.execPath, args: [resolve("dist/index.js")], stderr: "inherit" }));
+await client.connect(new StdioClientTransport({ command: nativeBinary(), args: [], stderr: "inherit" }));
 const reports = [];
 const fixture = "Workspace.__mcp_v090_test";
 let runtimeId;

@@ -2,6 +2,44 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 1.2.0
+
+### Added
+
+- New panel design: a clean header, log rows with a coloured diamond per kind of call, and durations in their own column.
+- Six themes, each with its own animated background: Nebula (constellation), Ember (rising sparks), Tide (waves), Galaxy (a turning spiral galaxy with an analysis overlay), Aurora (northern lights), Monolith (slabs and a passing beam). Pick one from the dots in the header or with `theme <name>`; it is remembered.
+- The background reacts to activity: each finished call sends a pulse in its colour. Clicking the empty background sets it off too. `background off` turns it off.
+- Grouped rows: a typed command's output, an agent run's steps, bursts of calls and reconnects fold under one row and reopen on hover.
+- Animations: new rows pop in and type themselves out; hovered rows open up; the reload and trash icons animate; the prompt caret sways while you type.
+- Calls the server refuses before they reach Studio now show in the panel as a red row.
+- Per-game permissions for Open Cloud: only reading is on until you run `allow <group>` in the panel (`assets`, `data`, `edit`, `money`, `players`). Existing setups need one `allow` per game before uploads, data store writes, publishing and the like work again.
+- Test Teleports: after a teleport inside a playtest, calls to the old server's id say which server the test moved to.
+- `playpanel on|off|left|right|bottom|float`: show the panel during playtests, docked on a side or floating at the editor panel's size. Off by default. It no longer comes up floating and shrunk on every test after the first.
+- Stopping a playtest no longer fills the panel with "Wait for the playtest to stop" rows.
+- A typed line no longer replays its animation when an agent starts, and appears at once instead of typing itself out again.
+- Switching theme recolours the log in place, so animations in progress keep running.
+- Monolith: each click sends its own beam; the running one carries on.
+- New plugin icon.
+
+### Changed
+
+- The server is rewritten in Rust: one native binary per platform (Windows x64/arm64, macOS arm64/x64), installed through npm as before. Starts in about 25 ms instead of 450 ms and uses about 14 MB instead of 95 MB.
+- The plugin is built into the server, so `--install-plugin` no longer needs Node or the repository.
+- An agent's reply is one block, its tool calls read as short phrases, and the finish line is "Done · 38.3 s".
+- A teleport during a playtest no longer makes agents ask which place to use.
+- Errors from a proxying server keep their hint.
+
+### Fixed
+
+- `api describe` finds plugin-only classes such as `DockWidgetPluginGui`.
+- The command menu reopens after picking a command and deleting it.
+- Log rows no longer react to the mouse through the open command menu.
+- The saved theme is applied in full after reloading Studio.
+
+### Removed
+
+- The previous themes, the `visuals` command and the activity band.
+
 ## 1.0.6
 
 ### Changed

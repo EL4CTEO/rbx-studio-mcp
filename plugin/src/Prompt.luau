@@ -42,18 +42,24 @@
 	is worse than no key at all.
 ]]
 
-local Themes = require(script.Parent.Themes)
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+
+local Palette = require(script.Parent.Palette)
+
+-- The caret swelling when typing starts, and settling when it stops.
+local CARET_GROW = TweenInfo.new(0.16, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
 local Secret = require(script.Parent.Secret)
 
 local Prompt = {}
 
 -- Tall enough for a 12pt line with air around it, short enough that it does not
 -- read as a second header. The log gives up exactly this much.
-Prompt.HEIGHT = 30
+Prompt.HEIGHT = 46
 
 -- Matches the log's own left inset, so the caret sits in the same column as the
 -- sigils below it and the whole panel reads as one grid.
-local INSET = 12
+local INSET = 20
 local CARET_WIDTH = 14
 
 -- The stop button, shown at the right of the row only while an agent runs.
@@ -78,16 +84,16 @@ local MAX_HISTORY = 50
 	the log and starts being a page covering it. Everything past that is reached
 	by scrolling, which is the mouse's job here rather than a key's.
 ]]
-local MENU_ROW_HEIGHT = 20
+local MENU_ROW_HEIGHT = 24
 local MENU_MAX_ROWS = 7
-local MENU_PAD = 6
+local MENU_PAD = 8
 local MENU_CAPTION_HEIGHT = 16
 local MENU_SCROLLBAR = 4
 -- Gap between the menu's bottom edge and the top of the prompt row.
 local MENU_LIFT = 2
 -- Where the summary column starts, measured from the menu's left edge. Wide
 -- enough for `agent [use <id>|new]`, the longest usage line there is.
-local MENU_SUMMARY_X = 140
+local MENU_SUMMARY_X = 170
 
 --[[
 	Explicit depths, because a plugin widget draws with ZIndexBehavior.Global
@@ -106,8 +112,13 @@ type Suggestion = {
 	summary: string,
 }
 
+local function escapeRich(text: string): string
+	return (string.gsub(string.gsub(string.gsub(text, "&", "&amp;"), "<", "&lt;"), ">", "&gt;"))
+end
+
 type MenuRow = {
 	button: TextButton,
+	dot: Frame,
 	usage: TextLabel,
 	summary: TextLabel,
 	--[[
@@ -130,6 +141,7 @@ type Runtime = {
 	hint: TextLabel?,
 	rule: Frame?,
 	menu: Frame?,
+	box: Frame?,
 	menuScroll: ScrollingFrame?,
 	menuCaption: TextLabel?,
 	menuRows: { MenuRow },
@@ -232,13 +244,13 @@ local function paintCaret()
 	if caret == nil then
 		return
 	end
-	local palette = Themes.palette()
-	caret.TextColor3 = if runtime.busy then palette.amber else palette.violet
+	local palette = Palette.get()
+	caret.TextColor3 = if runtime.busy then palette.amber else palette.cyan
 end
 
 local function placeholder(): string
 	if runtime.busy then
-		return "running -- press stop to cancel"
+		return "Working\u{2026} press Stop to cancel"
 	end
 	return if runtime.chat
 		then "type a command, or ask for something"
@@ -308,7 +320,7 @@ local function renderMenu()
 		return
 	end
 
-	local palette = Themes.palette()
+	local palette = Palette.get()
 
 	for position, row in runtime.menuRows do
 		local entry = runtime.matches[position]
@@ -320,10 +332,18 @@ local function renderMenu()
 
 		row.button.Visible = true
 		row.button.LayoutOrder = position
-		row.button.BackgroundColor3 = palette.surface
-		row.button.BackgroundTransparency = if position == runtime.hovered then 0.25 else 1
-		row.usage.Text = entry.usage
-		row.usage.TextColor3 = if position == runtime.hovered then palette.violet else palette.text
+		local hot = position == runtime.hovered
+		row.button.BackgroundColor3 = palette.rule
+		row.button.BackgroundTransparency = if hot then 0.8 else 1
+		-- The name in full colour, its arguments dimmed and smaller beside it.
+		local name, rest = string.match(entry.usage, "^(%S+)%s*(.*)$")
+		local args = if rest ~= nil and rest ~= ""
+			then string.format(' <font color="#%s" size="11">%s</font>', palette.dim:ToHex(), escapeRich(rest))
+			else ""
+		row.usage.Text = escapeRich(name or entry.usage) .. args
+		row.usage.TextColor3 = palette.text
+		row.dot.BackgroundColor3 = if hot then palette.text else palette.cyan
+		row.dot.Size = if hot then UDim2.fromOffset(6, 6) else UDim2.fromOffset(4, 4)
 		row.summary.Text = entry.summary
 		row.summary.TextColor3 = palette.dim
 		row.entry = entry.name
@@ -350,7 +370,7 @@ local function renderMenu()
 	-- out of the menu rather than as part of it.
 	caption.Position = UDim2.fromOffset(MENU_PAD, MENU_PAD + visible * MENU_ROW_HEIGHT)
 
-	menu.BackgroundColor3 = palette.background
+	menu.BackgroundColor3 = Palette.deep()
 	menu.Size =
 		UDim2.new(1, -(INSET * 2), 0, MENU_PAD * 2 + visible * MENU_ROW_HEIGHT + MENU_CAPTION_HEIGHT)
 	menu.Visible = true
@@ -537,7 +557,7 @@ end
 	into a scrollable canvas, which is what makes the eighth command reachable.
 ]]
 local function buildRows(scroll: ScrollingFrame, count: number)
-	local palette = Themes.palette()
+	local palette = Palette.get()
 
 	local layout = Instance.new("UIListLayout")
 	layout.FillDirection = Enum.FillDirection.Vertical
@@ -555,31 +575,51 @@ local function buildRows(scroll: ScrollingFrame, count: number)
 		button.Name = string.format("Row%d", slot)
 		button.Text = ""
 		button.AutoButtonColor = false
-		button.BackgroundColor3 = palette.surface
+		button.BackgroundColor3 = palette.rule
 		button.BackgroundTransparency = 1
 		button.BorderSizePixel = 0
 		button.Visible = false
+		-- The same left-bright wash a hovered log row gets.
+		local wash = Instance.new("UIGradient")
+		wash.Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 0),
+			NumberSequenceKeypoint.new(0.9, 0.85),
+			NumberSequenceKeypoint.new(1, 1),
+		})
+		wash.Parent = button
 		button.Size = UDim2.new(1, -MENU_SCROLLBAR, 0, MENU_ROW_HEIGHT)
 		button.ZIndex = Z_MENU_ROW
 		button.Parent = scroll
 
+		local dot = Instance.new("Frame")
+		dot.Name = "Dot"
+		dot.BorderSizePixel = 0
+		dot.Rotation = 45
+		dot.AnchorPoint = Vector2.new(0.5, 0.5)
+		dot.Position = UDim2.new(0, MENU_PAD + 3, 0.5, 0)
+		dot.Size = UDim2.fromOffset(4, 4)
+		dot.BackgroundColor3 = palette.cyan
+		dot.ZIndex = Z_MENU_TEXT
+		dot.Parent = button
+
 		local usage = Instance.new("TextLabel")
 		usage.Name = "Usage"
-		usage.Font = Enum.Font.Code
-		usage.TextSize = 12
+		usage.Font = Palette.FONT_MEDIUM
+		usage.TextSize = 14
+		usage.RichText = true
 		usage.TextColor3 = palette.text
 		usage.TextXAlignment = Enum.TextXAlignment.Left
 		usage.TextTruncate = Enum.TextTruncate.AtEnd
 		usage.BackgroundTransparency = 1
-		usage.Position = UDim2.fromOffset(MENU_PAD, 0)
-		usage.Size = UDim2.new(0, MENU_SUMMARY_X - MENU_PAD * 2, 1, 0)
+		usage.Position = UDim2.fromOffset(MENU_PAD + 14, 0)
+		usage.Size = UDim2.new(0, MENU_SUMMARY_X - MENU_PAD * 2 - 14, 1, 0)
 		usage.ZIndex = Z_MENU_TEXT
 		usage.Parent = button
 
 		local summary = Instance.new("TextLabel")
 		summary.Name = "Summary"
-		summary.Font = Enum.Font.Code
-		summary.TextSize = 11
+		summary.Font = Palette.FONT
+		summary.TextSize = 13
 		summary.TextColor3 = palette.dim
 		summary.TextXAlignment = Enum.TextXAlignment.Left
 		summary.TextTruncate = Enum.TextTruncate.AtEnd
@@ -591,6 +631,7 @@ local function buildRows(scroll: ScrollingFrame, count: number)
 
 		local record: MenuRow = {
 			button = button,
+			dot = dot,
 			usage = usage,
 			summary = summary,
 			entry = "",
@@ -689,7 +730,7 @@ function Prompt.mount(
 		suggest: (string) -> { Suggestion },
 	}
 )
-	local palette = Themes.palette()
+	local palette = Palette.get()
 	runtime.submit = handlers.submit
 	runtime.complete = handlers.complete
 	runtime.suggest = handlers.suggest
@@ -697,20 +738,39 @@ function Prompt.mount(
 	local row = Instance.new("Frame")
 	row.Name = "Prompt"
 	row.BackgroundColor3 = palette.background
+	row.BackgroundTransparency = 1
 	row.BorderSizePixel = 0
 	row.Parent = parent
 	runtime.row = row
+
+	-- The input box: a dark inset with a hairline, the row's only visible frame.
+	local box = Instance.new("Frame")
+	box.Name = "Box"
+	box.AnchorPoint = Vector2.new(0.5, 0.5)
+	box.Position = UDim2.fromScale(0.5, 0.5)
+	box.Size = UDim2.new(1, -20, 0, 32)
+	box.BackgroundColor3 = Palette.deep()
+	box.BackgroundTransparency = 0.35
+	box.BorderSizePixel = 0
+	box.ZIndex = 1
+	box.Parent = row
+	runtime.box = box
+	local boxStroke = Instance.new("UIStroke")
+	boxStroke.Color = palette.rule
+	boxStroke.Transparency = 0.45
+	boxStroke.Parent = box
 
 	local caret = Instance.new("TextLabel")
 	caret.Name = "Caret"
 	caret.Text = "\u{203A}"
 	caret.Font = Enum.Font.Code
 	caret.TextSize = 14
-	caret.TextColor3 = palette.violet
+	caret.TextColor3 = palette.cyan
 	caret.TextXAlignment = Enum.TextXAlignment.Left
 	caret.BackgroundTransparency = 1
 	caret.Position = UDim2.fromOffset(INSET, 0)
 	caret.Size = UDim2.new(0, CARET_WIDTH, 1, 0)
+	caret.ZIndex = 2
 	caret.Parent = row
 	runtime.caret = caret
 
@@ -726,8 +786,8 @@ function Prompt.mount(
 	local hint = Instance.new("TextLabel")
 	hint.Name = "Hint"
 	hint.Text = ""
-	hint.Font = Enum.Font.Code
-	hint.TextSize = 11
+	hint.Font = Palette.FONT
+	hint.TextSize = 12
 	hint.TextColor3 = palette.dim
 	hint.TextXAlignment = Enum.TextXAlignment.Right
 	hint.TextTruncate = Enum.TextTruncate.AtEnd
@@ -735,6 +795,7 @@ function Prompt.mount(
 	hint.AnchorPoint = Vector2.new(1, 0)
 	hint.Position = UDim2.new(1, -INSET, 0, 0)
 	hint.Size = UDim2.new(0.5, 0, 1, 0)
+	hint.ZIndex = 2
 	hint.Parent = row
 	runtime.hint = hint
 
@@ -743,8 +804,8 @@ function Prompt.mount(
 	field.Text = ""
 	field.PlaceholderText = placeholder()
 	field.PlaceholderColor3 = palette.dim
-	field.Font = Enum.Font.Code
-	field.TextSize = 12
+	field.Font = Palette.FONT
+	field.TextSize = 14
 	field.TextColor3 = palette.text
 	field.TextXAlignment = Enum.TextXAlignment.Left
 	field.BackgroundTransparency = 1
@@ -755,6 +816,7 @@ function Prompt.mount(
 	field.ClipsDescendants = true
 	field.Position = UDim2.fromOffset(left, 0)
 	field.Size = UDim2.new(1, -(left + INSET), 1, 0)
+	field.ZIndex = 2
 	field.Parent = row
 	runtime.field = field
 
@@ -767,7 +829,7 @@ function Prompt.mount(
 	rule.Position = UDim2.fromScale(0, 0)
 	rule.Size = UDim2.new(1, 0, 0, 1)
 	rule.BackgroundColor3 = palette.rule
-	rule.BackgroundTransparency = 0.4
+	rule.BackgroundTransparency = 0.65
 	rule.BorderSizePixel = 0
 	rule.Parent = row
 	runtime.rule = rule
@@ -781,46 +843,47 @@ function Prompt.mount(
 	]]
 	local stop = Instance.new("TextButton")
 	stop.Name = "Stop"
-	stop.Text = "\u{25A0} stop"
-	stop.Font = Enum.Font.Code
-	stop.TextSize = 11
+	stop.Text = "Stop"
+	stop.Font = Palette.FONT_MEDIUM
+	stop.TextSize = 13
 	stop.AutoButtonColor = false
 	stop.BorderSizePixel = 0
 	stop.AnchorPoint = Vector2.new(1, 0.5)
-	stop.Position = UDim2.new(1, -INSET, 0.5, 0)
-	stop.Size = UDim2.fromOffset(STOP_WIDTH, 20)
-	stop.BackgroundColor3 = palette.background
-	stop.TextColor3 = palette.red
+	-- Same slot and shape as SEND: square, inside the box's right edge.
+	stop.Position = UDim2.new(1, -11, 0.5, 0)
+	stop.Size = UDim2.fromOffset(STOP_WIDTH, 30)
+	stop.BackgroundColor3 = palette.red
+	stop.BackgroundTransparency = 0.82
+	stop.TextColor3 = palette.text
 	stop.Visible = false
+	stop.ZIndex = 2
 	stop.Parent = row
 	runtime.stop = stop
 
-	local stopCorner = Instance.new("UICorner")
-	stopCorner.CornerRadius = UDim.new(0, 4)
-	stopCorner.Parent = stop
 
 	local stopStroke = Instance.new("UIStroke")
+	stopStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
 	stopStroke.Color = palette.red
-	stopStroke.Transparency = 0.5
+	stopStroke.Transparency = 0.55
 	stopStroke.Parent = stop
 
 	stop.MouseEnter:Connect(function()
 		if not runtime.stopping then
-			local now = Themes.palette()
-			stopStroke.Transparency = 0.1
-			stop.BackgroundColor3 = now.background:Lerp(now.red, 0.18)
+			local now = Palette.get()
+			stopStroke.Transparency = 0.15
+			stop.BackgroundTransparency = 0.6
 		end
 	end)
 	stop.MouseLeave:Connect(function()
-		stopStroke.Transparency = 0.5
-		stop.BackgroundColor3 = Themes.palette().background
+		stopStroke.Transparency = 0.55
+		stop.BackgroundTransparency = 0.82
 	end)
 	stop.MouseButton1Click:Connect(function()
 		if runtime.stopping or not runtime.busy then
 			return
 		end
 		runtime.stopping = true
-		stop.Text = "stopping"
+		stop.Text = "Stopping\u{2026}"
 		local run = runtime.submit
 		if run ~= nil then
 			task.spawn(run, "stop")
@@ -830,7 +893,7 @@ function Prompt.mount(
 		task.delay(6, function()
 			if runtime.stopping and runtime.busy then
 				runtime.stopping = false
-				stop.Text = "\u{25A0} stop"
+				stop.Text = "Stop"
 			end
 		end)
 	end)
@@ -845,20 +908,21 @@ function Prompt.mount(
 	]]
 	local send = Instance.new("TextButton")
 	send.Name = "Send"
-	send.Text = "send \u{25B8}"
-	send.Font = Enum.Font.Code
-	send.TextSize = 11
+	send.Text = "Send"
+	send.Font = Palette.FONT_MEDIUM
+	send.TextSize = 13
 	send.AutoButtonColor = false
 	send.BorderSizePixel = 0
 	-- Flush with the panel's right edge, full row height: a docked button,
 	-- not a floating pill with a gap beside it.
-	send.AnchorPoint = Vector2.new(1, 0)
-	send.Position = UDim2.new(1, 0, 0, 1)
-	send.Size = UDim2.new(0, SEND_WIDTH, 1, -1)
-	send.BackgroundColor3 = palette.violet
+	send.AnchorPoint = Vector2.new(1, 0.5)
+	send.Position = UDim2.new(1, -11, 0.5, 0)
+	send.Size = UDim2.new(0, SEND_WIDTH, 0, 30)
+	send.BackgroundColor3 = palette.cyan
 	send.BackgroundTransparency = 0.75
 	send.TextColor3 = palette.text
 	send.Visible = false
+	send.ZIndex = 2
 	send.Parent = row
 	runtime.send = send
 
@@ -882,6 +946,37 @@ function Prompt.mount(
 	field:GetPropertyChangedSignal("Text"):Connect(syncSend)
 
 	--[[
+		Typing feedback: the caret swells and sways side to side while keys
+		are coming in, and settles 0.6s after the last one.
+	]]
+	local typingUntil = 0
+	local swaying: RBXScriptConnection? = nil
+	field:GetPropertyChangedSignal("Text"):Connect(function()
+		if field.Text == "" then
+			typingUntil = 0
+			return
+		end
+		typingUntil = os.clock() + 0.6
+		if swaying ~= nil then
+			return
+		end
+		TweenService:Create(caret, CARET_GROW, { TextSize = 19 }):Play()
+		local started = os.clock()
+		swaying = RunService.Heartbeat:Connect(function()
+			local now = os.clock()
+			if now >= typingUntil then
+				if swaying then
+					swaying:Disconnect()
+					swaying = nil
+				end
+				TweenService:Create(caret, CARET_GROW, { TextSize = 14, Position = UDim2.fromOffset(INSET, 0) }):Play()
+				return
+			end
+			caret.Position = UDim2.fromOffset(INSET + math.sin((now - started) * 14) * 2.5, 0)
+		end)
+	end)
+
+	--[[
 		The menu, parented to the row rather than to the panel.
 
 		Anchored to its own bottom edge with a negative Y offset, so it grows
@@ -892,7 +987,8 @@ function Prompt.mount(
 	]]
 	local menu = Instance.new("Frame")
 	menu.Name = "Menu"
-	menu.BackgroundColor3 = palette.background
+	menu.BackgroundColor3 = Palette.deep()
+	menu.BackgroundTransparency = 0.04
 	menu.BorderSizePixel = 0
 	menu.Visible = false
 	menu.AnchorPoint = Vector2.new(0, 1)
@@ -920,12 +1016,12 @@ function Prompt.mount(
 
 	local menuStroke = Instance.new("UIStroke")
 	menuStroke.Color = palette.rule
-	menuStroke.Transparency = 0.4
+	menuStroke.Transparency = 0.5
 	menuStroke.Thickness = 1
 	menuStroke.Parent = menu
 
 	local menuCorner = Instance.new("UICorner")
-	menuCorner.CornerRadius = UDim.new(0, 4)
+	menuCorner.CornerRadius = UDim.new(0, 0)
 	menuCorner.Parent = menu
 
 	--[[
@@ -955,8 +1051,8 @@ function Prompt.mount(
 
 	local caption = Instance.new("TextLabel")
 	caption.Name = "Caption"
-	caption.Font = Enum.Font.Code
-	caption.TextSize = 10
+	caption.Font = Palette.FONT
+	caption.TextSize = 12
 	caption.TextColor3 = palette.dim
 	caption.TextXAlignment = Enum.TextXAlignment.Left
 	caption.TextTruncate = Enum.TextTruncate.AtEnd
@@ -1016,6 +1112,16 @@ function Prompt.mount(
 			-- does the rest of the work.
 			return
 		end
+		--[[
+			Text arriving means the field has the cursor, whatever our flag says.
+			Clicking a menu row takes focus away and hands it back through
+			CaptureFocus, which does not always fire `Focused` in a plugin
+			widget -- so the flag stayed false and the menu never came back
+			after the filled command was deleted and retyped.
+		]]
+		if field:IsFocused() then
+			runtime.focused = true
+		end
 		-- Refreshes the hint itself, so there is no second call here.
 		refreshMenu()
 	end)
@@ -1073,6 +1179,10 @@ function Prompt.focus()
 		pcall(function()
 			field:CaptureFocus()
 		end)
+		-- Don't wait on `Focused`, which a plugin widget may not fire here.
+		if field:IsFocused() then
+			runtime.focused = true
+		end
 	end
 end
 
@@ -1100,7 +1210,7 @@ function Prompt.setBusy(busy: boolean)
 	if not busy then
 		runtime.stopping = false
 		if stop ~= nil then
-			stop.Text = "\u{25A0} stop"
+			stop.Text = "Stop"
 		end
 	end
 	layoutRow()
@@ -1146,12 +1256,14 @@ function Prompt.isBusy(): boolean
 	return runtime.busy
 end
 
+-- Whether the command menu is on screen, covering the log.
+function Prompt.isMenuOpen(): boolean
+	local menu = runtime.menu
+	return menu ~= nil and menu.Visible
+end
+
 function Prompt.applyTheme()
-	local palette = Themes.palette()
-	local row = runtime.row
-	if row then
-		row.BackgroundColor3 = palette.background
-	end
+	local palette = Palette.get()
 	local field = runtime.field
 	if field then
 		field.TextColor3 = palette.text
@@ -1165,35 +1277,40 @@ function Prompt.applyTheme()
 	if rule then
 		rule.BackgroundColor3 = palette.rule
 	end
-	local send = runtime.send
-	if send then
-		send.BackgroundColor3 = palette.violet
-		send.TextColor3 = palette.text
-	end
-	local menu = runtime.menu
-	if menu then
-		menu.BackgroundColor3 = palette.background
-		local stroke = menu:FindFirstChildOfClass("UIStroke")
+	local box = runtime.box
+	if box then
+		box.BackgroundColor3 = Palette.deep()
+		local stroke = box:FindFirstChildOfClass("UIStroke")
 		if stroke then
 			stroke.Color = palette.rule
 		end
 	end
-	-- Repainted through the renderer rather than field by field: the hover
-	-- decides half of these colours, and only one function knows which row has
-	-- it.
-	if isMenuOpen() then
-		renderMenu()
+	local send = runtime.send
+	if send then
+		send.BackgroundColor3 = palette.cyan
+		send.TextColor3 = palette.text
 	end
-	paintCaret()
 	local stop = runtime.stop
 	if stop then
-		stop.BackgroundColor3 = palette.background
-		stop.TextColor3 = palette.red
+		stop.BackgroundColor3 = palette.red
+		stop.TextColor3 = palette.text
 		local stroke = stop:FindFirstChildOfClass("UIStroke")
 		if stroke then
 			stroke.Color = palette.red
 		end
 	end
+	local menu = runtime.menu
+	if menu then
+		menu.BackgroundColor3 = Palette.deep()
+		local stroke = menu:FindFirstChildOfClass("UIStroke")
+		if stroke then
+			stroke.Color = palette.rule
+		end
+	end
+	if isMenuOpen() then
+		renderMenu()
+	end
+	paintCaret()
 end
 
 return Prompt

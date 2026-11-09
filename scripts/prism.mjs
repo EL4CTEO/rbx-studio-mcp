@@ -14,7 +14,33 @@
  * Usage: node scripts/prism.mjs docs/prism.svg docs/prism.png
  */
 import { writeFileSync } from "node:fs";
-import { encodePng } from "../dist/lib/png.js";
+import { crc32, deflateSync } from "node:zlib";
+
+/** RGB triples to PNG (filter None per row). */
+function encodePng(rgb, width, height) {
+  const chunk = (kind, payload) => {
+    const out = Buffer.alloc(payload.length + 12);
+    out.writeUInt32BE(payload.length, 0);
+    out.write(kind, 4, "ascii");
+    payload.copy(out, 8);
+    out.writeUInt32BE(crc32(out.subarray(4, 8 + payload.length)), 8 + payload.length);
+    return out;
+  };
+  const stride = width * 3;
+  const raw = Buffer.alloc((stride + 1) * height);
+  for (let row = 0; row < height; row += 1) Buffer.from(rgb).copy(raw, row * (stride + 1) + 1, row * stride, row * stride + stride);
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header[8] = 8;
+  header[9] = 2;
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk("IHDR", header),
+    chunk("IDAT", deflateSync(raw, { level: 6 })),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
+}
 
 const SIZE = 512;
 const SS = 3; // subsamples per axis

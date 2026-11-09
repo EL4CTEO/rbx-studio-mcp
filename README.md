@@ -155,13 +155,17 @@ Add the ones you want: `assets`, `universe-datastores`, `ordered-data-stores`, `
 
 The key is stored at `~/.rbx-studio-mcp/credentials.json`, never in the place file or the conversation. `cloud` shows what is set, `cloud test` re-checks it, `cloud forget` deletes it. `ROBLOX_API_KEY` and friends in the environment take priority.
 
+**Per-game permissions.** Agents can only read a game's settings until you allow more. Type `allow` in the panel to see the list for the open game, `allow <group>` to turn one on, `allow <group> off` to turn it off. Groups: `read`, `assets`, `data`, `edit` (settings, publishing, restarts, live Luau), `money` (products and passes), `players` (bans).
+
 ## The console panel
 
 Every call is logged with how long it took. At the foot of the panel is a command line: click it to see every command, or type `help`.
 
+Six themes with animated backgrounds: Nebula, Ember, Tide, Galaxy, Aurora and Monolith. Pick one from the dots in the header or with `theme <name>`; `background off` turns the animation off.
+
 Run `chat on` and sentences you type go to a real coding agent. It uses any of 31 supported agents on your PATH, like Claude Code, Codex or Gemini; `agent` lists them and `agent use <id>` picks one. It runs separately from your terminal and is billed separately. Claude Code and Copilot are limited to the `rbx-studio` tools; the others use their own permission settings. The **stop** button cancels it.
 
-Eight themes: pick one from the dots in the header or with `theme <name>`. The current special is **Hyperline**, where every call is a light trail through a live tunnel.
+Run `playpanel on` to also show the panel during playtests (off by default). `playpanel left`, `right` or `bottom` docks it there; `playpanel float` floats it at the panel's size.
 
 ## Security
 
@@ -169,14 +173,16 @@ The server only listens on loopback. Requests need a header a browser cannot set
 
 ## Development
 
+The server is Rust (`server/`, toolchain pinned to 1.99.1); the plugin is Luau (`plugin/`).
+
 ```bash
-npm install
-npm run build          # TypeScript -> dist/
-npm run install:plugin # build the plugin and copy it into Studio
-npm test
+cargo build --release --manifest-path server/Cargo.toml
+node scripts/install-plugin.mjs   # build the plugin and copy it into Studio
+cargo test --manifest-path server/Cargo.toml
+node scripts/test-native.mjs      # black-box MCP and bridge tests
 ```
 
-Needs `luau`, `luau-compile` and `luau-analyze` from [the Luau releases](https://github.com/luau-lang/luau/releases) on `PATH` or in `tools/`.
+The plugin checks need `luau`, `luau-compile` and `luau-analyze` from [the Luau releases](https://github.com/luau-lang/luau/releases) on `PATH` or in `tools/`.
 
 Live tests need Studio open with the plugin loaded, and they clean up after themselves: `scripts/test-live.mjs`, `test-live-tools.mjs [--playtest]`, `test-live-sync.mjs` and `test-live-sync-scale.mjs`.
 

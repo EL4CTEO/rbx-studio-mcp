@@ -14,7 +14,7 @@
  *
  * Usage: node scripts/test-live.mjs [--port 44755] [--sizes 1000,16000,64000,256000] [--client] [--remotes] [--playtest-start] [--playtest-op play|multiplayer] [--stale-cursor CURSOR] [--playtests-off] [--studio-id ID] [--player NAME]
  */
-import { expectedPluginBuildId } from "../dist/lib/pluginbuild.js";
+import { nativeBinary, pluginBuildId as expectedPluginBuildId } from "./lib/native.mjs";
 
 const args = process.argv.slice(2);
 const flag = (name, fallback) => {
@@ -326,15 +326,15 @@ if (args.includes("--playtests-off")) {
 // Starts a real playtest through the public tool handler, proving its returned
 // ID is the attached server session. Run only from an edit session, opt in.
 if (args.includes("--playtest-start")) {
-  const { z } = await import("zod");
-  const { registerPlaytestTools } = await import("../dist/tools/playtest.js");
-  let handler, spec;
+  // Driven through the real server binary, as an agent would call it.
+  const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+  const { StdioClientTransport } = await import("@modelcontextprotocol/sdk/client/stdio.js");
+  const mcp = new Client({ name: "test-live", version: "1" });
+  await mcp.connect(new StdioClientTransport({ command: nativeBinary(), args: ["--port", String(port)], stderr: "inherit" }));
+  const handler = (args) => mcp.callTool({ name: "playtest", arguments: args });
   const bridge = {
     sessions: async () => (await (await fetch(`${base}/sessions`, {headers:HEADERS})).json()),
-    call: (op, params, options = {}) => callTo(options.studioId ?? studio.studioId, op, params, options.timeoutMs),
-    notePlaceName: async () => {},
   };
-  registerPlaytestTools({bridge,server:{registerTool(_name, definition, invoke) {spec = definition; handler = invoke;}}});
   let startedId;
   let started = false;
   const startOp = flag("playtest-op", "play");
@@ -345,17 +345,17 @@ if (args.includes("--playtest-start")) {
       check(false, "--playtest-start needs an edit session with playtests enabled");
     } else {
       started = true;
-      const result = await handler(z.object(spec.inputSchema).parse({op:startOp,players:2,studioId:studio.studioId}));
-      const id = /"studioId": "([^"]+)"/.exec(result.content[0].text)?.[1];
+      const result = await handler({op:startOp,players:2,studioId:studio.studioId});
+      const id = /"studioId": ?"([^"]+)"/.exec(result.content[0].text)?.[1];
       startedId = id;
       const sessions = await bridge.sessions();
       check(Boolean(id && id !== studio.studioId && sessions.list.some(s => s.studioId === id && s.context?.includes("playtest"))), "playtest returns its connected server studioId directly");
       const state = id ? await callTo(id, "playtest.control", {op:"state"}) : null;
       if (state?.state.players?.length && !result.content[0].text.includes("players are still joining"))
-        check(/"players": \[/.test(result.content[0].text), "playtest includes available player identities");
+        check(/"players": ?\[/.test(result.content[0].text), "playtest includes available player identities");
       if (startOp === "multiplayer") {
         const reply = result.content[0].text;
-        const named = state?.state.players?.length === 2 && state.state.players.every(player => reply.includes(`"name": "${player.name}"`));
+        const named = state?.state.players?.length === 2 && state.state.players.every(player => (reply.includes(`"name": "${player.name}"`) || reply.includes(`"name":"${player.name}"`)));
         check(named || reply.includes("players are still joining"), "multiplayer returns player names when connected, or identifies late joins");
       }
       const staleCursor = flag("stale-cursor", undefined);
@@ -381,6 +381,7 @@ if (args.includes("--playtest-start")) {
     const sessions = await bridge.sessions().catch(() => ({list:[]}));
     const target = startedId ?? (started ? sessions.list.find(s => s.studioId !== studio.studioId && s.context?.includes("playtest"))?.studioId : undefined);
     if (target) await callTo(target, "playtest.control", {op:"endTest",value:"live check complete"}).catch(() => {});
+    await mcp.close().catch(() => {});
   }
 }
 

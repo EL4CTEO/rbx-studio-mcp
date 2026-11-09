@@ -149,9 +149,31 @@ function Api.describe(params: { [string]: any }): { [string]: any }
 		Dispatch.fail("BAD_PARAMS", "describe needs a `className`, e.g. \"TweenService\".")
 	end
 
+	--[[
+		An empty filter only sees what game scripts may see, so plugin-only
+		classes (DockWidgetPluginGui, PluginGui, Plugin...) read as missing.
+		Asking again with every capability finds them; they are marked so an
+		agent does not write them into a game script.
+	]]
+	local filter: { [string]: any } = {}
 	local okClass, class = pcall(function()
-		return (ReflectionService :: any):GetClass(className, {})
+		return (ReflectionService :: any):GetClass(className, filter)
 	end)
+	local elevated = false
+	if okClass and class == nil then
+		local okCaps, caps = pcall(function()
+			return SecurityCapabilities.new(table.unpack(Enum.SecurityCapability:GetEnumItems()))
+		end)
+		if okCaps then
+			local wide = { Security = caps }
+			local okWide, wideClass = pcall(function()
+				return (ReflectionService :: any):GetClass(className, wide)
+			end)
+			if okWide and wideClass ~= nil then
+				class, filter, elevated = wideClass, wide, true
+			end
+		end
+	end
 	if not okClass or class == nil then
 		Dispatch.fail(
 			"NO_SUCH_CLASS",
@@ -163,6 +185,7 @@ function Api.describe(params: { [string]: any }): { [string]: any }
 	local result: { [string]: any } = {
 		className = nameOf(class),
 		superclass = if typeof(class) == "table" then tostring((class :: any).Superclass) else nil,
+		access = if elevated then "plugin-only: game scripts cannot use this class" else nil,
 	}
 
 	local wanted = params.include
@@ -193,7 +216,7 @@ function Api.describe(params: { [string]: any }): { [string]: any }
 			continue
 		end
 		local ok, entries = pcall(function()
-			return (ReflectionService :: any)[source.method](ReflectionService, className, {})
+			return (ReflectionService :: any)[source.method](ReflectionService, className, filter)
 		end)
 		if not ok then
 			continue
