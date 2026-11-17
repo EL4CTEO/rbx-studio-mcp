@@ -66,7 +66,7 @@ jobs:
           chmod +x tools/luau tools/luau-compile tools/luau-analyze
       - run: node scripts/check-plugin.mjs
       - run: node scripts/build-plugin.mjs
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           pattern: npm-*
           path: dist-npm

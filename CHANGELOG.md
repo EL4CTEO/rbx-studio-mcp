@@ -2,6 +2,19 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 1.2.5
+
+### Added
+
+- `sync` checks Luau before pushing (luau-lsp with Roblox types). A file with a syntax error is held back; type errors are reported.
+- Deprecated API warnings: classes, properties and functions, with the replacement. Typos get a "did you mean".
+- Findings show in Studio's Script Analysis window and as underlines, without repeating what Studio already flags.
+- `sync op="check"` checks the folder without syncing; `check: "strict" | "off"` sets how much is reported.
+
+### Changed
+
+- Dependencies updated; Rust 1.100.0.
+
 ## 1.2.2
 
 ### Fixed

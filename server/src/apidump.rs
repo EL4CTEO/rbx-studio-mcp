@@ -33,6 +33,8 @@ struct RawClass {
     superclass: String,
     #[serde(default)]
     members: Vec<RawMember>,
+    #[serde(default)]
+    tags: Vec<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -87,6 +89,9 @@ struct Prop {
 struct Class {
     s: String,
     p: Vec<Prop>,
+    /// Tagged Deprecated.
+    #[serde(default)]
+    d: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -181,7 +186,8 @@ fn reduce(raw: RawDump) -> HashMap<String, Class> {
                     Prop { n: m.name, t, c: cat, r, w, f }
                 })
                 .collect();
-            (c.name, Class { s: c.superclass, p: props })
+            let d = c.tags.iter().any(|t| t.as_str() == Some("Deprecated"));
+            (c.name, Class { s: c.superclass, p: props, d })
         })
         .collect()
 }
@@ -203,7 +209,7 @@ static LOADER: LazyLock<Loader> = LazyLock::new(|| Loader {
 });
 
 fn cache_path() -> PathBuf {
-    std::env::temp_dir().join("roblox-studio-mcp").join("api-index.v2.json")
+    std::env::temp_dir().join("roblox-studio-mcp").join("api-index.v3.json")
 }
 
 fn now() -> u64 {
@@ -459,6 +465,22 @@ fn close_matches<'a>(attempted: &str, candidates: impl Iterator<Item = &'a str>)
 pub async fn suggest_property(class: &str, attempted: &str) -> Vec<String> {
     let all = properties_of(class).await;
     close_matches(attempted, all.iter().map(|p| p.name.as_str()))
+}
+
+/// Whether the dump tags a class Deprecated; None for an unknown class or no dump.
+pub async fn class_deprecated(class: &str) -> Option<bool> {
+    Some(index().await?.classes.get(class)?.d)
+}
+
+/// Whether `class` (or a base) has a property `name` tagged Deprecated.
+pub async fn property_deprecated(class: &str, name: &str) -> bool {
+    properties_of(class).await.iter().any(|p| p.name == name && p.deprecated)
+}
+
+/// Close matches among the class's current (not deprecated) properties.
+pub async fn suggest_live_property(class: &str, attempted: &str) -> Vec<String> {
+    let all = properties_of(class).await;
+    close_matches(attempted, all.iter().filter(|p| !p.deprecated).map(|p| p.name.as_str()))
 }
 
 pub async fn suggest_class(attempted: &str) -> Vec<String> {

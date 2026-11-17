@@ -116,6 +116,12 @@ local DESCRIBERS: { [string]: Describer } = {
 	["sync.log"] = function()
 		return "Sync note"
 	end,
+	["analysis.publish"] = function()
+		return "Show Luau check in Script Analysis"
+	end,
+	["analysis.clear"] = function()
+		return "Clear Luau check findings"
+	end,
 	["sync.classes"] = function(params)
 		return "List classes in " .. (leaf(params.path) or "tree")
 	end,
@@ -818,6 +824,8 @@ local KINDS: { [string]: string } = {
 	debug = "debug",
 	perf = "debug",
 	api = "read",
+	-- Only feeds Script Analysis; no instance or source changes.
+	analysis = "read",
 	device = "read",
 	-- Casts and overlap tests only look; nothing in the group writes.
 	spatial = "read",

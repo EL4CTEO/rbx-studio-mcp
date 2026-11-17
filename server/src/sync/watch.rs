@@ -226,9 +226,28 @@ impl Watch {
             p.builds_due = false;
         }
         let started = std::time::Instant::now();
-        let options = SyncOptions { studio_id: Some(self.studio()), quiet: true, builds, ..self.options.clone() };
+        // The check runs after the push, so an edit still reaches Studio within a second.
+        let options = SyncOptions { studio_id: Some(self.studio()), quiet: true, builds, check: super::check::Mode::Off, ..self.options.clone() };
         match run_sync(bridge, &options).await {
-            Ok(report) => self.record(&report, started.elapsed().as_millis() as u64),
+            Ok(report) => {
+                self.record(&report, started.elapsed().as_millis() as u64);
+                let mode = self.options.check;
+                if mode != super::check::Mode::Off && !report.pushed.is_empty() {
+                    let dir = self.options.dir.clone();
+                    let pushed = report.pushed.clone();
+                    let (bridge, studio) = (bridge.clone(), self.studio());
+                    tokio::spawn(async move {
+                        let Some(result) = super::check::check(&dir, &pushed, mode).await else { return };
+                        if let Some(manifest) = load_manifest(&dir).await {
+                            super::publish_analysis(&bridge, &studio, &result, &super::in_step(&manifest, &result, &pushed)).await;
+                        }
+                        if result.diagnostics.is_empty() && result.note.is_none() {
+                            return;
+                        }
+                        push_notice(super::check::render(&result, 8).join("\n"));
+                    });
+                }
+            }
             Err(e) => self.fail(bridge, &e).await,
         }
     }

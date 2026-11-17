@@ -5,6 +5,7 @@
 //! file's last hash. Nothing is deleted on a first sync, disk deletions go to a
 //! trash folder, and a folder remembers which place it belongs to.
 
+pub mod check;
 pub mod plan;
 mod watch;
 
@@ -44,6 +45,10 @@ pub struct SyncOptions {
     pub rebind: bool,
     pub quiet: bool,
     pub builds: bool,
+    /// Luau check on files headed for Studio.
+    pub check: check::Mode,
+    /// Hold back files with syntax errors instead of only reporting them.
+    pub block_syntax: bool,
 }
 
 #[derive(Default, Clone)]
@@ -69,6 +74,9 @@ pub struct SyncReport {
     pub undo_step: Option<String>,
     pub new_conflicts: Vec<String>,
     pub build_conflicts: BTreeMap<String, (String, String, String)>,
+    /// Script files whose text reached Studio this run.
+    pub pushed: Vec<String>,
+    pub check: Option<check::CheckResult>,
 }
 
 impl SyncReport {
@@ -424,6 +432,70 @@ async fn scan_studio(bridge: &Arc<StudioBridge>, studio: &str, roots: Option<&Ve
 }
 
 /// One sync: scan both sides, plan, read what the plan needs, apply (or report).
+/// Hands the check's findings to Studio's Script Analysis for `files` (file, Studio path),
+/// each with the text it was checked against, so a script edited since shows nothing stale.
+pub async fn publish_analysis(bridge: &Arc<StudioBridge>, studio_id: &str, result: &check::CheckResult, files: &[(String, String)]) {
+    if result.tool.is_empty() || files.is_empty() {
+        return;
+    }
+    let items: Vec<Value> = files
+        .iter()
+        .filter_map(|(file, path)| {
+            let source = result.sources.get(file)?;
+            let diagnostics: Vec<Value> = check::for_studio(result, file)
+                .into_iter()
+                .map(|d| {
+                    json!({
+                        "line": d.line,
+                        "col": d.col,
+                        "endCol": d.end_col.max(d.col),
+                        "code": d.rule,
+                        "message": d.message,
+                        "severity": if d.rule == "TypeError" { "Error" } else { "Warning" },
+                        "href": d.href,
+                    })
+                })
+                .collect();
+            Some(json!({ "path": path, "source": source, "diagnostics": diagnostics }))
+        })
+        .collect();
+    if !items.is_empty() {
+        let _ = bridge.call("analysis.publish", json!({ "items": items }), Some(studio_id), Some(10_000.0)).await;
+    }
+}
+
+/// The Studio path of each file whose text is what Studio has, per the manifest.
+pub fn in_step(manifest: &Manifest, result: &check::CheckResult, files: &[String]) -> Vec<(String, String)> {
+    files
+        .iter()
+        .filter_map(|f| {
+            let entry = manifest.files.get(f)?;
+            let source = result.sources.get(f)?;
+            (entry.hash == hash_of(source) && !entry.path.is_empty()).then(|| (f.clone(), entry.path.clone()))
+        })
+        .collect()
+}
+
+/// Luau check over the folder's script files (or just `only`), without syncing.
+/// Findings for scripts in step with Studio also reach its Script Analysis.
+pub async fn run_check(bridge: &Arc<StudioBridge>, studio_id: Option<&str>, dir: &Path, only: Option<&[String]>, mode: check::Mode) -> Result<Option<check::CheckResult>> {
+    let disk = scan_disk(dir).await?;
+    let mut files: Vec<String> = match only {
+        Some(list) => list.iter().map(|f| f.replace('\\', "/")).filter(|f| disk.scripts.contains_key(f)).collect(),
+        None => disk.scripts.into_keys().collect(),
+    };
+    files.sort();
+    let result = check::check(dir, &files, if mode == check::Mode::Off { check::Mode::Default } else { mode }).await;
+    if let Some(r) = &result
+        && let Some(manifest) = load_manifest(dir).await
+        && let Ok(session) = target_session(bridge, studio_id).await
+        && manifest.place_id == Some(session.identity.place_id)
+    {
+        publish_analysis(bridge, &session.identity.studio_id, r, &in_step(&manifest, r, &files)).await;
+    }
+    Ok(result)
+}
+
 pub async fn run_sync(bridge: &Arc<StudioBridge>, options: &SyncOptions) -> Result<SyncReport> {
     let lock = lock_for(&options.dir);
     let _guard = lock.lock().await;
@@ -604,7 +676,58 @@ async fn sync_once(bridge: &Arc<StudioBridge>, options: &SyncOptions) -> Result<
             report.conflicts.push(Conflict { file: file.clone(), path: path.clone(), reason: reason.clone() });
         }
     }
-    let work: Vec<Action> = settled.into_iter().filter(|a| !matches!(a, Action::Conflict { .. })).collect();
+    let mut work: Vec<Action> = settled.into_iter().filter(|a| !matches!(a, Action::Conflict { .. })).collect();
+
+    // Luau check on the text about to reach Studio; syntax errors are held back.
+    let outgoing: Vec<String> = work
+        .iter()
+        .filter_map(|a| match a {
+            Action::Push { file, .. } | Action::CreateStudio { file } => Some(file.clone()),
+            _ => None,
+        })
+        .collect();
+    if options.check != check::Mode::Off && !outgoing.is_empty() {
+        // New scripts go into the sourcemap first, so requires of them resolve.
+        let mut ahead = manifest.clone();
+        for file in &outgoing {
+            if !ahead.files.contains_key(file)
+                && let Some(parsed) = plan::class_from_file(file.rsplit('/').next().unwrap_or(file))
+            {
+                ahead.files.insert(
+                    file.clone(),
+                    ManifestEntry { path: String::new(), class_name: parsed.class_name.to_string(), revision: String::new(), hash: String::new() },
+                );
+            }
+        }
+        write_sourcemap(dir, &ahead, &scan).await;
+        report.check = check::check(dir, &outgoing, options.check).await;
+        if options.block_syntax && !options.dry_run
+            && let Some(result) = &report.check
+        {
+            let bad: HashMap<String, String> = result
+                .syntax_errors()
+                .into_iter()
+                .map(|(f, d)| (f.to_string(), format!("{}:{} {}", d.line, d.col, d.message)))
+                .collect();
+            // A held-back init script holds back the new scripts inside its folder too.
+            let bad_folders: Vec<String> = bad.keys().filter(|f| is_init(f)).filter_map(|f| f.rsplit_once('/').map(|(d, _)| format!("{d}/"))).collect();
+            work.retain(|a| {
+                let file = match a {
+                    Action::Push { file, .. } | Action::CreateStudio { file } => file,
+                    _ => return true,
+                };
+                if let Some(why) = bad.get(file) {
+                    report.fail(file, format!("not sent to Studio: syntax error at {why}. Fix the file and sync again."));
+                    return false;
+                }
+                if matches!(a, Action::CreateStudio { .. }) && bad_folders.iter().any(|d| file.starts_with(d.as_str())) {
+                    report.fail(file, "not sent to Studio: its folder's init script has a syntax error.");
+                    return false;
+                }
+                true
+            });
+        }
+    }
 
     if options.dry_run {
         for a in &work {
@@ -729,6 +852,7 @@ async fn sync_once(bridge: &Arc<StudioBridge>, options: &SyncOptions) -> Result<
                         action.file().to_string(),
                         ManifestEntry { path: path.clone(), class_name: class.to_string(), revision: result.revision.clone().unwrap_or_default(), hash: hash_of(text) },
                     );
+                    report.pushed.push(action.file().to_string());
                     report.tally(action);
                 }
                 _ => report.fail(action.file(), result.reason()),
@@ -791,6 +915,7 @@ async fn sync_once(bridge: &Arc<StudioBridge>, options: &SyncOptions) -> Result<
                 file.clone(),
                 ManifestEntry { path: path.clone(), class_name: class_name.clone(), revision: result.revision.clone().unwrap_or_default(), hash: hash_of(text) },
             );
+            report.pushed.push(file.clone());
             report.tally(action);
         }
     }
@@ -892,6 +1017,9 @@ async fn sync_once(bridge: &Arc<StudioBridge>, options: &SyncOptions) -> Result<
     }
     save_manifest(dir, &manifest).await?;
     write_sourcemap(dir, &manifest, &scan).await;
+    if let Some(result) = &report.check {
+        publish_analysis(bridge, &studio_id, result, &in_step(&manifest, result, &report.pushed)).await;
+    }
 
     let disk_side: Vec<String> = ["pull", "create-disk", "delete-disk", "move-disk"]
         .iter()

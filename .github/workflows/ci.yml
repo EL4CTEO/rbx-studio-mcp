@@ -45,7 +45,7 @@ jobs:
           node-version: "24"
           cache: npm
           cache-dependency-path: package-lock.json
-      # rust-toolchain.toml pins 1.99.1; rustup installs it on first use.
+      # rust-toolchain.toml pins 1.100.0; rustup installs it on first use.
       - run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         with:

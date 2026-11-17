@@ -2,6 +2,7 @@
 
 use crate::errors::Result;
 use crate::format::{ToolResult, json, text};
+use crate::sync::check::Mode as CheckMode;
 use crate::sync::plan::{Direction, Prefer};
 use crate::sync::{self, SyncOptions, SyncReport};
 use crate::tool::{Ctx, Tool, define, spec};
@@ -23,6 +24,7 @@ enum Op {
     Stop,
     Export,
     Build,
+    Check,
 }
 
 #[derive(Deserialize, JsonSchema, Clone, Copy)]
@@ -32,10 +34,18 @@ enum Side {
     Disk,
 }
 
+#[derive(Deserialize, JsonSchema, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+enum Check {
+    Default,
+    Strict,
+    Off,
+}
+
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 struct Args {
-    /// 'status': dry run. 'sync': both ways. 'pull': Studio -> disk. 'push': disk -> Studio. 'watch'/'stop': continuous two-way sync. 'export': instance trees -> build files. 'build': build files -> instance trees.
+    /// 'status': dry run. 'sync': both ways. 'pull': Studio -> disk. 'push': disk -> Studio. 'watch'/'stop': continuous two-way sync. 'export': instance trees -> build files. 'build': build files -> instance trees. 'check': Luau check of the folder's scripts (or `files`), nothing synced.
     op: Op,
     /// Sync folder, relative to the working directory. Default "studio".
     dir: Option<String>,
@@ -45,8 +55,10 @@ struct Args {
     prefer: Option<Side>,
     /// export: instances to write as build files, e.g. ["StarterGui.Shop"].
     paths: Option<Vec<String>>,
-    /// build: build files to apply, relative to the folder. Default: those changed since last built.
+    /// build: build files to apply, relative to the folder. Default: those changed since last built. check: script files to check.
     files: Option<Vec<String>>,
+    /// Luau check on scripts headed for Studio. 'default': syntax, Studio's lints, and type errors that are nearly always bugs (missing members, unknown globals); full types in --!strict scripts. 'strict': every type error. 'off': none, and syntax errors are pushed too.
+    check: Option<Check>,
     /// Allow a run that deletes most of what the folder tracks. Check `status` first.
     confirm_deletes: Option<bool>,
     /// Let a folder synced with one place follow a different place. Almost never what you want.
@@ -88,6 +100,10 @@ fn render(report: &SyncReport, heading: &str) -> String {
         out.push(if report.dry_run { "Build files that would rebuild:" } else { "Rebuilt from build files:" }.into());
         out.extend(report.builds.iter().map(|b| format!("  {b}")));
     }
+    if let Some(check) = &report.check {
+        out.push(String::new());
+        out.extend(sync::check::render(check, LINE_LIMIT));
+    }
     if !report.file_synced.is_empty() {
         out.push(String::new());
         out.push(format!("{} script(s) left alone: Studio's own Script Sync already binds them to files.", report.file_synced.len()));
@@ -111,6 +127,12 @@ async fn run(ctx: Arc<Ctx>, a: Args) -> Result<ToolResult> {
         rebind: a.rebind == Some(true),
         quiet: false,
         builds: true,
+        check: match a.check {
+            Some(Check::Strict) => CheckMode::Strict,
+            Some(Check::Off) => CheckMode::Off,
+            _ => CheckMode::Default,
+        },
+        block_syntax: true,
     };
     let bridge = &ctx.bridge;
     match a.op {
@@ -181,6 +203,13 @@ async fn run(ctx: Arc<Ctx>, a: Args) -> Result<ToolResult> {
                 .collect();
             Ok(json(&Value::Array(rows), Some("Edit the file, then sync op=\"build\" (or any push) rebuilds the tree in one undo step.")))
         }
+        Op::Check => {
+            let result = sync::run_check(bridge, a.studio_id.as_deref(), &dir, a.files.as_deref(), base.check).await?;
+            Ok(text(match result {
+                Some(r) => sync::check::render(&r, 200).join("\n"),
+                None => format!("No script files under {}.", dir.display()),
+            }))
+        }
         Op::Build => {
             let report = sync::run_build(bridge, &SyncOptions { direction: Direction::Push, ..base }, a.files.clone()).await?;
             Ok(text(render(&report, "Built")))
@@ -211,7 +240,11 @@ pub fn tools() -> Vec<Tool> {
          written back to its file, and edits on both sides are a conflict rather than one silently undoing the other.\n\n\
          Conflicts leave Studio's version in `.rbx-sync/conflicts/`. Merge into the file (or fix Studio) and sync again: \
          whichever side changed since the conflict wins. While `watch` runs, new conflicts and errors are appended to \
-         your next tool reply.",
+         your next tool reply.\n\n\
+         Luau check: scripts headed for Studio are checked with luau-lsp against Roblox's types and the folder's \
+         sourcemap. A file with a syntax error is held back (listed under Failed); type errors and lints are reported \
+         with file:line:col. `watch` pushes first and appends the check's findings to your next reply. `check` runs \
+         it over the folder without syncing.",
         run,
     )]
 }

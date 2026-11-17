@@ -128,6 +128,7 @@ sync op="watch"     # both ways, live, until op="stop"
 - **Conflicts:** edited on both sides means neither is touched. Studio's version waits in `.rbx-sync/conflicts/`. Merge it and sync again, or pass `prefer: "studio"` or `"disk"`.
 - **Deletes:** deleting a file deletes the script (one Ctrl+Z). A script deleted in Studio sends its file to `.rbx-sync/trash`.
 - **UI as files:** `export` writes an instance tree as a `.build.json` file, and `build` rebuilds it.
+- **Luau check:** pushes are checked with [luau-lsp](https://github.com/JohnnyMorganz/luau-lsp/releases) (on `PATH`). Syntax errors are held back; type errors and deprecated API are reported and shown in Studio's Script Analysis. `op="check"` checks without syncing; `check: "strict"` or `"off"` changes how much.
 
 ## Open Cloud
 
@@ -175,7 +176,7 @@ The server only listens on loopback. Requests need a header a browser cannot set
 
 ## Development
 
-The server is Rust (`server/`, toolchain pinned to 1.99.1); the plugin is Luau (`plugin/`).
+The server is Rust (`server/`, toolchain pinned to 1.100.0); the plugin is Luau (`plugin/`).
 
 ```bash
 cargo build --release --manifest-path server/Cargo.toml
