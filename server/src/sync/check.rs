@@ -455,18 +455,21 @@ mod tests {
 
     #[test]
     fn parses_absolute_and_relative_lines() {
-        let cwd = Path::new(r"C:\work");
-        let by_key: HashMap<String, String> =
-            [(key(r"C:\work\studio\SSS\Main.server.luau"), "SSS/Main.server.luau".to_string())].into_iter().collect();
-        let out = "[INFO] Loading definitions file\n\
-            c:\\work\\studio\\SSS\\Main.server.luau [game/SSS/Main]:3:1-8: (W0) TypeError: Key 'Colour' not found in external type 'Part'\n\
-            studio/SSS/Main.server.luau:4:7-12: (W0) LocalUnused: Variable 'x' is never used\n\
-            studio/Other.luau:1:1-2: (W0) SyntaxError: nope\n\
-            c:\\work\\studio\\SSS\\Main.server.luau [game/SSS/Main]:9:2-4: (W0) TypeError: Type 'a' could not be converted into 'b'\n\
-            caused by: something";
-        let d = parse(out, cwd, &by_key);
+        let cwd = std::env::temp_dir().join("work");
+        let main = cwd.join("studio").join("SSS").join("Main.server.luau");
+        let by_key: HashMap<String, String> = [(key(&main.to_string_lossy()), "SSS/Main.server.luau".to_string())].into_iter().collect();
+        let abs = main.to_string_lossy();
+        let out = format!(
+            "[INFO] Loading definitions file\n\
+             {abs} [game/SSS/Main]:3:1-8: (W0) TypeError: Key 'Colour' not found in external type 'Part'\n\
+             studio/SSS/Main.server.luau:4:7-12: (W0) LocalUnused: Variable 'x' is never used\n\
+             studio/Other.luau:1:1-2: (W0) SyntaxError: nope\n\
+             {abs} [game/SSS/Main]:9:2-4: (W0) TypeError: Type 'a' could not be converted into 'b'\n\
+             caused by: something"
+        );
+        let d = parse(&out, &cwd, &by_key);
         assert_eq!(d.len(), 3);
-        assert_eq!((d[0].line, d[0].col, d[0].rule.as_str()), (3, 1, "TypeError"));
+        assert_eq!((d[0].line, d[0].col, d[0].end_col, d[0].rule.as_str()), (3, 1, 8, "TypeError"));
         assert_eq!(d[1].rule, "LocalUnused");
         assert!(d[2].message.ends_with("caused by: something"));
     }
