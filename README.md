@@ -86,6 +86,10 @@ Write tools take arrays: ten script edits is one call and one **Ctrl+Z**, and ei
 
 `device` emulation stays on until `device op="stop"`.
 
+`screenshot frames=6` takes a timed sequence as one contact sheet, to check motion.
+
+`inspect format="studio-json"` gives Studio's Copy-as-JSON text; `create json=` and `modify json=` take it back, so what a user copies in Studio can be pasted to the agent.
+
 ## Why this one
 
 - **Fast:** the bridge pushes calls instead of polling, 13.6 ms per call against 25.8 ms.

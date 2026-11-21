@@ -23,6 +23,7 @@ mod world;
 mod universe;
 mod data;
 mod sync;
+mod studio_json;
 
 pub fn all() -> Vec<Tool> {
     let mut tools = Vec::new();
@@ -166,5 +167,41 @@ pub fn disp(v: Option<&Value>) -> String {
         None | Some(Value::Null) => "undefined".into(),
         Some(Value::String(s)) => s.clone(),
         Some(other) => crate::format::to_flat(other),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::Value;
+
+    fn has_key(v: &Value, key: &str) -> bool {
+        match v {
+            Value::Object(m) => m.contains_key(key) || m.values().any(|x| has_key(x, key)),
+            Value::Array(a) => a.iter().any(|x| has_key(x, key)),
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn every_tool_is_listed_once_with_an_object_schema() {
+        let tools = super::all();
+        let mut names = std::collections::BTreeSet::new();
+        for tool in &tools {
+            assert!(names.insert(tool.name), "{} is registered twice", tool.name);
+            assert!(!tool.description.trim().is_empty(), "{} has no description", tool.name);
+            assert_eq!(tool.schema["type"], "object", "{} schema is not an object", tool.name);
+            // Gemini and Vertex reject tool lists containing $ref.
+            assert!(!has_key(&tool.schema, "$ref"), "{} schema uses $ref", tool.name);
+        }
+    }
+
+    #[test]
+    fn readme_tool_count_is_current() {
+        let readme = include_str!("../../../README.md");
+        let count = super::all().len();
+        assert!(readme.contains(&format!("{count} tools")), "README does not say \"{count} tools\"");
+        for tool in super::all() {
+            assert!(readme.contains(&format!("`{}`", tool.name)), "README does not list `{}`", tool.name);
+        }
     }
 }

@@ -1,4 +1,4 @@
-/** v0.9.0 live regressions. Editor reads only; all fixtures are playtest-local. */
+/** Live checks for client reads, handles and watches (added in 0.9.0). Editor reads only; all fixtures are playtest-local. */
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { inflateSync } from "node:zlib";
@@ -9,7 +9,7 @@ import { nativeBinary } from "./lib/native.mjs";
 
 const version = JSON.parse(readFileSync(resolve("package.json"), "utf8")).version;
 const requestedId = process.argv[process.argv.indexOf("--studio-id") + 1];
-const client = new Client({ name: "test-live-v090", version });
+const client = new Client({ name: "test-live-client", version });
 await client.connect(new StdioClientTransport({ command: nativeBinary(), args: [], stderr: "inherit" }));
 const reports = [];
 const fixture = "Workspace.__mcp_v090_test";

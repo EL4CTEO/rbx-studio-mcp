@@ -10,3 +10,4 @@ sourcemap.json
 
 # Rust build output
 /server/target/
+/target-live/

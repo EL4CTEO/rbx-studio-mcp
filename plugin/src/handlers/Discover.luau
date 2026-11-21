@@ -342,6 +342,24 @@ function Discover.inspect(params: { [string]: any }): { [string]: any }
 	local failures: { string } = {}
 	local memo: Paths.NameIndex = {}
 
+	--[[
+		`nonDefault` keeps only what differs from a brand-new instance of the
+		class, which is what Studio's Copy as JSON writes. The reference is a real
+		`Instance.new`, never parented, so defaults come from the engine rather
+		than a table here that would drift. A class that cannot be created keeps
+		every property.
+	]]
+	local references: { [string]: Instance | false } = {}
+	local function referenceFor(className: string): Instance?
+		local cached = references[className]
+		if cached == nil then
+			local ok, made = pcall(Instance.new, className)
+			cached = if ok then made else false
+			references[className] = cached
+		end
+		return if cached then cached :: Instance else nil
+	end
+
 	for _, path in paths do
 		local ok, instance = pcall(Paths.resolve, path)
 		if not ok then
@@ -358,9 +376,16 @@ function Discover.inspect(params: { [string]: any }): { [string]: any }
 		local target = instance :: Instance
 		local properties: { [string]: any } = {}
 		if requested then
+			local reference = if params.nonDefault == true then referenceFor(target.ClassName) else nil
 			for _, name in requested do
 				local readOk, value = Serialize.readProperty(target, name)
 				if readOk then
+					if reference then
+						local defaultOk, default = Serialize.readProperty(reference, name)
+						if defaultOk and default == value then
+							continue
+						end
+					end
 					properties[name] = value
 				end
 			end
@@ -412,6 +437,12 @@ function Discover.inspect(params: { [string]: any }): { [string]: any }
 		end
 
 		table.insert(results, entry)
+	end
+
+	for _, reference in references do
+		if reference then
+			reference:Destroy()
+		end
 	end
 
 	return { items = results, failures = failures }

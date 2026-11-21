@@ -1,6 +1,6 @@
 {
   "name": "@el4cteo/rbx-studio-mcp",
-  "version": "1.2.5",
+  "version": "1.2.6",
   "description": "MCP server for Roblox Studio. 35 tools, push-based SSE bridge, two-way script sync with files, editor-safe script edits, one-step undo. Native, single binary.",
   "type": "module",
   "license": "MIT",
@@ -29,7 +29,8 @@
     "sourcemap": "node scripts/sourcemap.mjs",
     "test": "cargo test --manifest-path server/Cargo.toml && node scripts/test-plugin.mjs && node scripts/test-transport.mjs && node scripts/test-native.mjs",
     "test:live": "node scripts/test-live.mjs",
-    "test:live:v090": "node scripts/test-live-v090.mjs",
+    "test:live:client": "node scripts/test-live-client.mjs",
+    "test:live:json-frames": "node scripts/test-live-json-frames.mjs",
     "install:plugin": "node scripts/install-plugin.mjs",
     "check:plugin": "node scripts/check-plugin.mjs",
     "doctor": "node bin/rbx-studio-mcp.js doctor",
@@ -50,10 +51,10 @@
     "ai-agent"
   ],
   "optionalDependencies": {
-    "@el4cteo/rbx-studio-mcp-win32-x64": "1.2.5",
-    "@el4cteo/rbx-studio-mcp-win32-arm64": "1.2.5",
-    "@el4cteo/rbx-studio-mcp-darwin-arm64": "1.2.5",
-    "@el4cteo/rbx-studio-mcp-darwin-x64": "1.2.5"
+    "@el4cteo/rbx-studio-mcp-win32-x64": "1.2.6",
+    "@el4cteo/rbx-studio-mcp-win32-arm64": "1.2.6",
+    "@el4cteo/rbx-studio-mcp-darwin-arm64": "1.2.6",
+    "@el4cteo/rbx-studio-mcp-darwin-x64": "1.2.6"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2"

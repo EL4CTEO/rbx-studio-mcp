@@ -64,8 +64,22 @@ struct InspectArgs {
     /// Include bounded session handles usable in place of paths. Survive rename/reparent; refuse expired references.
     #[serde(default)]
     handles: bool,
+    /// "studio-json" returns Studio's Copy-as-JSON text instead of the detailed read.
+    #[serde(default)]
+    format: InspectFormat,
     /// Target Studio; omit for the active one.
     studio_id: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema, Default, PartialEq, Clone, Copy)]
+enum InspectFormat {
+    /// The usual detailed read.
+    #[default]
+    #[serde(rename = "default")]
+    Default,
+    /// What Studio's "Copy as JSON" puts on the clipboard: only the properties that differ from a new instance, plus `$` attributes and `.` tags. The user can paste it into Studio; `create json=` and `modify json=` take it back.
+    #[serde(rename = "studio-json")]
+    StudioJson,
 }
 
 #[derive(Deserialize, JsonSchema, Default, PartialEq)]
@@ -342,6 +356,9 @@ pub fn tools() -> Vec<Tool> {
 }
 
 async fn inspect(ctx: &crate::tool::Ctx, a: InspectArgs) -> Result<ToolResult> {
+    if a.format == InspectFormat::StudioJson {
+        return inspect_studio_json(ctx, &a).await;
+    }
     let studio = a.studio_id.as_deref();
     let mut requested = a.properties.clone();
     let mut probed = BTreeSet::new();
@@ -411,6 +428,61 @@ async fn inspect(ctx: &crate::tool::Ctx, a: InspectArgs) -> Result<ToolResult> {
     let sorted: Vec<Value> = items.iter().map(with_sorted_properties).collect();
     let note = (!notes.is_empty()).then(|| notes.join("\n\n"));
     Ok(json(&Value::Array(sorted), note.as_deref()))
+}
+
+/// Every property a paste could set: writable, current, and not `Parent`.
+async fn pasteable_properties(class: &str) -> Vec<String> {
+    apidump::properties_of(class)
+        .await
+        .iter()
+        .filter(|p| !p.read_only && !p.deprecated && p.name != "Parent")
+        .map(|p| p.name.clone())
+        .collect()
+}
+
+async fn inspect_studio_json(ctx: &crate::tool::Ctx, a: &InspectArgs) -> Result<ToolResult> {
+    let studio = a.studio_id.as_deref();
+    let probe = read_call(ctx, "discover.inspect", json!({ "paths": a.paths, "includeChildren": false, "probeOnly": true }), &a.read, studio, 30_000.0).await?;
+    let mut names: Vec<String> = Vec::new();
+    let mut seen = BTreeSet::new();
+    let classes: BTreeSet<String> = arr_of(&probe, "items").iter().filter_map(|i| str_of(i, "className")).map(str::to_string).collect();
+    for class in &classes {
+        for name in pasteable_properties(class).await {
+            if seen.insert(name.clone()) {
+                names.push(name);
+            }
+        }
+    }
+    let response = read_call(
+        ctx,
+        "discover.inspect",
+        json!({ "paths": a.paths, "properties": names, "includeChildren": false, "nonDefault": true }),
+        &a.read,
+        studio,
+        30_000.0,
+    )
+    .await?;
+    let items: Vec<Value> = arr_of(&response, "items").iter().map(super::studio_json::from_inspect).collect();
+    let mut notes: Vec<String> = Vec::new();
+    let failures = arr_of(&response, "failures");
+    if !failures.is_empty() {
+        let list: Vec<String> = failures.iter().map(|f| format!("  - {}", f.as_str().unwrap_or(&f.to_string()))).collect();
+        notes.push(format!("Could not resolve {} path(s):\n{}", failures.len(), list.join("\n")));
+    }
+    if items.is_empty() {
+        return Ok(text(notes.join("\n\n")));
+    }
+    let has_children = arr_of(&probe, "items").iter().any(|i| u64_of(i, "childCount") > 0);
+    let body = if items.len() == 1 { &items[0] } else { &Value::Array(items.clone()) };
+    let pretty = serde_json::to_string_pretty(body).unwrap_or_default();
+    notes.push(
+        "Studio's Copy-as-JSON format: paste it in Studio (Ctrl+V onto a selection updates it, Paste Into creates it), or pass it to `create json=` / `modify json=`."
+            .into(),
+    );
+    if has_children {
+        notes.push("Children are not included: Studio's JSON format has no descendants yet.".into());
+    }
+    Ok(text(format!("{pretty}\n\n{}", notes.join(" "))))
 }
 
 async fn find(ctx: &crate::tool::Ctx, a: FindArgs) -> Result<ToolResult> {

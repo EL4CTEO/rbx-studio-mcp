@@ -126,6 +126,30 @@ pub fn box_resample(rgb: &[u8], width: usize, height: usize, out_width: usize) -
 }
 
 /// Whole-factor nearest-neighbour enlargement: no detail added, none invented.
+/// Lays frames out left to right, top to bottom, on a dark background.
+///
+/// Frames may differ in size (a resize mid-sequence); each sits in a cell as
+/// big as the largest one. Returns the sheet and its size.
+pub fn contact_sheet(frames: &[(Vec<u8>, usize, usize)], cols: usize, gap: usize) -> (Vec<u8>, usize, usize) {
+    const BACKGROUND: [u8; 3] = [24, 24, 24];
+    let cols = cols.clamp(1, frames.len().max(1));
+    let rows = frames.len().div_ceil(cols);
+    let cell_w = frames.iter().map(|f| f.1).max().unwrap_or(0);
+    let cell_h = frames.iter().map(|f| f.2).max().unwrap_or(0);
+    let width = cols * cell_w + gap * (cols - 1);
+    let height = rows * cell_h + gap * rows.saturating_sub(1);
+    let mut out = BACKGROUND.repeat(width * height);
+    for (i, (rgb, w, h)) in frames.iter().enumerate() {
+        let (cx, cy) = ((i % cols) * (cell_w + gap), (i / cols) * (cell_h + gap));
+        for row in 0..*h {
+            let src = &rgb[row * w * 3..(row + 1) * w * 3];
+            let at = ((cy + row) * width + cx) * 3;
+            out[at..at + w * 3].copy_from_slice(src);
+        }
+    }
+    (out, width, height)
+}
+
 pub fn upscale_nearest(rgb: &[u8], width: usize, height: usize, factor: usize) -> (Vec<u8>, usize, usize) {
     if factor <= 1 {
         return (rgb.to_vec(), width, height);
@@ -150,6 +174,21 @@ pub fn upscale_nearest(rgb: &[u8], width: usize, height: usize, factor: usize) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn contact_sheet_places_frames_in_reading_order() {
+        let red = ([255, 0, 0].repeat(4), 2, 2);
+        let blue = ([0, 0, 255].repeat(4), 2, 2);
+        let green = ([0, 255, 0].repeat(4), 2, 2);
+        let (sheet, w, h) = contact_sheet(&[red, blue, green], 2, 1);
+        assert_eq!((w, h), (5, 5));
+        let px = |x: usize, y: usize| &sheet[(y * w + x) * 3..(y * w + x) * 3 + 3];
+        assert_eq!(px(0, 0), [255, 0, 0]);
+        assert_eq!(px(3, 0), [0, 0, 255]);
+        assert_eq!(px(0, 3), [0, 255, 0]);
+        assert_eq!(px(2, 0), [24, 24, 24]);
+        assert_eq!(px(4, 4), [24, 24, 24]);
+    }
 
     #[test]
     fn png_roundtrip_header() {

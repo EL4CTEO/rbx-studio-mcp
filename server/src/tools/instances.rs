@@ -191,12 +191,26 @@ pub fn undo_note(response: &Value) -> String {
     }
 }
 
+pub fn studio_json_schema(_: &mut SchemaGenerator) -> Schema {
+    json_schema!({
+        "type": ["string", "object", "array"],
+        "description": "Studio's \"Copy as JSON\" format, as a string or as JSON: one object or an array. Each object is flat: ClassName, properties as the Properties panel writes them (\"Size\": \"4, 1, 2\"), \"$Name\" for attributes, \".Name\": true for tags.",
+    })
+}
+
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 struct CreateArgs {
     /// Instances to create together as one undoable step.
-    #[schemars(length(min = 1, max = 100))]
+    #[serde(default)]
+    #[schemars(length(max = 100))]
     instances: Vec<CreateNode>,
+    /// Instances in Studio's "Copy as JSON" format, e.g. pasted by the user. Created under `parent`, in the same undo step as `instances`.
+    #[serde(default)]
+    #[schemars(schema_with = "studio_json_schema")]
+    json: Option<Value>,
+    /// With `json`: where to create them, e.g. "Workspace".
+    parent: Option<String>,
     /// Target Studio; omit for the active one.
     studio_id: Option<String>,
 }
@@ -218,6 +232,54 @@ struct ModifyTarget {
     /// CollectionService tags to add or remove.
     #[serde(skip_serializing_if = "Option::is_none")]
     tags: Option<Tags>,
+    /// One object in Studio's "Copy as JSON" format, applied like pasting it onto these instances: its properties, `$` attributes and `.` tags are set. `properties`/`attributes`/`tags` given alongside win.
+    #[serde(default, skip_serializing)]
+    #[schemars(schema_with = "studio_json_schema")]
+    json: Option<Value>,
+}
+
+impl ModifyTarget {
+    /// Folds `json` into the ordinary fields; explicit fields win.
+    fn absorb_json(&mut self, where_: &str) -> Result<()> {
+        let Some(payload) = self.json.take() else { return Ok(()) };
+        let mut list = super::studio_json::objects(&payload).map_err(|e| json_error(where_, e))?;
+        if list.len() != 1 {
+            return Err(json_error(where_, format!("modify takes one object per target, got {}", list.len())));
+        }
+        let parts = super::studio_json::split(&list.remove(0), where_).map_err(|e| json_error(where_, e))?;
+        let mut properties = parts.properties;
+        if let Some(name) = parts.name {
+            properties.insert("Name".into(), json!(name));
+        }
+        if let Some(own) = self.properties.take() {
+            properties.extend(own);
+        }
+        if !properties.is_empty() {
+            self.properties = Some(properties);
+        }
+        let mut attributes = parts.attributes;
+        if let Some(own) = self.attributes.take() {
+            attributes.extend(own);
+        }
+        if !attributes.is_empty() {
+            self.attributes = Some(attributes);
+        }
+        if !parts.tags_add.is_empty() || !parts.tags_remove.is_empty() {
+            let mut tags = self.tags.take().unwrap_or_default();
+            tags.add.get_or_insert_with(Vec::new).extend(parts.tags_add);
+            tags.remove.get_or_insert_with(Vec::new).extend(parts.tags_remove);
+            self.tags = Some(tags);
+        }
+        Ok(())
+    }
+}
+
+fn json_error(where_: &str, message: String) -> ToolError {
+    ToolError::hint(
+        "BAD_JSON",
+        format!("{where_}.json: {message}."),
+        "Pass what Studio's Copy as JSON produces: {\"ClassName\":\"Part\",\"Anchored\":\"true\",\"$Speed\":2,\".Tag\":true}.",
+    )
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -272,17 +334,44 @@ struct MoveArgs {
     studio_id: Option<String>,
 }
 
+/// The `json` payload of a `create` call as ordinary create entries.
+fn json_nodes(payload: &Value, parent: Option<&str>) -> Result<Vec<CreateNode>> {
+    let parent = parent.ok_or_else(|| {
+        ToolError::hint("BAD_PARAMS", "`json` needs a `parent` to create the instances in.", "Add parent: \"Workspace\" (or wherever they belong).")
+    })?;
+    let list = super::studio_json::objects(payload).map_err(|e| json_error("create", e))?;
+    if list.len() > 100 {
+        return Err(json_error("create", format!("{} objects; at most 100 per call", list.len())));
+    }
+    list.iter()
+        .enumerate()
+        .map(|(i, o)| {
+            let entry = super::studio_json::create_entry(o, parent, &format!("item {i}")).map_err(|e| json_error("create", e))?;
+            serde_json::from_value(entry).map_err(|e| json_error("create", format!("item {i}: {e}")))
+        })
+        .collect()
+}
+
 async fn create(ctx: Arc<Ctx>, a: CreateArgs) -> Result<ToolResult> {
-    let specs = futures::future::try_join_all(
-        a.instances.into_iter().enumerate().map(|(i, node)| type_create_tree(node, format!("instances[{i}]"))),
-    )
-    .await?;
+    let mut nodes: Vec<(String, CreateNode)> = a.instances.into_iter().enumerate().map(|(i, n)| (format!("instances[{i}]"), n)).collect();
+    if let Some(payload) = &a.json {
+        for (i, node) in json_nodes(payload, a.parent.as_deref())?.into_iter().enumerate() {
+            nodes.push((format!("json[{i}]"), node));
+        }
+    }
+    if nodes.is_empty() {
+        return Err(ToolError::bad_params("Nothing to create: pass `instances`, or `json` with a `parent`."));
+    }
+    let specs = futures::future::try_join_all(nodes.into_iter().map(|(where_, node)| type_create_tree(node, where_))).await?;
     let response = call(&ctx, "instances.create", json!({ "instances": specs }), a.studio_id.as_deref(), Some(30_000.0)).await?;
     Ok(table(&["path", "className"], arr_of(&response, "items"), PageMeta { more: Some(undo_note(&response)), ..Default::default() }))
 }
 
-async fn modify(ctx: Arc<Ctx>, a: ModifyArgs) -> Result<ToolResult> {
+async fn modify(ctx: Arc<Ctx>, mut a: ModifyArgs) -> Result<ToolResult> {
     let studio = a.studio_id.as_deref();
+    for (i, target) in a.targets.iter_mut().enumerate() {
+        target.absorb_json(&format!("targets[{i}]"))?;
+    }
     let needs_types = a.targets.iter().any(|t| t.properties.as_ref().is_some_and(|p| !p.is_empty()));
     let mut targets: Vec<Value> = Vec::with_capacity(a.targets.len());
     if needs_types {
@@ -341,7 +430,9 @@ pub fn tools() -> Vec<Tool> {
              siblings make guessing it unreliable.\n\n\
              Property names are checked against the live Roblox API dump before anything is sent to Studio, so a typo \
              comes back with the closest real names rather than an engine error.\n\n\
-             Use `script_create` for Script, LocalScript and ModuleScript — it takes source directly.",
+             Use `script_create` for Script, LocalScript and ModuleScript — it takes source directly.\n\n\
+             `json` takes Studio's \"Copy as JSON\" format, so what a user copied in Studio can be pasted here as is; \
+             `inspect format=\"studio-json\"` produces it.",
             create,
         ),
         define(
@@ -351,8 +442,9 @@ pub fn tools() -> Vec<Tool> {
              200 parts is one entry, not 200. Combine with `find` to build the path list.\n\n\
              The batch is all-or-nothing: if any value is rejected the recording is cancelled and every instance \
              reverts, rather than leaving the place half-changed.\n\n\
-             Values use the same notation the Properties panel shows — see the `properties` field. To change a \
-             script's code use `script_edit`.",
+             Values use the same notation the Properties panel shows — see the `properties` field. A target's `json` \
+             takes Studio's \"Copy as JSON\" object instead, like pasting it onto the instances. To change a script's code \
+             use `script_edit`.",
             modify,
         ),
         define(
@@ -380,4 +472,54 @@ pub fn tools() -> Vec<Tool> {
             },
         ),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn json_create_needs_parent_and_class() {
+        let payload = json!(r#"[{"ClassName":"Part","Name":"A","Anchored":"true"},{"ClassName":"Folder"}]"#);
+        let nodes = json_nodes(&payload, Some("Workspace")).unwrap();
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0].class_name, "Part");
+        assert_eq!(nodes[0].name.as_deref(), Some("A"));
+        assert_eq!(nodes[0].parent.as_deref(), Some("Workspace"));
+        assert!(json_nodes(&payload, None).is_err());
+        assert!(json_nodes(&json!({ "Name": "x" }), Some("Workspace")).is_err());
+    }
+
+    #[test]
+    fn create_args_take_json_without_instances() {
+        let a: CreateArgs = serde_json::from_value(json!({ "json": { "ClassName": "Part" }, "parent": "Workspace" })).unwrap();
+        assert!(a.instances.is_empty());
+        assert!(a.json.is_some());
+    }
+
+    #[test]
+    fn modify_json_merges_and_explicit_fields_win() {
+        let mut t: ModifyTarget = serde_json::from_value(json!({
+            "paths": ["Workspace.Part"],
+            "json": { "ClassName": "Part", "Anchored": "true", "Name": "Wall", "$Hp": 5, ".Old": false, ".New": true },
+            "properties": { "Anchored": false },
+        }))
+        .unwrap();
+        t.absorb_json("targets[0]").unwrap();
+        let props = t.properties.as_ref().unwrap();
+        assert_eq!(props["Anchored"], json!(false));
+        assert_eq!(props["Name"], json!("Wall"));
+        assert_eq!(t.attributes.as_ref().unwrap()["Hp"], json!(5));
+        let tags = t.tags.as_ref().unwrap();
+        assert_eq!(tags.add.as_deref(), Some(&["New".to_string()][..]));
+        assert_eq!(tags.remove.as_deref(), Some(&["Old".to_string()][..]));
+        // `json` never reaches the plugin.
+        assert!(serde_json::to_value(&t).unwrap().get("json").is_none());
+    }
+
+    #[test]
+    fn modify_json_takes_one_object() {
+        let mut t: ModifyTarget = serde_json::from_value(json!({ "paths": ["A"], "json": [{}, {}] })).unwrap();
+        assert!(t.absorb_json("targets[0]").is_err());
+    }
 }

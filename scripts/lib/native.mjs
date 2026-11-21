@@ -9,8 +9,13 @@ import { fileURLToPath } from "node:url";
 
 export const root = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
-/** The newest local build of the server: release first, then debug. */
+/**
+ * The newest local build of the server: release first, then debug.
+ * RBX_MCP_BINARY overrides it, e.g. to test a build made with --target-dir
+ * while the running MCP server holds server/target/release open.
+ */
 export function nativeBinary() {
+  if (process.env.RBX_MCP_BINARY) return process.env.RBX_MCP_BINARY;
   const exe = process.platform === "win32" ? ".exe" : "";
   const found = ["release", "debug"]
     .map((profile) => join(root, "server", "target", profile, `rbx-studio-mcp${exe}`))

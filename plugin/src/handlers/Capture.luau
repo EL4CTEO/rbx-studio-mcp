@@ -124,6 +124,13 @@ end
 -- LocalScript and take one shot, not to move any pixels.
 local CLIENT_TIMEOUT = 25
 
+-- A frame sequence: how many shots, and how far apart in seconds. Twelve keeps a
+-- contact sheet legible; two seconds apart covers a slow tween end to end.
+local MAX_FRAMES = 12
+local DEFAULT_INTERVAL = 0.25
+local MIN_INTERVAL = 0.03
+local MAX_INTERVAL = 2
+
 --[[
 	Screenshots during a playtest, taken by the client because only the client
 	may take them.
@@ -187,10 +194,16 @@ end
 -- at the rect the engine draws it at, and removed straight after. Scripts in
 -- the copies are stripped so nothing runs twice. Depth is not reproduced: a
 -- billboard behind a wall is drawn anyway, which the caption says.
+local frames = math.clamp(tonumber(relay:GetAttribute("Frames")) or 1, 1, 12)
+local interval = math.clamp(tonumber(relay:GetAttribute("Interval")) or 0.25, 0.03, 2)
+
 local overlay = nil
 local billboards = 0
 local billboardError = nil
-local overlayOk, overlayErr = pcall(function()
+-- A redrawn billboard is a still: across several frames it would stay put while
+-- the world moves under it, so a frame sequence goes without.
+local overlayOk, overlayErr = true, nil
+if frames == 1 then overlayOk, overlayErr = pcall(function()
 	local camera = workspace.CurrentCamera
 	local player = game:GetService("Players").LocalPlayer
 	overlay = Instance.new("ScreenGui")
@@ -249,7 +262,7 @@ local overlayOk, overlayErr = pcall(function()
 	if billboards > 0 then
 		overlay.Parent = player:FindFirstChildOfClass("PlayerGui")
 	end
-end)
+end) end
 if not overlayOk then
 	billboardError = tostring(overlayErr)
 end
@@ -265,30 +278,47 @@ pcall(function()
 	if billboards > 0 then RunService.PreRender:Wait() end
 end)
 
-local contentId = nil
-local okShot, shotErr = pcall(function()
-	CaptureService:CaptureScreenshot(function(id)
-		contentId = id
+local function shoot()
+	local contentId = nil
+	local okShot, shotErr = pcall(function()
+		CaptureService:CaptureScreenshot(function(id)
+			contentId = id
+		end)
 	end)
-end)
-if not okShot then
-	if overlay then overlay:Destroy() end
-	report:FireServer({ ok = false, reason = tostring(shotErr) })
-	return
+	if not okShot then
+		return nil, tostring(shotErr)
+	end
+	local waited = 0
+	while contentId == nil and waited < 12 do
+		waited += task.wait()
+	end
+	if contentId == nil then
+		return nil, "the client did not produce a screenshot within 12s"
+	end
+	return contentId, nil
 end
 
-local waited = 0
-while contentId == nil and waited < 12 do
-	task.wait(0.05)
-	waited += 0.05
+local ids, times = {}, {}
+local started = os.clock()
+for index = 1, frames do
+	local due = started + (index - 1) * interval
+	while os.clock() < due do task.wait() end
+	local taken = os.clock()
+	local id, why = shoot()
+	if id == nil then
+		if overlay then overlay:Destroy() end
+		report:FireServer({ ok = false, reason = why })
+		return
+	end
+	table.insert(ids, id)
+	table.insert(times, math.round((taken - started) * 1000))
 end
 if overlay then overlay:Destroy() end
-if contentId == nil then
-	report:FireServer({ ok = false, reason = "the client did not produce a screenshot within 12s" })
-	return
-end
 
-report:FireServer({ ok = true, contentId = contentId, region = region, billboards = billboards, billboardError = billboardError })
+report:FireServer({
+	ok = true, contentId = ids[1], contentIds = ids, times = times, region = region,
+	billboards = billboards, billboardError = billboardError,
+})
 ]==]
 
 --[[
@@ -391,6 +421,10 @@ function Capture.playtestId(params: { [string]: any }): { [string]: any }
 	relay.Archivable = false
 	relay:SetAttribute("MCPClientRelay", true)
 	relay:SetAttribute("Path", if params.rect then "" else params.path or "")
+	local frames = math.clamp(math.floor(tonumber(params.frames) or 1), 1, MAX_FRAMES)
+	local interval = math.clamp(tonumber(params.interval) or DEFAULT_INTERVAL, MIN_INTERVAL, MAX_INTERVAL)
+	relay:SetAttribute("Frames", frames)
+	relay:SetAttribute("Interval", interval)
 	if not params.rect and params.path then
 		require(script.Parent.Parent.ClientRelay).attachRuntime(relay, player)
 	end
@@ -407,7 +441,7 @@ function Capture.playtestId(params: { [string]: any }): { [string]: any }
 	-- instant it lands and immediately waits on the RemoteEvent.
 	relay.Parent = playerGui
 
-	local deadline = os.clock() + CLIENT_TIMEOUT
+	local deadline = os.clock() + CLIENT_TIMEOUT + (frames - 1) * interval
 	while answer == nil and os.clock() < deadline do
 		task.wait(0.05)
 	end
@@ -430,6 +464,8 @@ function Capture.playtestId(params: { [string]: any }): { [string]: any }
 
 	return {
 		contentId = tostring(result.contentId),
+		contentIds = if typeof(result.contentIds) == "table" then result.contentIds else nil,
+		times = if typeof(result.times) == "table" then result.times else nil,
 		region = result.region,
 		device = Emulation.deviceId(),
 		billboards = if typeof(result.billboards) == "number" and result.billboards > 0 then result.billboards else nil,
@@ -802,7 +838,43 @@ function Capture.screenshot(params: { [string]: any }): { [string]: any }
 	local width = math.clamp(tonumber(params.width) or DEFAULT_WIDTH, MIN_WIDTH, MAX_WIDTH)
 	-- Before the capture, so a path that does not resolve costs no screenshot.
 	local region = regionFor(params)
-	return encode(takeScreenshot(), width, if RunService:IsEdit() then "edit" else "playtest", region)
+	local context = if RunService:IsEdit() then "edit" else "playtest"
+	local frames = math.clamp(math.floor(tonumber(params.frames) or 1), 1, MAX_FRAMES)
+	if frames == 1 then
+		return encode(takeScreenshot(), width, context, region)
+	end
+
+	--[[
+		All shots first, then all decoding: encoding a frame costs far more than
+		the interval, so decoding as it goes would space the frames by the
+		encoder rather than by `interval`.
+	]]
+	--[[
+		One shot at a time: Studio keeps a single capture in flight and drops
+		requests made while one is pending (measured: overlapping requests never
+		call back). In the editor a shot takes ~0.5s, so frames are spaced by
+		whichever is longer, `interval` or that; the caption reports the real
+		times.
+	]]
+	local interval = math.clamp(tonumber(params.interval) or DEFAULT_INTERVAL, MIN_INTERVAL, MAX_INTERVAL)
+	local ids: { string } = {}
+	local times: { number } = {}
+	local started = os.clock()
+	for index = 1, frames do
+		local due = started + (index - 1) * interval
+		while os.clock() < due do
+			task.wait()
+		end
+		table.insert(times, math.round((os.clock() - started) * 1000))
+		table.insert(ids, takeScreenshot())
+	end
+	local encoded = {}
+	for index = 1, frames do
+		local frame = encode(ids[index] :: string, width, context, region)
+		frame.t = times[index]
+		table.insert(encoded, frame)
+	end
+	return { frames = encoded, context = context, region = region, device = Emulation.deviceId() }
 end
 
 --[[
