@@ -26,7 +26,7 @@ writeFileSync(
     {
       name: `${main.name}-${target}`,
       version: main.version,
-      description: `${main.name} server binary for ${target}.`,
+      description: `The ${target} binary for ${main.name}.`,
       license: main.license,
       repository: main.repository,
       os: [os],
