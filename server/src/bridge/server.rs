@@ -353,11 +353,16 @@ fn events(bridge: Arc<Bridge>, identity: crate::protocol::StudioIdentity) -> Res
 
     let heartbeat_bridge = bridge.clone();
     let heartbeat_id = studio_id.clone();
+    // Weak: the session holds the only sender, so replacing or dropping it ends
+    // this stream instead of leaving a superseded one open and pinged forever.
+    let weak = tx.downgrade();
+    drop(tx);
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(HEARTBEAT);
         tick.tick().await;
         loop {
             tick.tick().await;
+            let Some(tx) = weak.upgrade() else { return };
             if tx.send(Bytes::from_static(b": ping\n\n")).is_err() {
                 return;
             }

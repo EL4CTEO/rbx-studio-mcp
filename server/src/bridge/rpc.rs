@@ -457,7 +457,38 @@ impl Bridge {
             target
         };
 
-        match tokio::time::timeout(Duration::from_millis(timeout_ms), rx).await {
+        // A caller that goes away mid-call (a peer process killed, its request
+        // dropped) never reaches the timeout below, so the entry is cleared here.
+        struct Abandoned<'a> {
+            bridge: &'a Bridge,
+            target: &'a str,
+            id: &'a str,
+            armed: bool,
+        }
+        impl Drop for Abandoned<'_> {
+            fn drop(&mut self) {
+                if !self.armed {
+                    return;
+                }
+                if let Some(session) = self.bridge.state.lock().sessions.get_mut(self.target)
+                    && session.pending.remove(self.id).is_some()
+                {
+                    let queued = session.queue.len();
+                    session.queue.retain(|c| c.id != self.id);
+                    // Already in Studio: tell the plugin to stop it at its next step.
+                    if session.queue.len() == queued
+                        && let Some(stream) = session.live_stream()
+                    {
+                        let _ = stream.send(sse_frame(&json!({ "event": "cancel", "id": self.id })));
+                    }
+                }
+            }
+        }
+        let mut abandoned = Abandoned { bridge: self, target: &target, id: &id, armed: true };
+        let outcome = tokio::time::timeout(Duration::from_millis(timeout_ms), rx).await;
+        abandoned.armed = false;
+
+        match outcome {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => Err(errors::disconnected()),
             Err(_) => {

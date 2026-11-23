@@ -23,6 +23,11 @@ local timeout = runtime.run(function()
 end, 1)
 assert(not timeout.ok and string.find(timeout.error, "CLIENT_TIMEOUT"))
 assert(timeout.output[1].message == "before timeout" and cancelled and disconnected)
+cancelled = false
+local abandoned = runtime.run(function() coroutine.yield() end, nil, function() return true end)
+assert(not abandoned.ok and string.find(abandoned.error, "CANCELLED") and cancelled)
+local unstopped = runtime.run(function() return 7 end, nil, function() return true end)
+assert(unstopped.ok and unstopped.returned[1] == 7, "a chunk that never yields is not stoppable, and is not penalised")
 local fast = runtime.run(function() return 42 end, 1)
 assert(fast.ok and fast.returned[1] == 42)
 local tree = {}

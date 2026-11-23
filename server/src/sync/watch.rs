@@ -372,8 +372,18 @@ pub async fn start_watch(bridge: &Arc<StudioBridge>, options: SyncOptions) -> Re
         }));
     }
     *watch.tasks.lock() = tasks;
+    // Two calls for one folder can both get this far, since the first sync
+    // awaits. The loser stands down, or its tasks would run on unstoppable.
+    let mut watches = WATCHES.lock();
+    if let Some(existing) = watches.get(&options.dir) {
+        *watch.watcher.lock() = None;
+        for t in watch.tasks.lock().drain(..) {
+            t.abort();
+        }
+        return Ok((existing.state.lock().clone(), first, true));
+    }
     let state = watch.state.lock().clone();
-    WATCHES.lock().insert(options.dir.clone(), watch);
+    watches.insert(options.dir.clone(), watch);
     Ok((state, first, false))
 }
 

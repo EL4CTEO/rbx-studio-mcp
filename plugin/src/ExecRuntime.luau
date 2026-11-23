@@ -109,7 +109,8 @@ end
 
 local Runtime = {}
 Runtime.describe = describe
-function Runtime.run(chunk: () -> ...any, timeout: number?): { [string]: any }
+-- `stopped` is polled while the chunk yields; true abandons it (the caller cancelled).
+function Runtime.run(chunk: () -> ...any, timeout: number?, stopped: (() -> boolean)?): { [string]: any }
 	-- Captured rather than inferred: a chunk's prints are usually the point, and
 	-- reading them back from the log afterwards would also pick up whatever else
 	-- the place logged in the meantime.
@@ -147,13 +148,27 @@ function Runtime.run(chunk: () -> ...any, timeout: number?): { [string]: any }
 
 	local started = os.clock()
 	local results: any = nil
-	if timeout then
+	if timeout or stopped then
+		-- A chunk that never yields finishes inside task.spawn, so the common
+		-- case pays nothing for being stoppable.
 		local worker = task.spawn(function() results = table.pack(pcall(chunk :: any)) end)
-		local deadline = started + timeout
-		while results == nil and os.clock() < deadline do task.wait() end
+		local deadline = if timeout then started + timeout else math.huge
+		local abandoned = false
+		while results == nil and os.clock() < deadline do
+			if stopped and stopped() then
+				abandoned = true
+				break
+			end
+			task.wait()
+		end
 		if results == nil then
 			task.cancel(worker)
-			results = table.pack(false, "CLIENT_TIMEOUT: execution exceeded " .. tostring(timeout) .. "s")
+			results = table.pack(
+				false,
+				if abandoned
+					then "CANCELLED: the request was cancelled while the code was still running"
+					else "CLIENT_TIMEOUT: execution exceeded " .. tostring(timeout) .. "s"
+			)
 		end
 	else
 		results = table.pack(pcall(chunk :: () -> ...any))

@@ -20,6 +20,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const exe = process.platform === "win32" ? ".exe" : "";
 const binary =
   process.argv[2] ??
+  process.env.RBX_MCP_BINARY ??
   [join(root, "server", "target", "release", `rbx-studio-mcp${exe}`), join(root, "server", "target", "debug", `rbx-studio-mcp${exe}`)].find(existsSync);
 assert.ok(binary && existsSync(binary), "build the server first: cargo build --manifest-path server/Cargo.toml");
 const version = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;

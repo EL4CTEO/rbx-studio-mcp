@@ -21,7 +21,7 @@
 	Backwards (playtest -> editor) is not persistence at all. The editor session
 	is still running the whole time; it just is not the one being asked to do the
 	work. So there is nothing to restore, only something to be told, and it is
-	told over the bridge -- see `announceToPeers` in the server's rpc.ts.
+	told over the bridge -- see `settle` in the server's bridge/rpc.rs.
 
 	Only the EDIT session writes. It is the one that outlives every playtest and
 	receives the peer announcements, so its log is the superset; letting the

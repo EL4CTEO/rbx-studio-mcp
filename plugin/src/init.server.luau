@@ -931,6 +931,9 @@ end
 local function onEvent(event: { [string]: any })
 	if event.event == "clients" and typeof(event.count) == "number" then
 		Console.setClients(event.count, if typeof(event.list) == "table" then event.list else nil)
+	elseif event.event == "cancel" and typeof(event.id) == "string" then
+		-- The agent's request was cancelled; stop its command at the next step.
+		Dispatch.cancel(event.id)
 	elseif event.event == "agent" and event.state == "finished" then
 		Console.agentFinished()
 	elseif event.event == "console" and typeof(event.message) == "string" then

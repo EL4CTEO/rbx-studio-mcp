@@ -200,7 +200,7 @@ report:FireServer(if ok then result else { ok = false, error = tostring(result),
 		)
 	end
 
-	local result = Runtime.run(chunk :: any)
+	local result = Runtime.run(chunk :: any, nil, Dispatch.cancelled)
 	if module then module:Destroy() end
 	result.note = notes(route, source)
 	result.context = Context.of()

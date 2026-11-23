@@ -2,7 +2,7 @@
 --[[
 	Connection settings for the Studio MCP plugin.
 
-	The port must match the one the Node server was started with (`--port`, or
+	The port must match the one the server was started with (`--port`, or
 	the ROBLOX_STUDIO_MCP_PORT environment variable). It is stored as a plugin
 	setting so a user running on a non-default port only has to set it once.
 ]]

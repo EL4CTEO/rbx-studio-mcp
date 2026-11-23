@@ -35,7 +35,7 @@ const NEWLINE = "\n";
 /**
  * Fingerprints plugin/src so the running plugin can be compared against the
  * sources this package ships. Must stay byte-identical to
- * `expectedPluginBuildId` in src/lib/pluginbuild.ts — line endings are
+ * `expected_plugin_build_id` in server/src/protocol.rs — line endings are
  * normalised because git checkouts differ across platforms.
  */
 function buildId(dir) {

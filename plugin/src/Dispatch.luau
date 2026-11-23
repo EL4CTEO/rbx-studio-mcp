@@ -39,11 +39,38 @@ function Dispatch.deadline(): number?
 end
 
 --[[
+	Commands the caller gave up on, by thread. The server sends a `cancel` event
+	when an agent's request is cancelled while its command is running here. A
+	handler cannot be killed safely -- it may hold the mutation lock -- so it is
+	stopped where it would start its next step, exactly like an expired deadline.
+]]
+local running: { [string]: thread } = {}
+local cancelled: { [thread]: boolean } = setmetatable({}, { __mode = "k" }) :: any
+
+function Dispatch.cancel(id: string)
+	local thread = running[id]
+	if thread then
+		cancelled[thread] = true
+	end
+end
+
+function Dispatch.cancelled(): boolean
+	return cancelled[coroutine.running()] == true
+end
+
+--[[
 	Refuses to go on once the command's deadline has passed. Pass the deadline
 	explicitly from code that runs on another thread -- an engine callback, or
 	a spawned task -- which the table above cannot see.
 ]]
 function Dispatch.checkDeadline(explicit: number?)
+	if Dispatch.cancelled() then
+		Dispatch.fail(
+			"CANCELLED",
+			"The request was cancelled before Studio started this step, so it was not done.",
+			"Earlier steps of the same request may have applied. Check the current state before retrying."
+		)
+	end
 	local deadline = explicit or Dispatch.deadline()
 	if deadline and DateTime.now().UnixTimestampMillis >= deadline then
 		Dispatch.fail(
@@ -74,7 +101,7 @@ local WRITES: { [string]: boolean } = {
 	["geometry.mirror"] = true,
 	["world.collision"] = true,
 }
-local strictThreads: { [thread]: boolean } = {}
+local strictThreads: { [thread]: boolean } = setmetatable({}, { __mode = "k" }) :: any
 
 function Dispatch.strictPaths(): boolean
 	return strictThreads[coroutine.running()] == true
@@ -132,12 +159,15 @@ function Dispatch.invoke(id: string, op: string, params: { [string]: any }?, dea
 	local thread = coroutine.running()
 	deadlines[thread] = deadlineMs
 	strictThreads[thread] = WRITES[op]
+	running[id] = thread
 	local ok, result = pcall(function()
 		Dispatch.checkDeadline()
 		return handler(params or {})
 	end)
 	deadlines[thread] = nil
 	strictThreads[thread] = nil
+	running[id] = nil
+	cancelled[thread] = nil
 	if ok then
 		return { id = id, ok = true, data = result }
 	end

@@ -618,7 +618,7 @@ define({ name = "stop", usage = "stop", summary = "cancel the running agent", re
 --[[
 	Remote on purpose, and not only because the server does the HTTP.
 
-	The key has to live where `upload` runs, which is the Node process. Storing
+	The key has to live where `upload` runs, which is the server process. Storing
 	it plugin-side with `plugin:SetSetting` would put a credential that can
 	publish under the user's name into the place file's plugin settings, where it
 	travels with the .rbxl -- into version control, into a team create session,

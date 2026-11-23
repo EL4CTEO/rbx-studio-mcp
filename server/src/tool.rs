@@ -297,7 +297,14 @@ pub async fn invoke(tool: &Tool, ctx: Arc<Ctx>, args: Value, progress: Arc<Mutex
     let fut = (tool.handler)(ctx, args);
     let sent = Arc::new(AtomicBool::new(false));
     // Its own task, so a panicking tool costs one call rather than the bridge.
-    let mut result = match tokio::spawn(SENT.scope(sent.clone(), PROGRESS.scope(progress, fut))).await {
+    // Dropped with the call when the client cancels it, which stops the tool
+    // and, through the bridge, the command in Studio. `sync` is left to finish:
+    // stopping between its file writes and its manifest save would leave the
+    // folder and its record disagreeing.
+    let mut task = AbortOnDrop { handle: tokio::spawn(SENT.scope(sent.clone(), PROGRESS.scope(progress, fut))), armed: tool.name != "sync" };
+    let outcome = (&mut task.handle).await;
+    task.armed = false;
+    let mut result = match outcome {
         Ok(Ok(result)) => result,
         Ok(Err(e)) => {
             // Refused before it reached Studio: the panel never saw the call,
@@ -316,6 +323,19 @@ pub async fn invoke(tool: &Tool, ctx: Arc<Ctx>, args: Value, progress: Arc<Mutex
         result.push_text(notice);
     }
     result
+}
+
+struct AbortOnDrop<T> {
+    handle: tokio::task::JoinHandle<T>,
+    armed: bool,
+}
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.handle.abort();
+        }
+    }
 }
 
 // --- background notices ------------------------------------------------------

@@ -2,6 +2,24 @@
 
 What changed in each release, written for people using the server rather than for people reading the diff.
 
+## 1.3.0
+
+### Added
+
+- Cancelling a tool call now stops it in Studio too: the command ends at its next step with `CANCELLED`. Covers queued edits, `debug watch`, collision recording and `execute_luau` code that yields. `sync` still runs to the end, and long-poll sessions are not told.
+
+### Fixed
+
+- A cancelled call kept sending progress notifications for as long as the server ran.
+- A call whose caller went away stayed in the in-flight list.
+- A replaced SSE stream stayed open and kept being pinged.
+- `sync` crashed on a hand-named file with `%` before an accented character (e.g. `50%aé.luau`); the same in data store keys.
+- Two `sync op="watch"` calls at once for one folder started two watches, one of them unstoppable.
+
+### Changed
+
+- `RBX_MCP_BINARY` also points `test-native.mjs` at another server build.
+
 ## 1.2.6
 
 ### Added

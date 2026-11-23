@@ -156,8 +156,11 @@ pub fn decode_name(encoded: &str) -> String {
     let mut out = String::with_capacity(encoded.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len()
-            && let Ok(v) = u8::from_str_radix(&encoded[i + 1..i + 3], 16) {
+        // `get`, not an index: a hand-named file like `50%aé.luau` puts a
+        // multi-byte character inside the two bytes after the percent sign.
+        if bytes[i] == b'%'
+            && let Some(hex) = encoded.get(i + 1..i + 3)
+            && let Ok(v) = u8::from_str_radix(hex, 16) {
                 out.push(v as char);
                 i += 3;
                 continue;
@@ -600,6 +603,13 @@ mod tests {
             assert_eq!(decode_name(&enc), name, "{name} -> {enc}");
         }
         assert_eq!(encode_name("init", true), "%69nit");
+    }
+
+    #[test]
+    fn decoding_survives_a_percent_before_a_wide_character() {
+        assert_eq!(decode_name("50%aé"), "50%aé");
+        assert_eq!(decode_name("100%"), "100%");
+        assert_eq!(decode_name("a%2Eb"), "a.b");
     }
 
     #[test]

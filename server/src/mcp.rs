@@ -196,6 +196,9 @@ impl Server {
         let token = params.pointer("/_meta/progressToken").cloned();
         let this = self.clone();
         let key = id_key(&id);
+        // Held across the spawn: a call that finishes at once must not remove
+        // its entry before it is inserted, which would leave it there for good.
+        let mut running = self.running.lock();
         let task = tokio::spawn({
             let key = key.clone();
             async move {
@@ -205,7 +208,8 @@ impl Server {
                     let this = this.clone();
                     let slot = slot.clone();
                     let label = name.clone();
-                    tokio::spawn(async move {
+                    // Aborted on drop, so a cancelled call stops reporting progress too.
+                    AbortOnDrop(tokio::spawn(async move {
                         let started = std::time::Instant::now();
                         tokio::time::sleep(PROGRESS_FIRST).await;
                         let mut beats = 0u64;
@@ -223,17 +227,23 @@ impl Server {
                             }));
                             tokio::time::sleep(PROGRESS_EVERY).await;
                         }
-                    })
+                    }))
                 });
                 let result = invoke(tool, this.ctx.clone(), args, slot).await;
-                if let Some(h) = heartbeat {
-                    h.abort();
-                }
+                drop(heartbeat);
                 this.running.lock().remove(&key);
                 this.reply(id, result.to_json());
             }
         });
-        self.running.lock().insert(key, task.abort_handle());
+        running.insert(key, task.abort_handle());
+    }
+}
+
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
     }
 }
 

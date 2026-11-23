@@ -95,8 +95,13 @@ impl SyncReport {
 }
 
 pub fn hash_of(text: &str) -> String {
+    use std::fmt::Write;
     let digest = Sha256::digest(plan::normalise(text).as_bytes());
-    digest.iter().map(|b| format!("{b:02x}")).collect()
+    let mut out = String::with_capacity(digest.len() * 2);
+    for b in digest {
+        let _ = write!(out, "{b:02x}");
+    }
+    out
 }
 
 fn absolute(dir: &Path, relative: &str) -> PathBuf {
