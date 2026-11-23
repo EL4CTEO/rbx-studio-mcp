@@ -1,5 +1,11 @@
 # Roblox Studio MCP
 
+<p align="center">
+  <a href="https://www.npmjs.com/package/@el4cteo/rbx-studio-mcp"><img src="https://img.shields.io/npm/v/@el4cteo/rbx-studio-mcp?color=2563eb&label=npm" alt="npm"></a>
+  <a href="https://crates.io/crates/rbx-studio-mcp"><img src="https://img.shields.io/crates/v/rbx-studio-mcp?color=2563eb" alt="crates.io"></a>
+  <a href="https://github.com/EL4CTEO/rbx-studio-mcp/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-555" alt="MIT"></a>
+</p>
+
 Let an AI agent drive Roblox Studio: read your place, edit scripts, build geometry, run playtests, take screenshots. 35 tools.
 
 ![The Studio MCP panel](docs/rbx-studio.png)
