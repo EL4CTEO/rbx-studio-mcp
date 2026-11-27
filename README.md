@@ -1,4 +1,6 @@
-# Roblox Studio MCP
+<p align="center"><img src="https://raw.githubusercontent.com/EL4CTEO/rbx-studio-mcp/main/assets/icon.png" alt="rbx-studio-mcp" width="120"></p>
+
+<h1 align="center">Roblox Studio MCP</h1>
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@el4cteo/rbx-studio-mcp"><img src="https://img.shields.io/npm/v/@el4cteo/rbx-studio-mcp?color=2563eb&label=npm" alt="npm"></a>
@@ -6,13 +8,13 @@
   <a href="https://github.com/EL4CTEO/rbx-studio-mcp/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-555" alt="MIT"></a>
 </p>
 
-Let an AI agent drive Roblox Studio: read your place, edit scripts, build geometry, run playtests, take screenshots. 35 tools.
+Free, open-source MCP server that lets an AI agent drive Roblox Studio: read your place, edit scripts, build, playtest, take screenshots. 35 tools, plus a console panel that can run coding agents inside Studio.
 
-![The Studio MCP panel](docs/rbx-studio.png)
+![The Studio MCP panel](https://raw.githubusercontent.com/EL4CTEO/rbx-studio-mcp/main/docs/rbx-studio.png)
 
 ## Install
 
-Runs on Windows (x64, ARM) and macOS (Apple silicon, Intel). The server is a native binary that npm picks for your platform; `npx` needs Node 18 or newer.
+Windows (x64, ARM) and macOS (Apple silicon, Intel). Native binary picked by npm; `npx` needs Node 18+.
 
 **1. The plugin**
 
@@ -69,11 +71,9 @@ opencode (`opencode.json`):
 DeepSeek Harness: see [`config/dsh.cordis.yml`](config/dsh.cordis.yml). Needs `DEEPSEEK_API_KEY`.
 </details>
 
-**3.** Open Studio and accept the `127.0.0.1` prompt. Check it works with `studio_status`.
+**3.** Open Studio, accept the `127.0.0.1` prompt, then check with `studio_status`.
 
-Something wrong? Run `npx -y @el4cteo/rbx-studio-mcp doctor`. It says what is broken and how to fix it.
-
-The port is **44755**. Change it with `--port` and match it in the plugin.
+Problems? `npx -y @el4cteo/rbx-studio-mcp doctor` says what's broken and how to fix it. Port **44755** (`--port` to change; match it in the plugin).
 
 ## Tools
 
@@ -88,26 +88,20 @@ The port is **44755**. Change it with `--port` and match it in the plugin.
 | **Run & debug** | `playtest` `execute_luau` `character` `input` `console` `debug` `performance` |
 | **Look** | `screenshot` `viewport` `device` |
 
-Write tools take arrays: ten script edits is one call and one **Ctrl+Z**, and either all apply or none do.
-
-`device` emulation stays on until `device op="stop"`.
-
-`screenshot frames=6` takes a timed sequence as one contact sheet, to check motion.
-
-`inspect format="studio-json"` gives Studio's Copy-as-JSON text; `create json=` and `modify json=` take it back, so what a user copies in Studio can be pasted to the agent.
+- Write tools take arrays: ten edits = one call, one **Ctrl+Z**, all or nothing.
+- `screenshot frames=6` returns a timed contact sheet to check motion.
+- `inspect format="studio-json"` / `create json=` / `modify json=` speak Studio's Copy-as-JSON format.
+- `device` emulation stays on until `device op="stop"`.
 
 ## Why this one
 
-- **Fast:** the bridge pushes calls instead of polling, 13.6 ms per call against 25.8 ms.
-- **Safe script edits:** writes go through the script editor, so unsaved work survives.
-- **Stale edits are refused:** line-range and whole-file edits need the `rev` from `script_read`.
-- **Property names are checked** against the running engine, so `Anchorred` comes back as a suggestion, not a runtime error.
+- **Fast:** push-based bridge, 13.6 ms per call vs 25.8 ms polling.
+- **Safe script edits:** writes go through the script editor, so unsaved work survives; stale edits (wrong `rev`) are refused.
+- **Checked properties:** names are validated against the engine, so `Anchorred` gets a suggestion instead of a runtime error.
 
 ## Debug a playtest
 
-A playtest connects a second session, so pass its `studioId`. Use the edit session for changes that must last.
-
-Readers can run in the player's own client with `target="client"` (add `player="Name"` with several players):
+A playtest is a second session: pass its `studioId` (use the edit session for lasting changes). Readers can run in the player's client with `target="client"` (`player="Name"` with several players):
 
 ```
 tree target="client" path="Players.Alice.PlayerGui" handles=true
@@ -116,12 +110,12 @@ viewport op="pick" x=0.5 y=0.5 target="client"
 debug op="watch" path=... target="client" properties=["Text"] seconds=5
 ```
 
-- **Handles** (`handles=true`) replace paths. They survive renames and moves, and fail once the object is deleted or expired.
-- **`viewport op="uisnap"`** snapshots a UI. Call it again with `compareTo="<id>"` to see what changed.
-- **`debug op="collisions"`** reports what a part or model hit, hardest first.
-- **`performance op="microprofile"`** ranks the engine scopes that filled your frames. Uses Roblox's [LibMP](https://github.com/Roblox/libmp) (MIT).
+- **Handles** (`handles=true`) survive renames and moves.
+- **`viewport op="uisnap"`** snapshots UI; `compareTo="<id>"` diffs it.
+- **`debug op="collisions"`** lists what a part hit, hardest first.
+- **`performance op="microprofile"`** ranks engine scopes per frame ([LibMP](https://github.com/Roblox/libmp)).
 - **`collision op="cast"`** sweeps rays, blocks, spheres or a real part.
-- **Clipped `execute_luau` results** return a `resultId`. Page through it for 120 seconds without rerunning.
+- Clipped `execute_luau` output returns a `resultId` you can page for 120 s.
 
 ## Work on files
 
@@ -133,16 +127,15 @@ sync op="push"      # ./studio -> Studio
 sync op="watch"     # both ways, live, until op="stop"
 ```
 
-- **Layout:** Rojo-style (`Main.server.luau`, `.client.luau`, `.luau`), plus a `sourcemap.json` for luau-lsp.
-- **Renames:** rename or move a file and the script moves with it.
-- **Conflicts:** edited on both sides means neither is touched. Studio's version waits in `.rbx-sync/conflicts/`. Merge it and sync again, or pass `prefer: "studio"` or `"disk"`.
-- **Deletes:** deleting a file deletes the script (one Ctrl+Z). A script deleted in Studio sends its file to `.rbx-sync/trash`.
-- **UI as files:** `export` writes an instance tree as a `.build.json` file, and `build` rebuilds it.
-- **Luau check:** pushes are checked with [luau-lsp](https://github.com/JohnnyMorganz/luau-lsp/releases) (on `PATH`). Syntax errors are held back; type errors and deprecated API are reported and shown in Studio's Script Analysis. `op="check"` checks without syncing; `check: "strict"` or `"off"` changes how much.
+- Rojo-style layout (`.server.luau`, `.client.luau`, `.luau`) + `sourcemap.json` for luau-lsp.
+- Renames and moves follow the script; deletes are one Ctrl+Z (Studio-side deletes go to `.rbx-sync/trash`).
+- Conflicts are never overwritten: Studio's copy waits in `.rbx-sync/conflicts/`, or pass `prefer: "studio"|"disk"`.
+- `export` / `build` turn an instance tree (e.g. UI) into a `.build.json` file and back.
+- Pushes are checked with [luau-lsp](https://github.com/JohnnyMorganz/luau-lsp/releases) if on `PATH`: syntax errors are held back, type errors reported. `op="check"` checks only.
 
 ## Open Cloud
 
-Some calls reach past Studio to Roblox itself and need an API key. Everything else works without one.
+Optional. These calls reach Roblox itself and need an API key:
 
 | | |
 |---|---|
@@ -166,23 +159,21 @@ cloud place <place id>
 Add the ones you want: `assets`, `universe-datastores`, `ordered-data-stores`, `luau-execution-sessions`, `universe-places`, `universe-place-instances`, `universe`, `messaging-service`, `user-restrictions`, `inventory`, `users`, `asset-permissions`, `developer-products`, `game-passes`, `universe-analytics`. Scheduling events needs `universe.event:read` and `:write`.
 </details>
 
-The key is stored at `~/.rbx-studio-mcp/credentials.json`, never in the place file or the conversation. `cloud` shows what is set, `cloud test` re-checks it, `cloud forget` deletes it. `ROBLOX_API_KEY` and friends in the environment take priority.
+The key lives in `~/.rbx-studio-mcp/credentials.json`, never in the place or the chat (`cloud` / `cloud test` / `cloud forget`; `ROBLOX_API_KEY` env wins).
 
-**Per-game permissions.** Agents can only read a game's settings until you allow more. Type `allow` in the panel to see the list for the open game, `allow <group>` to turn one on, `allow <group> off` to turn it off. Groups: `read`, `assets`, `data`, `edit` (settings, publishing, restarts, live Luau), `money` (products and passes), `players` (bans).
+**Per-game permissions:** agents can only read a game's settings until you type `allow <group>` in the panel (`allow` lists them, `allow <group> off` revokes). Groups: `read`, `assets`, `data`, `edit`, `money`, `players`.
 
 ## The console panel
 
-Every call is logged with how long it took. At the foot of the panel is a command line: click it to see every command, or type `help`.
+Every call is logged with its duration. The command line at the bottom takes `help`.
 
-Six themes with animated backgrounds: Nebula, Ember, Tide, Galaxy, Aurora and Monolith. Pick one from the dots in the header or with `theme <name>`; `background off` turns the animation off.
-
-Run `chat on` and sentences you type go to a real coding agent. It uses any of 31 supported agents on your PATH, like Claude Code, Codex or Gemini; `agent` lists them and `agent use <id>` picks one. It runs separately from your terminal and is billed separately. Claude Code and Copilot are limited to the `rbx-studio` tools; the others use their own permission settings. The **stop** button cancels it.
-
-Run `playpanel on` to also show the panel during playtests (off by default). `playpanel left`, `right` or `bottom` docks it there; `playpanel float` floats it at the panel's size.
+- **Themes:** Nebula, Ember, Tide, Galaxy, Aurora, Monolith (`theme <name>`, `background off`).
+- **Agents in Studio:** `chat on` sends what you type to a coding agent on your PATH (31 supported: Claude Code, Codex, Gemini…). `agent` lists them, `agent use <id>` picks one. Billed by that agent; **stop** cancels.
+- **Playtests:** `playpanel on` shows the panel during playtests (`left`, `right`, `bottom`, `float`).
 
 ## Security
 
-The server only listens on loopback. Requests need a header a browser cannot set cross-origin and a loopback `Host`, so a web page cannot reach it, even through DNS rebinding. Your experience's "Allow HTTP Requests" setting is untouched.
+Loopback only. Requests need a header browsers can't set cross-origin and a loopback `Host`, so web pages can't reach it (DNS rebinding included). "Allow HTTP Requests" is untouched.
 
 ## Development
 
@@ -195,14 +186,12 @@ cargo test --manifest-path server/Cargo.toml
 node scripts/test-native.mjs      # black-box MCP and bridge tests
 ```
 
-The plugin checks need `luau`, `luau-compile` and `luau-analyze` from [the Luau releases](https://github.com/luau-lang/luau/releases) on `PATH` or in `tools/`.
-
-Live tests need Studio open with the plugin loaded, and they clean up after themselves: `scripts/test-live.mjs`, `test-live-tools.mjs [--playtest]`, `test-live-sync.mjs` and `test-live-sync-scale.mjs`.
+Plugin checks need `luau`, `luau-compile`, `luau-analyze` ([Luau releases](https://github.com/luau-lang/luau/releases)) on `PATH` or in `tools/`. Live tests (`scripts/test-live*.mjs`) need Studio open with the plugin.
 
 ## Shoutout
 
-Thanks to [GameDevTool](https://gamedevtool.com/ai-tools-for-roblox-studio/rbx-studio-mcp) for featuring this project in their roundup of free AI tools for Roblox Studio.
+Thanks to [GameDevTool](https://gamedevtool.com/ai-tools-for-roblox-studio/rbx-studio-mcp) for featuring this project.
 
-## Licence
+## License
 
-MIT.
+MIT
